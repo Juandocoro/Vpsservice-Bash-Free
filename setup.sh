@@ -1,8 +1,8 @@
 #!/bin/bash
 # =========================================================
 # vpsservice Script FREE — Setup Universal
-# Uso:
-#   sudo bash <(curl -sL https://raw.githubusercontent.com/Juandocoro/Vpsservice-Bash-Free/main/setup.sh)
+# Uso (comando recomendado en el VPS):
+#   curl -sL https://raw.githubusercontent.com/Juandocoro/Vpsservice-Bash-Free/main/setup.sh -o /tmp/vps.sh && sudo bash /tmp/vps.sh
 # =========================================================
 
 if [ "$EUID" -ne 0 ]; then
@@ -39,10 +39,11 @@ fi
 # PASO 3: Clonar repositorio
 # =========================================================
 echo -e "\033[0;33m[*]\033[0m Clonando repositorio..."
-git clone https://github.com/Juandocoro/Vpsservice-Bash-Free.git "$TARGET_DIR" &>/dev/null
-
-if [ ! -d "$TARGET_DIR" ]; then
-    echo -e "\033[0;31m[-]\033[0m Error al clonar. Revisa acceso a GitHub."
+if ! git clone https://github.com/Juandocoro/Vpsservice-Bash-Free.git "$TARGET_DIR" 2>&1; then
+    echo ""
+    echo -e "\033[0;31m[-]\033[0m No se pudo clonar el repositorio."
+    echo -e "\033[2;37m    Verifica que el repo exista: https://github.com/Juandocoro/Vpsservice-Bash-Free\033[0m"
+    echo -e "\033[2;37m    Y que sea público (o tengas acceso SSH configurado).\033[0m"
     exit 1
 fi
 

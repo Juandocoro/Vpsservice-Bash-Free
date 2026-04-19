@@ -1,23 +1,24 @@
 # 🆓 vpsservice Script FREE
 
-Suite de administración VPS — Sin licencia, sin verificaciones externas. Instala y corre en un solo comando.
+Suite de administración VPS — Sin licencia, sin verificaciones externas.
 
 ---
 
 ## ⚡ Instalación — Un Solo Comando
 
-Pega esto en la terminal de tu VPS (como root):
-
+### ✅ Con curl (recomendado):
 ```bash
-sudo bash <(curl -sL https://raw.githubusercontent.com/Juandocoro/Vpsservice-Bash-Free/main/setup.sh)
+curl -sL https://raw.githubusercontent.com/Juandocoro/Vpsservice-Bash-Free/main/setup.sh -o /tmp/vps.sh && sudo bash /tmp/vps.sh
 ```
 
-O con wget:
+### ✅ Con wget:
 ```bash
-sudo bash <(wget -qO- https://raw.githubusercontent.com/Juandocoro/Vpsservice-Bash-Free/main/setup.sh)
+wget -qO /tmp/vps.sh https://raw.githubusercontent.com/Juandocoro/Vpsservice-Bash-Free/main/setup.sh && sudo bash /tmp/vps.sh
 ```
 
-El instalador hará todo automáticamente:
+> ⚠️ **Nota:** Asegúrate de que el repositorio esté subido y sea público antes de usar estos comandos.
+
+El instalador hace todo automáticamente:
 - ✅ Clona el repositorio en `/opt/vpsservice-free`
 - ✅ Aplica permisos `+x` a todos los archivos
 - ✅ Instala dependencias base (curl, stunnel4, dropbear, python3...)
@@ -27,9 +28,9 @@ El instalador hará todo automáticamente:
 
 ---
 
-## 🔁 Volver al panel después
+## 🔁 Volver al panel después de instalar
 
-Una vez instalado, desde cualquier carpeta escribe:
+Desde cualquier carpeta en el VPS escribe:
 
 ```bash
 menu
@@ -57,3 +58,12 @@ menu
 | Panel con colores | ✅ | ✅ |
 | Auto-Killer | ✅ | ✅ |
 | Actualizaciones OTA | ✅ | ✅ |
+
+---
+
+## 🐛 Si el instalador falla
+
+Si el comando da error al clonar:
+1. Verifica que el repo exista: `https://github.com/Juandocoro/Vpsservice-Bash-Free`
+2. Asegúrate que sea **público**
+3. Prueba con el método wget como alternativa
