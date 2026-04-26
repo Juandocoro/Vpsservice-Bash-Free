@@ -19,12 +19,20 @@ function extract_port() {
 function refresh_ports() {
     PORT_SSH=$(extract_port "sshd")
     PORT_SSL=$(extract_port "stunnel")
-    # BadVPN escucha en TCP 127.0.0.1 — detectar via ss con nombres de proceso
-    PORT_UDP=$(ss -tlpnp 2>/dev/null | grep -i "badvpn" | awk '{print $4}' | awk -F':' '{print $NF}' | sort -u | head -n1)
-    # Fallback: leer el puerto desde el archivo de servicio si el proceso está activo
-    if [ -z "$PORT_UDP" ] && systemctl is-active --quiet badvpn 2>/dev/null; then
-        PORT_UDP=$(grep -o '\-\-listen-addr [^ ]*' /etc/systemd/system/badvpn.service 2>/dev/null | awk -F':' '{print $NF}')
+    # UDP Custom — Hysteria2 (escucha en UDP, público, sin SSH)
+    PORT_UDPCUSTOM=$(ss -ulpnp 2>/dev/null | grep -i "hysteria" | awk '{print $4}' | awk -F':' '{print $NF}' | sort -u | head -n1)
+    if [ -z "$PORT_UDPCUSTOM" ] && systemctl is-active --quiet hysteria-server 2>/dev/null; then
+        PORT_UDPCUSTOM=$(grep '^listen:' /etc/hysteria/config.yaml 2>/dev/null | awk -F: '{print $NF}' | tr -d ' ')
     fi
+
+    # BadVPN — escucha en 127.0.0.1 (local, requiere SSH activo)
+    PORT_BADVPN=$(ss -tlpnp 2>/dev/null | grep -i "badvpn" | grep "127.0.0.1" | awk '{print $4}' | awk -F':' '{print $NF}' | sort -u | head -n1)
+    if [ -z "$PORT_BADVPN" ] && systemctl is-active --quiet badvpn 2>/dev/null; then
+        PORT_BADVPN=$(grep -o '\-\-listen-addr [^ ]*' /etc/systemd/system/badvpn.service 2>/dev/null | awk -F':' '{print $NF}')
+    fi
+
+    # Compatibilidad: PORT_UDP apunta a UDP Custom para no romper lógica existente
+    PORT_UDP="$PORT_UDPCUSTOM"
     PORT_WS=$(extract_port "python3.*proxy.py")
     if [ -z "$PORT_WS" ]; then
         PORT_WS=$(ss -tlpn | grep "python3" | awk '{print $4}' | awk -F':' '{print $NF}' | sort -u | head -n1 2>/dev/null)
@@ -52,16 +60,17 @@ function refresh_ports() {
 
     # Auto-firewall driller
     if command -v ufw &>/dev/null; then
-        [ -n "$PORT_SSH" ]      && ufw allow "$PORT_SSH"/tcp      &>/dev/null
-        [ -n "$PORT_SSL" ]      && ufw allow "$PORT_SSL"/tcp      &>/dev/null
-        [ -n "$PORT_UDP" ]      && ufw allow "$PORT_UDP"/udp      &>/dev/null
-        [ -n "$PORT_WS" ]       && ufw allow "$PORT_WS"/tcp       &>/dev/null
-        [ -n "$PORT_DROPBEAR" ] && ufw allow "$PORT_DROPBEAR"/tcp &>/dev/null
-        [ -n "$PORT_SQUID" ]    && ufw allow "$PORT_SQUID"/tcp    &>/dev/null
-        [ -n "$PORT_V2RAY" ]    && ufw allow "$PORT_V2RAY"/tcp    &>/dev/null
-        [ -n "$PORT_SS" ]       && ufw allow "$PORT_SS"/tcp       &>/dev/null
-        [ -n "$PORT_OVPN" ]     && ufw allow "$PORT_OVPN"/udp     &>/dev/null
-        [ -n "$PORT_WG" ]       && ufw allow "$PORT_WG"/udp       &>/dev/null
+        [ -n "$PORT_SSH" ]          && ufw allow "$PORT_SSH"/tcp          &>/dev/null
+        [ -n "$PORT_SSL" ]          && ufw allow "$PORT_SSL"/tcp          &>/dev/null
+        [ -n "$PORT_UDPCUSTOM" ]    && ufw allow "$PORT_UDPCUSTOM"/udp    &>/dev/null
+        [ -n "$PORT_UDPCUSTOM" ]    && ufw allow "$PORT_UDPCUSTOM"/tcp    &>/dev/null
+        [ -n "$PORT_WS" ]           && ufw allow "$PORT_WS"/tcp           &>/dev/null
+        [ -n "$PORT_DROPBEAR" ]     && ufw allow "$PORT_DROPBEAR"/tcp     &>/dev/null
+        [ -n "$PORT_SQUID" ]        && ufw allow "$PORT_SQUID"/tcp        &>/dev/null
+        [ -n "$PORT_V2RAY" ]        && ufw allow "$PORT_V2RAY"/tcp        &>/dev/null
+        [ -n "$PORT_SS" ]           && ufw allow "$PORT_SS"/tcp           &>/dev/null
+        [ -n "$PORT_OVPN" ]         && ufw allow "$PORT_OVPN"/udp         &>/dev/null
+        [ -n "$PORT_WG" ]           && ufw allow "$PORT_WG"/udp           &>/dev/null
     fi
 }
 
@@ -79,40 +88,53 @@ function show_network_status() {
 
     echo -e "  ${WH}IP: ${GR}$IP_PUBLICA${CR}"
     echo ""
-    echo -e "  ${YL}[ ESTADO DE MAQUINA ]${CR}"
-    echo -e "  ${DM}RAM: ${RAM_U}MB / ${RAM_T}MB  |  Disco: $DISK_U / $DISK_T  |  CPU: $CPU_U${CR}"
+    echo -e "  ${YL}[ ESTADO DE MÁQUINA ]${CR}"
+    echo -e "  ${DM}RAM: ${RAM_U}MB/${RAM_T}MB  |  Disco: $DISK_U/$DISK_T  |  CPU: $CPU_U${CR}"
+    echo ""
+    echo -e "  ${YL}[ PROTOCOLOS ACTIVOS ]${CR}"
     echo ""
 
-    # Construir lista de servicios activos
-    local services=()
-    [ -n "$PORT_SSH" ]      && services+=("SSH")
-    [ -n "$PORT_DROPBEAR" ] && services+=("Dropbear")
-    [ -n "$PORT_SSL" ]      && services+=("SSL")
-    [ -n "$PORT_UDP" ]      && services+=("UDP")
-    [ -n "$PORT_WS" ]       && services+=("WebSocket")
-    [ -n "$PORT_SLOWDNS" ]  && services+=("SlowDNS")
-    [ -n "$PORT_SQUID" ]    && services+=("Squid")
-    [ -n "$PORT_V2RAY" ]    && services+=("V2Ray")
-    [ -n "$PORT_SS" ]       && services+=("Shadowsocks")
-    [ -n "$PORT_OVPN" ]     && services+=("OpenVPN")
-    [ -n "$PORT_WG" ]       && services+=("WireGuard")
+    # Cada entrada: "NOMBRE|PUERTO"
+    local entries=()
+    [ -n "$PORT_SSH" ]        && entries+=("SSH|$PORT_SSH")
+    [ -n "$PORT_DROPBEAR" ]   && entries+=("Dropbear|$PORT_DROPBEAR")
+    [ -n "$PORT_SSL" ]        && entries+=("Stunnel SSL|$PORT_SSL")
+    [ -n "$PORT_WS" ]         && entries+=("WebSocket|$PORT_WS")
+    [ -n "$PORT_UDPCUSTOM" ]  && entries+=("UDP Custom|$PORT_UDPCUSTOM")
+    [ -n "$PORT_BADVPN" ]     && entries+=("BadVPN|$PORT_BADVPN")
+    [ -n "$PORT_SLOWDNS" ]    && entries+=("SlowDNS|$PORT_SLOWDNS")
+    [ -n "$PORT_SQUID" ]      && entries+=("Squid|$PORT_SQUID")
+    [ -n "$PORT_V2RAY" ]      && entries+=("V2Ray|$PORT_V2RAY")
+    [ -n "$PORT_SS" ]         && entries+=("Shadowsocks|$PORT_SS")
+    [ -n "$PORT_OVPN" ]       && entries+=("OpenVPN|$PORT_OVPN")
+    [ -n "$PORT_WG" ]         && entries+=("WireGuard|$PORT_WG")
 
-    echo -e "  ${YL}[ ACTIVOS ]${CR}"
-
-    if [ ${#services[@]} -eq 0 ]; then
-        echo -e "  ${RD}Sin servicios activos${CR}"
+    if [ ${#entries[@]} -eq 0 ]; then
+        echo -e "  ${RD}Sin protocolos activos instalados${CR}"
+        echo ""
     else
         local i=0
-        local line=""
-        for svc in "${services[@]}"; do
-            if [ $((i % 2)) -eq 0 ] && [ $i -gt 0 ]; then
-                echo -e "$line"
-                line=""
+        while [ $i -lt ${#entries[@]} ]; do
+            local left="${entries[$i]}"
+            local right="${entries[$((i+1))]:-}"
+
+            local lname lport
+            IFS='|' read -r lname lport <<< "$left"
+            local lcell
+            lcell=$(printf "  ${GR}●${CR} ${WH}%-13s${CR}${DM}:${CR} ${CY}%-6s${CR}" "$lname" "$lport")
+
+            if [ -n "$right" ]; then
+                local rname rport
+                IFS='|' read -r rname rport <<< "$right"
+                local rcell
+                rcell=$(printf "  ${GR}●${CR} ${WH}%-13s${CR}${DM}:${CR} ${CY}%-6s${CR}" "$rname" "$rport")
+                echo -e "$lcell$rcell"
+            else
+                echo -e "$lcell"
             fi
-            line+="  ${GR}●${CR} ${WH}$(printf '%-12s' "$svc")${CR}"
-            ((i++))
+
+            ((i+=2))
         done
-        [ -n "$line" ] && echo -e "$line"
+        echo ""
     fi
-    echo ""
 }
