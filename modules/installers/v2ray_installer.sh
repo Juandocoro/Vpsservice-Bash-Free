@@ -19,17 +19,31 @@ USERS_FILE="/etc/v2ray-users.conf"
 
 # ─── Generar link VMess base64 ────────────────────────────────────────────────
 # Formato compatible con: HTTP Injector, V2RayNG, Nekoray, NapsternetV, etc.
+# REGLAS:
+#   "add"  = IP real del servidor
+#   "host" = dominio bug/SNI si se usa, o IP si WS lo necesita como Host header
+#   "tls"  = "" (vacío = sin TLS) | "tls" (con TLS)
+#   "scy"  = "none" (recomendado sin TLS) | "aes-128-gcm" | "chacha20-poly1305"
+#   "type" = "none" (sin header obfuscation HTTP)
 generate_vmess_link() {
     local uuid="$1"
-    local host="$2"
+    local host_ip="$2"   # IP real del servidor
     local port="$3"
     local path="$4"
     local remark="${5:-VPSService-FREE}"
+    local bug_host="${6:-}"  # dominio SNI/Bug host (opcional, vacío si no hay)
+    local use_tls="${7:-}"   # "tls" si hay TLS, vacío si no
 
-    # JSON del config VMess (formato estándar)
-    local json="{\"v\":\"2\",\"ps\":\"${remark}\",\"add\":\"${host}\",\"port\":\"${port}\",\"id\":\"${uuid}\",\"aid\":\"0\",\"scy\":\"auto\",\"net\":\"ws\",\"type\":\"none\",\"host\":\"${host}\",\"path\":\"${path}\",\"tls\":\"\",\"sni\":\"\",\"alpn\":\"\",\"fp\":\"\"}"
+    # Si no hay bug_host, usar la IP como host header del WebSocket
+    local ws_host="$host_ip"
+    [ -n "$bug_host" ] && ws_host="$bug_host"
 
-    # Codificar en base64 sin saltos de línea
+    # Seguridad: sin TLS usar "none", con TLS usar "aes-128-gcm"
+    local security="none"
+    [ "$use_tls" = "tls" ] && security="aes-128-gcm"
+
+    local json="{\"v\":\"2\",\"ps\":\"${remark}\",\"add\":\"${host_ip}\",\"port\":\"${port}\",\"id\":\"${uuid}\",\"aid\":\"0\",\"scy\":\"${security}\",\"net\":\"ws\",\"type\":\"none\",\"host\":\"${ws_host}\",\"path\":\"${path}\",\"tls\":\"${use_tls}\",\"sni\":\"${bug_host}\",\"alpn\":\"\",\"fp\":\"\"}"
+
     local b64
     b64=$(echo -n "$json" | base64 -w 0)
     echo "vmess://${b64}"
@@ -123,13 +137,19 @@ while true; do
 
         read -p "$(echo -e ${DM})Puerto WebSocket (Defecto: 8080): $(echo -e ${CR})" v2_port
         [ -z "$v2_port" ] && v2_port=8080
-        if ! [[ "$v2_port" =~ ^[0-9]+$ ]] || [ "$v2_port" -lt 1 ] || [ "$v2_port" -gt 65535 ]; then
+        if ! [[  "$v2_port" =~ ^[0-9]+$ ]] || [ "$v2_port" -lt 1 ] || [ "$v2_port" -gt 65535 ]; then
             _err "Puerto inválido. Usando 8080."; v2_port=8080
         fi
 
         read -p "$(echo -e ${DM})Path WebSocket (Defecto: /v2ray): $(echo -e ${CR})" v2_path
         [ -z "$v2_path" ] && v2_path="/v2ray"
         [[ "$v2_path" != /* ]] && v2_path="/$v2_path"
+
+        echo ""
+        echo -e "  ${DM}Bug Host / SNI es el dominio que pones en HTTP Injector${CR}"
+        echo -e "  ${DM}para enmascarar la conexión. Si no usas uno, deja vacío.${CR}"
+        read -p "$(echo -e ${DM})Bug Host / SNI (Enter para omitir): $(echo -e ${CR})" v2_bughost
+        echo ""
 
         _info "Instalando V2Ray..."
         bash <(curl -sL https://raw.githubusercontent.com/v2fly/fhs-install-v2ray/master/install-release.sh) &>/dev/null
@@ -145,8 +165,9 @@ while true; do
 
         write_config "$v2_port" "$v2_path" "$CLIENTS_JSON"
 
-        # Guardar usuario en archivo de referencia
+        # Guardar usuario y bughost en archivo de referencia
         echo "$FIRST_NAME:$FIRST_UUID" > "$USERS_FILE"
+        [ -n "$v2_bughost" ] && echo "BUGHOST=$v2_bughost" >> "$USERS_FILE"
 
         systemctl enable v2ray &>/dev/null
         systemctl restart v2ray
@@ -158,7 +179,7 @@ while true; do
         fi
 
         SERVER_IP=$(curl -s ifconfig.me 2>/dev/null || echo "TU_IP")
-        VMESS_LINK=$(generate_vmess_link "$FIRST_UUID" "$SERVER_IP" "$v2_port" "$v2_path" "$FIRST_NAME")
+        VMESS_LINK=$(generate_vmess_link "$FIRST_UUID" "$SERVER_IP" "$v2_port" "$v2_path" "$FIRST_NAME" "$v2_bughost" "")
 
         echo ""
         if systemctl is-active --quiet v2ray; then
@@ -169,18 +190,36 @@ while true; do
 
         echo ""
         echo -e "$SEP"
-        echo -e "${WH}   USUARIO INICIAL CREADO — $FIRST_NAME             ${CR}"
+        echo -e "${WH}    USUARIO INICIAL CREADO — $FIRST_NAME             ${CR}"
         echo -e "$SEP"
-        echo -e "  ${DM}IP     :${CR} ${GR}$SERVER_IP${CR}"
-        echo -e "  ${DM}Puerto :${CR} ${CY}$v2_port${CR}"
-        echo -e "  ${DM}UUID   :${CR} ${CY}$FIRST_UUID${CR}"
-        echo -e "  ${DM}Path   :${CR} ${CY}$v2_path${CR}"
-        echo -e "  ${DM}AlterID:${CR} ${CY}0${CR}"
-        echo -e "  ${DM}Red    :${CR} ${CY}WebSocket (ws)${CR}"
-        echo -e "  ${DM}TLS    :${CR} ${CY}none${CR}"
+        echo -e "  ${DM}IP / Servidor :${CR}  ${GR}$SERVER_IP${CR}"
+        echo -e "  ${DM}Puerto        :${CR}  ${CY}$v2_port${CR}"
+        echo -e "  ${DM}UUID          :${CR}  ${CY}$FIRST_UUID${CR}"
+        echo -e "  ${DM}AlterID       :${CR}  ${CY}0${CR}"
+        echo -e "  ${DM}Red / Network :${CR}  ${CY}WebSocket (ws)${CR}"
+        echo -e "  ${DM}Path          :${CR}  ${CY}$v2_path${CR}"
+        echo -e "  ${DM}Seguridad     :${CR}  ${CY}none (sin TLS)${CR}"
+        [ -n "$v2_bughost" ] && echo -e "  ${DM}Bug Host/SNI  :${CR}  ${CY}$v2_bughost${CR}"
         echo ""
-        echo -e "  ${YL}━━━ LINK VMess (HTTP Injector / V2RayNG / Nekoray) ━━━${CR}"
-        echo -e "  ${WH}$VMESS_LINK${CR}"
+        echo -e "  ${YL}━━━ LINK VMess — importar en HTTP Injector/V2RayNG ━━━${CR}"
+        echo ""
+        echo -e "  ${GR}$VMESS_LINK${CR}"
+        echo ""
+        echo -e "  ${YL}━━━ CONFIGURACION MANUAL HTTP INJECTOR ━━━${CR}"
+        echo -e "  ${DM}1. Abre HTTP Injector${CR}"
+        echo -e "  ${DM}2. Tunnel Type → V2Ray/Xray${CR}"
+        echo -e "  ${DM}3. Ajustes (⚙) → V2Ray/Xray Settings → + (agregar)${CR}"
+        echo -e "  ${DM}4. Pega el link VMess de arriba (auto-rellena todo)${CR}"
+        echo -e "  ${DM}   o ingresa manualmente:${CR}"
+        echo -e "     ${WH}Address  :${CR} ${CY}$SERVER_IP${CR}"
+        echo -e "     ${WH}Port     :${CR} ${CY}$v2_port${CR}"
+        echo -e "     ${WH}UUID     :${CR} ${CY}$FIRST_UUID${CR}"
+        echo -e "     ${WH}AlterID  :${CR} ${CY}0${CR}"
+        echo -e "     ${WH}Network  :${CR} ${CY}WebSocket${CR}"
+        echo -e "     ${WH}Path     :${CR} ${CY}$v2_path${CR}"
+        echo -e "     ${WH}Security :${CR} ${CY}None${CR}"
+        [ -n "$v2_bughost" ] && echo -e "     ${WH}Host/SNI :${CR} ${CY}$v2_bughost${CR}"
+        echo -e "  ${DM}5. Guarda y presiona Start en la pantalla principal${CR}"
         echo -e "$SEP"
         read -p "$(echo -e ${DM})Presiona Enter para continuar...$(echo -e ${CR})"
         ;;
@@ -198,8 +237,17 @@ while true; do
 
         read -p "$(echo -e ${DM})Nombre del usuario (ej: juan): $(echo -e ${CR})" uname
         [ -z "$uname" ] && uname="user_$(date +%s)"
-        # Limpiar espacios
         uname=$(echo "$uname" | tr -d ' ')
+
+        # Leer bug host guardado
+        SAVED_BUGHOST=$(grep '^BUGHOST=' "$USERS_FILE" 2>/dev/null | cut -d= -f2)
+        if [ -n "$SAVED_BUGHOST" ]; then
+            echo -e "  ${DM}Bug Host guardado: ${CY}$SAVED_BUGHOST${CR}"
+            read -p "$(echo -e ${DM})Nuevo Bug Host (Enter para usar '$SAVED_BUGHOST'): $(echo -e ${CR})" new_bughost
+            [ -z "$new_bughost" ] && new_bughost="$SAVED_BUGHOST"
+        else
+            read -p "$(echo -e ${DM})Bug Host / SNI (Enter para omitir): $(echo -e ${CR})" new_bughost
+        fi
 
         NEW_UUID=$(cat /proc/sys/kernel/random/uuid)
 
@@ -229,7 +277,7 @@ print(json.dumps(clients, indent=2))
         sleep 1
 
         SERVER_IP=$(curl -s ifconfig.me 2>/dev/null || echo "TU_IP")
-        VMESS_LINK=$(generate_vmess_link "$NEW_UUID" "$SERVER_IP" "$CURR_PORT" "$CURR_PATH" "$uname")
+        VMESS_LINK=$(generate_vmess_link "$NEW_UUID" "$SERVER_IP" "$CURR_PORT" "$CURR_PATH" "$uname" "$new_bughost" "")
 
         echo ""
         _ok "Usuario ${CY}$uname${CR} creado correctamente."
@@ -237,20 +285,31 @@ print(json.dumps(clients, indent=2))
         echo -e "$SEP"
         echo -e "${WH}   DATOS DE CONEXIÓN — $uname${CR}"
         echo -e "$SEP"
-        echo -e "  ${DM}IP     :${CR} ${GR}$SERVER_IP${CR}"
-        echo -e "  ${DM}Puerto :${CR} ${CY}$CURR_PORT${CR}"
-        echo -e "  ${DM}UUID   :${CR} ${CY}$NEW_UUID${CR}"
-        echo -e "  ${DM}Path   :${CR} ${CY}$CURR_PATH${CR}"
-        echo -e "  ${DM}AlterID:${CR} ${CY}0${CR}"
-        echo -e "  ${DM}Red    :${CR} ${CY}WebSocket (ws)${CR}"
-        echo -e "  ${DM}TLS    :${CR} ${CY}none${CR}"
+        echo -e "  ${DM}IP / Servidor :${CR}  ${GR}$SERVER_IP${CR}"
+        echo -e "  ${DM}Puerto        :${CR}  ${CY}$CURR_PORT${CR}"
+        echo -e "  ${DM}UUID          :${CR}  ${CY}$NEW_UUID${CR}"
+        echo -e "  ${DM}AlterID       :${CR}  ${CY}0${CR}"
+        echo -e "  ${DM}Red / Network :${CR}  ${CY}WebSocket (ws)${CR}"
+        echo -e "  ${DM}Path          :${CR}  ${CY}$CURR_PATH${CR}"
+        echo -e "  ${DM}Seguridad     :${CR}  ${CY}none (sin TLS)${CR}"
+        [ -n "$new_bughost" ] && echo -e "  ${DM}Bug Host/SNI  :${CR}  ${CY}$new_bughost${CR}"
         echo ""
-        echo -e "  ${YL}━━━ LINK VMess — copia y pega en tu app ━━━${CR}"
+        echo -e "  ${YL}━━━ LINK VMess — importar en tu app ━━━${CR}"
         echo ""
         echo -e "  ${GR}$VMESS_LINK${CR}"
         echo ""
-        echo -e "  ${DM}Compatible con:${CR} HTTP Injector · V2RayNG · Nekoray"
-        echo -e "  ${DM}                NapsternetV · Hiddify · NekoBox${CR}"
+        echo -e "  ${YL}━━━ CONFIGURACION MANUAL HTTP INJECTOR ━━━${CR}"
+        echo -e "  ${DM}1. Tunnel Type → V2Ray/Xray${CR}"
+        echo -e "  ${DM}2. Ajustes (⚙) → V2Ray/Xray Settings → + → Pegar VMess link${CR}"
+        echo -e "     ${WH}Address  :${CR} ${CY}$SERVER_IP${CR}"
+        echo -e "     ${WH}Port     :${CR} ${CY}$CURR_PORT${CR}"
+        echo -e "     ${WH}UUID     :${CR} ${CY}$NEW_UUID${CR}"
+        echo -e "     ${WH}AlterID  :${CR} ${CY}0${CR}"
+        echo -e "     ${WH}Network  :${CR} ${CY}WebSocket${CR}"
+        echo -e "     ${WH}Path     :${CR} ${CY}$CURR_PATH${CR}"
+        echo -e "     ${WH}Security :${CR} ${CY}None${CR}"
+        [ -n "$new_bughost" ] && echo -e "     ${WH}Host/SNI :${CR} ${CY}$new_bughost${CR}"
+        echo -e "  ${DM}Compatible: HTTP Injector · V2RayNG · Nekoray · NapsternetV${CR}"
         echo -e "$SEP"
         read -p "$(echo -e ${DM})Presiona Enter para continuar...$(echo -e ${CR})"
         ;;
