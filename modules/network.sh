@@ -12,13 +12,19 @@ SEP="${YL}━━━━━━━━━━━━━━━━━━━━━━━�
 
 function extract_port() {
     local service=$1
-    ss -tlpn | grep -i "$service" | awk '{print $4}' | awk -F':' '{print $NF}' | sort -u | head -n1 2>/dev/null
+    # -p incluye el nombre del proceso; funciona con la mayoría de servicios
+    ss -tlpnp 2>/dev/null | grep -i "$service" | awk '{print $4}' | awk -F':' '{print $NF}' | sort -u | head -n1
 }
 
 function refresh_ports() {
     PORT_SSH=$(extract_port "sshd")
     PORT_SSL=$(extract_port "stunnel")
-    PORT_UDP=$(extract_port "badvpn")
+    # BadVPN escucha en TCP 127.0.0.1 — detectar via ss con nombres de proceso
+    PORT_UDP=$(ss -tlpnp 2>/dev/null | grep -i "badvpn" | awk '{print $4}' | awk -F':' '{print $NF}' | sort -u | head -n1)
+    # Fallback: leer el puerto desde el archivo de servicio si el proceso está activo
+    if [ -z "$PORT_UDP" ] && systemctl is-active --quiet badvpn 2>/dev/null; then
+        PORT_UDP=$(grep -o '\-\-listen-addr [^ ]*' /etc/systemd/system/badvpn.service 2>/dev/null | awk -F':' '{print $NF}')
+    fi
     PORT_WS=$(extract_port "python3.*proxy.py")
     if [ -z "$PORT_WS" ]; then
         PORT_WS=$(ss -tlpn | grep "python3" | awk '{print $4}' | awk -F':' '{print $NF}' | sort -u | head -n1 2>/dev/null)
