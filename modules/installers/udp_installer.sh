@@ -96,15 +96,21 @@ while true; do
         echo -e "$SEP"
         echo -e "${WH}            INSTALAR UDP CUSTOM                  ${CR}"
         echo -e "$SEP"
-
-        read -p "$(echo -e ${DM})Puerto UDP (Defecto: 7300): $(echo -e ${CR})" udp_port
-        [ -z "$udp_port" ] && udp_port=7300
-        [[ ! "$udp_port" =~ ^[0-9]+$ ]] && udp_port=7300
-
+        echo -e "  ${DM}UDP Custom escuchará en TODOS los puertos UDP (1-65535)${CR}"
+        echo -e "  ${DM}Puerto interno del binario: ${CR}${CY}36712${CR}  ${DM}(no necesitas cambiarlo)${CR}"
         echo ""
-        echo -e "  ${DM}Si tienes otros servicios UDP en ciertos puertos (ej: BadVPN${CR}"
-        echo -e "  ${DM}en 7300, OpenVPN en 1194), puedes excluirlos.${CR}"
-        read -p "$(echo -e ${DM})Puertos a excluir separados por coma (Enter = ninguno): $(echo -e ${CR})" excl_ports
+
+        INTERNAL_PORT=36712
+
+        echo -e "  ${DM}Puertos a ${WH}EXCLUIR${DM} del rango UDP (ej: BadVPN usa 7300):${CR}"
+        echo -e "  ${DM}Default: ${CY}7300${DM} (BadVPN). Agrega más separados por coma.${CR}"
+        read -p "$(echo -e ${DM})Puertos a excluir (Enter = solo 7300): $(echo -e ${CR})" excl_input
+        [ -z "$excl_input" ] && excl_input="7300"
+        # Asegurar que 7300 siempre esté excluido
+        if ! echo "$excl_input" | grep -q "7300"; then
+            excl_input="7300,$excl_input"
+        fi
+        excl_ports="$excl_input"
 
         # Descargar binario oficial de http-custom/udp-custom
         mkdir -p "$UDP_DIR"
@@ -129,7 +135,7 @@ while true; do
 
         if [ "$BINARY_OK" = false ]; then
             _err "No se pudo descargar el binario UDP Custom."
-            _info "Intentando instalar desde repositorio oficial..."
+            _info "Intentando desde git clone..."
             if git clone https://github.com/http-custom/udp-custom /tmp/udp-custom-src &>/dev/null; then
                 cp /tmp/udp-custom-src/bin/udp-custom-linux-amd64 "$BINARY" 2>/dev/null || true
                 chmod +x "$BINARY" 2>/dev/null
@@ -142,8 +148,7 @@ while true; do
         fi
 
         if [ "$BINARY_OK" = false ]; then
-            _err "No se pudo obtener el binario. Verifica conexión y prueba manualmente:"
-            echo -e "  ${DM}git clone https://github.com/http-custom/udp-custom${CR}"
+            _err "No se pudo obtener el binario. Verifica conexión."
             sleep 4; continue
         fi
 
@@ -156,9 +161,9 @@ while true; do
         [ -z "$first_pass" ] && first_pass=$(cat /proc/sys/kernel/random/uuid | cut -c1-10)
 
         echo "${first_user}:${first_pass}" > "$USERS_FILE"
-        write_config "$udp_port" "$excl_ports"
+        write_config "$INTERNAL_PORT" "$excl_ports"
 
-        # Crear servicio systemd
+        # Servicio systemd
         cat > "$SERVICE_FILE" <<EOF
 [Unit]
 Description=UDP Custom Server (HTTP Custom App)
@@ -183,19 +188,48 @@ EOF
         systemctl stop udp-custom &>/dev/null; sleep 1
         systemctl start udp-custom; sleep 2
 
-        # Firewall
+        # ── iptables: redirigir TODOS los puertos UDP → puerto interno ──────────
+        _info "Configurando iptables (rango total UDP 1-65535)..."
+
+        # Limpiar reglas anteriores de UDP Custom
+        iptables -t nat -D PREROUTING -p udp -j REDIRECT --to-port "$INTERNAL_PORT" 2>/dev/null || true
+
+        # Agregar regla base: todo UDP → INTERNAL_PORT
+        iptables -t nat -A PREROUTING -p udp -j REDIRECT --to-port "$INTERNAL_PORT"
+
+        # Excluir puertos específicos (insertar ANTES con mayor prioridad)
+        IFS=',' read -ra EXCL_LIST <<< "$excl_ports"
+        for eport in "${EXCL_LIST[@]}"; do
+            eport=$(echo "$eport" | tr -d ' ')
+            [ -z "$eport" ] && continue
+            # Regla de excepción: este puerto NO se redirige → se inserta al inicio
+            iptables -t nat -I PREROUTING 1 -p udp --dport "$eport" -j RETURN
+            _ok "Puerto $eport excluido de UDP Custom."
+        done
+
+        # Guardar reglas iptables para que persistan tras reboot
+        if command -v iptables-save &>/dev/null; then
+            iptables-save > /etc/iptables/rules.v4 2>/dev/null || \
+            iptables-save > /root/iptables-udpcustom.rules 2>/dev/null
+        fi
+        # Compatibilidad con netfilter-persistent
+        if command -v netfilter-persistent &>/dev/null; then
+            netfilter-persistent save &>/dev/null
+        fi
+
+        # Firewall: abrir el puerto interno
         if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "active"; then
-            ufw allow "${udp_port}/udp" &>/dev/null
-            ufw allow "${udp_port}/tcp" &>/dev/null
-            _ok "Firewall: puerto $udp_port abierto."
+            ufw allow "${INTERNAL_PORT}/udp" &>/dev/null
+            _ok "Firewall: puerto interno $INTERNAL_PORT abierto."
         fi
 
         SERVER_IP=$(curl -s ifconfig.me 2>/dev/null || echo "TU_IP")
-        CUENTA="${SERVER_IP}:${udp_port}@${first_user}:${first_pass}"
+        CUENTA="${SERVER_IP}:${INTERNAL_PORT}@${first_user}:${first_pass}"
 
         echo ""
         if systemctl is-active --quiet udp-custom; then
-            _ok "UDP Custom activo en puerto ${CY}$udp_port${CR}"
+            _ok "UDP Custom activo — escuchando en ${CY}TODOS los puertos UDP${CR}"
+            _ok "Puertos excluidos: ${CY}$excl_ports${CR}"
         else
             _err "UDP Custom no arrancó."
             journalctl -u udp-custom -n 10 --no-pager 2>/dev/null | sed 's/^/  /'
@@ -207,7 +241,7 @@ EOF
         echo -e "${WH}     CUENTA UDP CUSTOM — $first_user              ${CR}"
         echo -e "$SEP"
         echo -e "  ${DM}Servidor  :${CR}  ${GR}$SERVER_IP${CR}"
-        echo -e "  ${DM}Puerto    :${CR}  ${CY}$udp_port${CR}"
+        echo -e "  ${DM}Puerto    :${CR}  ${CY}cualquier puerto UDP${CR}  ${DM}(1-65535, excepto: $excl_ports)${CR}"
         echo -e "  ${DM}Usuario   :${CR}  ${CY}$first_user${CR}"
         echo -e "  ${DM}Contraseña:${CR}  ${CY}$first_pass${CR}"
         echo ""
