@@ -150,7 +150,7 @@ function client_data() {
     [ -n "$PORT_WG" ]           && echo -e "  ${WH}WireGuard    :${CR}  ${CY}$PORT_WG${CR}  (UDP)"
     echo ""
 
-    echo -e "  ${YL}━━━ PAYLOAD HTTP INJECTOR (WebSocket/SSH) ━━━${CR}"
+    echo -e "  ${YL}━━━ PAYLOAD WEBSOCKET ━━━${CR}"
     echo -e "  ${DM}GET / HTTP/1.1[crlf]${CR}"
     echo -e "  ${DM}Host: ${SERVER_IP}[crlf]${CR}"
     echo -e "  ${DM}Upgrade: websocket[crlf]${CR}"
@@ -159,7 +159,7 @@ function client_data() {
     echo ""
 
     if [ -n "$PORT_UDPCUSTOM" ]; then
-        echo -e "  ${YL}━━━ UDP CUSTOM — HTTP Injector/HTTP Custom ━━━${CR}"
+        echo -e "  ${YL}━━━ UDP CUSTOM ━━━${CR}"
         echo -e "  ${DM}Tunnel Type: UDP${CR}"
         echo -e "  ${DM}Server     : ${CR}${WH}$SERVER_IP${CR}"
         echo -e "  ${DM}Port       : ${CR}${CY}$PORT_UDPCUSTOM${CR}  (NO requiere SSH)${CR}"
@@ -167,7 +167,7 @@ function client_data() {
     fi
 
     if [ -n "$PORT_BADVPN" ]; then
-        echo -e "  ${YL}━━━ BADVPN — Juegos y Llamadas via SSH ━━━${CR}"
+        echo -e "  ${YL}━━━ BADVPN — Gateway UDP ━━━${CR}"
         echo -e "  ${DM}1. Conecta primero por SSH (puerto ${CY}$PORT_SSH${DM})${CR}"
         echo -e "  ${DM}2. Settings → UDP Custom → Enable${CR}"
         echo -e "  ${DM}3. Host: ${CR}${WH}127.0.0.1${CR}  ${DM}Port: ${CR}${CY}$PORT_BADVPN${CR}"

@@ -18,7 +18,7 @@ CONFIG_FILE="/usr/local/etc/v2ray/config.json"
 USERS_FILE="/etc/v2ray-users.conf"
 
 # ─── Generar link VMess base64 ────────────────────────────────────────────────
-# Formato compatible con: HTTP Injector, V2RayNG, Nekoray, NapsternetV, etc.
+# Formato estandar VMess compatible con clientes V2Ray
 # REGLAS:
 #   "add"  = IP real del servidor
 #   "host" = dominio bug/SNI si se usa, o IP si WS lo necesita como Host header
@@ -146,7 +146,7 @@ while true; do
         [[ "$v2_path" != /* ]] && v2_path="/$v2_path"
 
         echo ""
-        echo -e "  ${DM}Bug Host / SNI es el dominio que pones en HTTP Injector${CR}"
+        echo -e "  ${DM}Bug Host / SNI es el dominio de camouflage del tunel${CR}"
         echo -e "  ${DM}para enmascarar la conexión. Si no usas uno, deja vacío.${CR}"
         read -p "$(echo -e ${DM})Bug Host / SNI (Enter para omitir): $(echo -e ${CR})" v2_bughost
         echo ""
@@ -201,12 +201,12 @@ while true; do
         echo -e "  ${DM}Seguridad     :${CR}  ${CY}none (sin TLS)${CR}"
         [ -n "$v2_bughost" ] && echo -e "  ${DM}Bug Host/SNI  :${CR}  ${CY}$v2_bughost${CR}"
         echo ""
-        echo -e "  ${YL}━━━ LINK VMess — importar en HTTP Injector/V2RayNG ━━━${CR}"
+        echo -e "  ${YL}━━━ LINK VMESS ━━━${CR}"
         echo ""
         echo -e "  ${GR}$VMESS_LINK${CR}"
         echo ""
-        echo -e "  ${YL}━━━ CONFIGURACION MANUAL HTTP INJECTOR ━━━${CR}"
-        echo -e "  ${DM}1. Abre HTTP Injector${CR}"
+        echo -e "  ${YL}━━━ CONFIGURACION MANUAL V2RAY ━━━${CR}"
+        echo -e "  ${DM}1. Crea una nueva configuracion VMess${CR}"
         echo -e "  ${DM}2. Tunnel Type → V2Ray/Xray${CR}"
         echo -e "  ${DM}3. Ajustes (⚙) → V2Ray/Xray Settings → + (agregar)${CR}"
         echo -e "  ${DM}4. Pega el link VMess de arriba (auto-rellena todo)${CR}"
@@ -298,7 +298,7 @@ print(json.dumps(clients, indent=2))
         echo ""
         echo -e "  ${GR}$VMESS_LINK${CR}"
         echo ""
-        echo -e "  ${YL}━━━ CONFIGURACION MANUAL HTTP INJECTOR ━━━${CR}"
+        echo -e "  ${YL}━━━ CONFIGURACION MANUAL V2RAY ━━━${CR}"
         echo -e "  ${DM}1. Tunnel Type → V2Ray/Xray${CR}"
         echo -e "  ${DM}2. Ajustes (⚙) → V2Ray/Xray Settings → + → Pegar VMess link${CR}"
         echo -e "     ${WH}Address  :${CR} ${CY}$SERVER_IP${CR}"
@@ -309,7 +309,7 @@ print(json.dumps(clients, indent=2))
         echo -e "     ${WH}Path     :${CR} ${CY}$CURR_PATH${CR}"
         echo -e "     ${WH}Security :${CR} ${CY}None${CR}"
         [ -n "$new_bughost" ] && echo -e "     ${WH}Host/SNI :${CR} ${CY}$new_bughost${CR}"
-        echo -e "  ${DM}Compatible: HTTP Injector · V2RayNG · Nekoray · NapsternetV${CR}"
+        echo -e "  ${DM}Compatible con clientes estandar VMess${CR}"
         echo -e "$SEP"
         read -p "$(echo -e ${DM})Presiona Enter para continuar...$(echo -e ${CR})"
         ;;

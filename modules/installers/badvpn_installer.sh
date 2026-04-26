@@ -103,11 +103,11 @@ echo -e "${YL}━━━━━━━━━━━━━━━━━━━━━━
 if systemctl is-active --quiet badvpn; then
     _ok "BadVPN activo en ${CY}127.0.0.1:$bvpn_port${CR}"
     echo ""
-    echo -e "  ${YL}━━━ CÓMO USAR EN HTTP INJECTOR ━━━${CR}"
+    echo -e "  ${YL}━━━ CONFIGURACION UDP GATEWAY ━━━${CR}"
     echo -e "  ${DM}1. Conéctate primero por SSH${CR}"
     echo -e "  ${DM}2. Settings → UDP Custom → Enable${CR}"
-    echo -e "  ${DM}3. UDP Custom Host: ${CR}${WH}127.0.0.1${CR}"
-    echo -e "  ${DM}4. UDP Custom Port: ${CR}${CY}$bvpn_port${CR}"
+    echo -e "  ${DM}3. UDP Host: ${CR}${WH}127.0.0.1${CR}"
+    echo -e "  ${DM}4. UDP Port: ${CR}${CY}$bvpn_port${CR}"
     echo -e "  ${DM}   El tráfico de juegos/llamadas pasa por el túnel.${CR}"
 else
     _err "BadVPN no arrancó."

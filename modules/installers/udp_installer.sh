@@ -61,7 +61,7 @@ EOF
 while true; do
     clear
     echo -e "$SEP"
-    echo -e "${WH}      UDP CUSTOM — Protocolo para HTTP Custom      ${CR}"
+    echo -e "${WH}             UDP CUSTOM — Túnel UDP Directo        ${CR}"
     echo -e "$SEP"
     echo -e "  ${DM}Formato de cuenta: ${WH}ip:puerto@usuario:contraseña${CR}"
     echo -e "  ${DM}Escucha en rango de puertos UDP 1-65535${CR}"
@@ -166,7 +166,7 @@ while true; do
         # Servicio systemd
         cat > "$SERVICE_FILE" <<EOF
 [Unit]
-Description=UDP Custom Server (HTTP Custom App)
+Description=UDP Custom Server
 After=network.target
 
 [Service]
@@ -245,12 +245,12 @@ EOF
         echo -e "  ${DM}Usuario   :${CR}  ${CY}$first_user${CR}"
         echo -e "  ${DM}Contraseña:${CR}  ${CY}$first_pass${CR}"
         echo ""
-        echo -e "  ${YL}━━━ CUENTA — Pegar en HTTP Custom ━━━${CR}"
+        echo -e "  ${YL}━━━ DATOS DE CONEXION ━━━${CR}"
         echo ""
         echo -e "  ${GR}$CUENTA${CR}"
         echo ""
-        echo -e "  ${YL}━━━ CÓMO USAR EN HTTP CUSTOM ━━━${CR}"
-        echo -e "  ${DM}1. Abre HTTP Custom${CR}"
+        echo -e "  ${YL}━━━ CONFIGURACION UDP CUSTOM ━━━${CR}"
+        echo -e "  ${DM}1. Activa el modo UDP en el cliente${CR}"
         echo -e "  ${DM}2. Activa la casilla ${WH}☑ UDP Custom${DM} en pantalla principal${CR}"
         echo -e "  ${DM}3. En el campo de cuenta escribe:${CR}"
         echo -e "     ${WH}$SERVER_IP:$udp_port@$first_user:$first_pass${CR}"
@@ -302,7 +302,7 @@ EOF
         echo ""
         echo -e "  ${GR}$CUENTA${CR}"
         echo ""
-        echo -e "  ${DM}Pega esto en HTTP Custom → campo UDP Custom${CR}"
+        echo -e "  ${DM}Ingresa estos datos en el cliente UDP${CR}"
         echo -e "$SEP"
         read -p "$(echo -e ${DM})Presiona Enter para continuar...$(echo -e ${CR})"
         ;;

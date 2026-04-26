@@ -1,36 +1,23 @@
-# 🆓 vpsservice Script FREE
+# VPSService Script - FREE
 
-Suite de administración VPS — Sin licencia, sin verificaciones externas.
-
----
-
-## ⚡ Instalación — Un Solo Comando
-
-### ✅ Con curl (recomendado):
-```bash
-curl -sL https://raw.githubusercontent.com/Juandocoro/Vpsservice-Bash-Free/main/setup.sh -o /tmp/vps.sh && sudo bash /tmp/vps.sh
-```
-
-### ✅ Con wget:
-```bash
-wget -qO /tmp/vps.sh https://raw.githubusercontent.com/Juandocoro/Vpsservice-Bash-Free/main/setup.sh && sudo bash /tmp/vps.sh
-```
-
-> ⚠️ **Nota:** Asegúrate de que el repositorio esté subido y sea público antes de usar estos comandos.
-
-El instalador hace todo automáticamente:
-- ✅ Clona el repositorio en `/opt/vpsservice-free`
-- ✅ Aplica permisos `+x` a todos los archivos
-- ✅ Instala dependencias base (curl, stunnel4, dropbear, python3...)
-- ✅ Activa el monitor de cuotas (cron Auto-Killer)
-- ✅ Registra el comando global `menu`
-- ✅ Abre el panel al terminar
+Panel de administración para servidores VPS en Ubuntu. Instala y configura protocolos de túnel, proxies y servicios VPN desde un menú interactivo en terminal.
 
 ---
 
-## 🔁 Volver al panel después de instalar
+## Instalación
 
-Desde cualquier carpeta en el VPS escribe:
+```bash
+bash <(curl -sL https://raw.githubusercontent.com/Juandocoro/Vpsservice-Bash-Free/main/setup.sh)
+```
+
+El instalador realiza lo siguiente:
+- Clona el repositorio en `/opt/vpsservice-free`
+- Asigna permisos de ejecución a todos los scripts
+- Instala las dependencias base (curl, python3, stunnel4, dropbear)
+- Registra el comando `menu` de forma global
+- Activa el monitor de cuotas (auto-killer por cron)
+
+Una vez instalado, abre el panel desde cualquier directorio del servidor:
 
 ```bash
 menu
@@ -38,32 +25,47 @@ menu
 
 ---
 
-## 📦 Protocolos disponibles
+## Protocolos disponibles
 
 | Categoría | Protocolos |
 |---|---|
-| SSH | Stunnel SSL, UDP/BadVPN, WebSocket, Dropbear |
-| Proxy | SlowDNS, Squid HTTP Proxy |
+| SSH / Túnel | Stunnel SSL, WebSocket, Dropbear |
+| UDP | UDP Custom (1-65535), BadVPN Gateway |
+| Proxy | SlowDNS, Squid |
 | VPN | V2Ray (VMess+WS), Shadowsocks, OpenVPN, WireGuard |
 
 ---
 
-## 🆚 Diferencias vs BASIC
+## Requisitos
 
-| Feature | FREE | BASIC |
-|---|---|---|
-| Key de licencia | ❌ No requiere | ✅ Requerida |
-| Validación externa | ❌ No | ✅ Sí |
-| Protocolos | ✅ 10 | ✅ 3 |
-| Panel con colores | ✅ | ✅ |
-| Auto-Killer | ✅ | ✅ |
-| Actualizaciones OTA | ✅ | ✅ |
+- Ubuntu 20.04 / 22.04 x86_64
+- Acceso root
+- VPS con puertos abiertos
 
 ---
 
-## 🐛 Si el instalador falla
+## FREE vs BASIC
 
-Si el comando da error al clonar:
-1. Verifica que el repo exista: `https://github.com/Juandocoro/Vpsservice-Bash-Free`
-2. Asegúrate que sea **público**
-3. Prueba con el método wget como alternativa
+| Característica | FREE | BASIC |
+|---|---|---|
+| Clave de licencia | No requerida | Requerida |
+| Validación externa | No | Sí |
+| Protocolos | 11 | 3 |
+| Auto-Killer | Sí | Sí |
+| Actualizaciones OTA | Sí | Sí |
+
+---
+
+## Solución de problemas
+
+Si el instalador no puede clonar el repositorio:
+
+1. Confirma que el repo sea público: `https://github.com/Juandocoro/Vpsservice-Bash-Free`
+2. Verifica que el servidor tenga acceso saliente a GitHub
+3. Revisa los logs del instalador para más detalles
+
+---
+
+## Aviso legal
+
+Este proyecto se distribuye con fines educativos y para la administración legítima de servidores VPS. El autor no se responsabiliza por el uso indebido de estas herramientas. El usuario es responsable de cumplir con las leyes y los términos de servicio de su país y proveedor de internet. Este software no contiene puertas traseras, registro de credenciales ni recolección de datos de ningún tipo.
