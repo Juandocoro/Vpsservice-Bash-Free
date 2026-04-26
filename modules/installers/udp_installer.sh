@@ -208,11 +208,11 @@ EOF
         done
 
         # Guardar reglas iptables para que persistan tras reboot
+        mkdir -p /etc/iptables 2>/dev/null
         if command -v iptables-save &>/dev/null; then
-            iptables-save > /etc/iptables/rules.v4 2>/dev/null || \
-            iptables-save > /root/iptables-udpcustom.rules 2>/dev/null
+            iptables-save > /etc/iptables/rules.v4 2>/dev/null
+            _ok "Reglas iptables guardadas en /etc/iptables/rules.v4"
         fi
-        # Compatibilidad con netfilter-persistent
         if command -v netfilter-persistent &>/dev/null; then
             netfilter-persistent save &>/dev/null
         fi
