@@ -127,23 +127,53 @@ function client_data() {
     SERVER_IP=$(curl -s ifconfig.me 2>/dev/null || echo "N/A")
     echo -e "  ${DM}Servidor  :${CR}  ${GR}$SERVER_IP${CR}"
     echo ""
-    [ -n "$PORT_SSH" ]      && echo -e "  ${WH}SSH        :${CR}  puerto ${CY}$PORT_SSH${CR}"
-    [ -n "$PORT_DROPBEAR" ] && echo -e "  ${WH}Dropbear   :${CR}  puerto ${CY}$PORT_DROPBEAR${CR}"
-    [ -n "$PORT_SSL" ]      && echo -e "  ${WH}SSL/Stunnel:${CR}  puerto ${CY}$PORT_SSL${CR}"
-    [ -n "$PORT_WS" ]       && echo -e "  ${WH}WebSocket  :${CR}  puerto ${CY}$PORT_WS${CR}  path: ${DM}/${CR}"
-    [ -n "$PORT_SLOWDNS" ]  && echo -e "  ${WH}SlowDNS    :${CR}  puerto ${CY}$PORT_SLOWDNS${CR}"
-    [ -n "$PORT_SQUID" ]    && echo -e "  ${WH}Squid      :${CR}  puerto ${CY}$PORT_SQUID${CR}"
-    [ -n "$PORT_V2RAY" ]    && echo -e "  ${WH}V2Ray      :${CR}  puerto ${CY}$PORT_V2RAY${CR}  path: ${DM}/v2ray${CR}"
-    [ -n "$PORT_SS" ]       && echo -e "  ${WH}Shadowsocks:${CR}  puerto ${CY}$PORT_SS${CR}  cifrado: ${DM}aes-256-gcm${CR}"
-    [ -n "$PORT_OVPN" ]     && echo -e "  ${WH}OpenVPN    :${CR}  puerto ${CY}$PORT_OVPN${CR}"
-    [ -n "$PORT_WG" ]       && echo -e "  ${WH}WireGuard  :${CR}  puerto ${CY}$PORT_WG${CR}"
+
+    echo -e "  ${YL}[ PROTOCOLOS SSH ]${CR}"
+    [ -n "$PORT_SSH" ]          && echo -e "  ${WH}SSH          :${CR}  ${CY}$PORT_SSH${CR}  (TCP)"
+    [ -n "$PORT_DROPBEAR" ]     && echo -e "  ${WH}Dropbear     :${CR}  ${CY}$PORT_DROPBEAR${CR}  (TCP)"
+    [ -n "$PORT_SSL" ]          && echo -e "  ${WH}SSL/Stunnel  :${CR}  ${CY}$PORT_SSL${CR}  (TCP)"
+    [ -n "$PORT_WS" ]           && echo -e "  ${WH}WebSocket    :${CR}  ${CY}$PORT_WS${CR}  path: ${DM}/${CR}"
+    if [ -n "$PORT_UDPCUSTOM" ]; then
+        echo -e "  ${WH}UDP Custom   :${CR}  ${CY}$PORT_UDPCUSTOM${CR}  ${DM}(túnel UDP directo — sin SSH)${CR}"
+    fi
+    if [ -n "$PORT_BADVPN" ]; then
+        echo -e "  ${WH}BadVPN       :${CR}  ${DM}127.0.0.1:${CR}${CY}$PORT_BADVPN${CR}  ${DM}(juegos/llamadas via SSH)${CR}"
+    fi
     echo ""
-    echo -e "  ${YL}--- PAYLOAD HTTP INJECTOR (WebSocket) ---${CR}"
+
+    echo -e "  ${YL}[ PROTOCOLOS PROXY / VPN ]${CR}"
+    [ -n "$PORT_SLOWDNS" ]      && echo -e "  ${WH}SlowDNS      :${CR}  ${CY}$PORT_SLOWDNS${CR}"
+    [ -n "$PORT_SQUID" ]        && echo -e "  ${WH}Squid        :${CR}  ${CY}$PORT_SQUID${CR}"
+    [ -n "$PORT_V2RAY" ]        && echo -e "  ${WH}V2Ray VMess  :${CR}  ${CY}$PORT_V2RAY${CR}  path: ${DM}/v2ray${CR}"
+    [ -n "$PORT_SS" ]           && echo -e "  ${WH}Shadowsocks  :${CR}  ${CY}$PORT_SS${CR}  ${DM}aes-256-gcm${CR}"
+    [ -n "$PORT_OVPN" ]         && echo -e "  ${WH}OpenVPN      :${CR}  ${CY}$PORT_OVPN${CR}  (UDP)"
+    [ -n "$PORT_WG" ]           && echo -e "  ${WH}WireGuard    :${CR}  ${CY}$PORT_WG${CR}  (UDP)"
+    echo ""
+
+    echo -e "  ${YL}━━━ PAYLOAD HTTP INJECTOR (WebSocket/SSH) ━━━${CR}"
     echo -e "  ${DM}GET / HTTP/1.1[crlf]${CR}"
-    echo -e "  ${DM}Host: [host][crlf]${CR}"
+    echo -e "  ${DM}Host: ${SERVER_IP}[crlf]${CR}"
     echo -e "  ${DM}Upgrade: websocket[crlf]${CR}"
     echo -e "  ${DM}Connection: Upgrade[crlf]${CR}"
     echo -e "  ${DM}[crlf]${CR}"
+    echo ""
+
+    if [ -n "$PORT_UDPCUSTOM" ]; then
+        echo -e "  ${YL}━━━ UDP CUSTOM — HTTP Injector/HTTP Custom ━━━${CR}"
+        echo -e "  ${DM}Tunnel Type: UDP${CR}"
+        echo -e "  ${DM}Server     : ${CR}${WH}$SERVER_IP${CR}"
+        echo -e "  ${DM}Port       : ${CR}${CY}$PORT_UDPCUSTOM${CR}  (NO requiere SSH)${CR}"
+        echo ""
+    fi
+
+    if [ -n "$PORT_BADVPN" ]; then
+        echo -e "  ${YL}━━━ BADVPN — Juegos y Llamadas via SSH ━━━${CR}"
+        echo -e "  ${DM}1. Conecta primero por SSH (puerto ${CY}$PORT_SSH${DM})${CR}"
+        echo -e "  ${DM}2. Settings → UDP Custom → Enable${CR}"
+        echo -e "  ${DM}3. Host: ${CR}${WH}127.0.0.1${CR}  ${DM}Port: ${CR}${CY}$PORT_BADVPN${CR}"
+        echo ""
+    fi
+
     echo -e "$SEP"
     read -p "$(echo -e ${DM})Presiona Enter para volver...$(echo -e ${CR})"
 }
@@ -162,26 +192,27 @@ function sub_menu_installers() {
         echo -e "$SEP"
         echo -e "${WH}       FÁBRICA DE TÚNELES & PROXIES${CR}"
         echo -e "$SEP"
-        echo -e "  ${YL}-- PROTOCOLOS SSH --${CR}"
-        echo -e "  ${CY}1)${CR}  ${WH}Stunnel SSL${CR}    $(_tag "$PORT_SSL")"
-        echo -e "  ${CY}2)${CR}  ${WH}UDP/BadVPN${CR}     $(_tag "$PORT_UDP")"
-        echo -e "  ${CY}3)${CR}  ${WH}WebSocket${CR}      $(_tag "$PORT_WS")"
-        echo -e "  ${CY}4)${CR}  ${WH}Dropbear${CR}       $(_tag "$PORT_DROPBEAR")"
+        echo -e "  ${YL}-- PROTOCOLOS SSH / TÚNEL --${CR}"
+        echo -e "  ${CY}1)${CR}  ${WH}Stunnel SSL${CR}         $(_tag "$PORT_SSL")"
+        echo -e "  ${CY}2)${CR}  ${WH}UDP Custom${CR}  ${DM}(túnel UDP directo)${CR}  $(_tag "$PORT_UDPCUSTOM")"
+        echo -e "  ${CY}3)${CR}  ${WH}BadVPN${CR}      ${DM}(juegos/llamadas+SSH)${CR} $(_tag "$PORT_BADVPN")"
+        echo -e "  ${CY}4)${CR}  ${WH}WebSocket${CR}           $(_tag "$PORT_WS")"
+        echo -e "  ${CY}5)${CR}  ${WH}Dropbear${CR}            $(_tag "$PORT_DROPBEAR")"
         echo ""
         echo -e "  ${YL}-- PROTOCOLOS PROXY --${CR}"
-        echo -e "  ${CY}5)${CR}  ${WH}SlowDNS${CR}        $(_tag "$PORT_SLOWDNS")"
-        echo -e "  ${CY}6)${CR}  ${WH}Squid Proxy${CR}    $(_tag "$PORT_SQUID")"
+        echo -e "  ${CY}6)${CR}  ${WH}SlowDNS${CR}             $(_tag "$PORT_SLOWDNS")"
+        echo -e "  ${CY}7)${CR}  ${WH}Squid Proxy${CR}         $(_tag "$PORT_SQUID")"
         echo ""
         echo -e "  ${YL}-- PROTOCOLOS VPN --${CR}"
-        echo -e "  ${CY}7)${CR}  ${WH}V2Ray${CR}          $(_tag "$PORT_V2RAY")"
-        echo -e "  ${CY}8)${CR}  ${WH}Shadowsocks${CR}    $(_tag "$PORT_SS")"
-        echo -e "  ${CY}9)${CR}  ${WH}OpenVPN${CR}        $(_tag "$PORT_OVPN")"
-        echo -e " ${CY}10)${CR}  ${WH}WireGuard${CR}      $(_tag "$PORT_WG")"
+        echo -e "  ${CY}8)${CR}   ${WH}V2Ray${CR}              $(_tag "$PORT_V2RAY")"
+        echo -e "  ${CY}9)${CR}   ${WH}Shadowsocks${CR}        $(_tag "$PORT_SS")"
+        echo -e " ${CY}10)${CR}   ${WH}OpenVPN${CR}            $(_tag "$PORT_OVPN")"
+        echo -e " ${CY}11)${CR}   ${WH}WireGuard${CR}          $(_tag "$PORT_WG")"
         echo ""
         echo -e "  ${CY}C)${CR}  ${WH}Ver Datos de Conexión (clientes)${CR}"
         echo -e "  ${CY}0)${CR}  ${WH}Retroceder${CR}"
         echo -e "$SEP"
-        read -p "$(echo -e ${DM})Elige una opción [0-10 | C]: $(echo -e ${CR})" op
+        read -p "$(echo -e ${DM})Elige una opción [0-11 | C]: $(echo -e ${CR})" op
 
         _run() {
             if [ -x "$DIR/modules/installers/$1" ]; then
@@ -195,14 +226,15 @@ function sub_menu_installers() {
         case $op in
             1)  _run "stunnel_installer.sh" ;;
             2)  _run "udp_installer.sh" ;;
-            3)  _run "websocket_installer.sh" ;;
-            4)  _run "dropbear_installer.sh" ;;
-            5)  _run "slowdns_installer.sh" ;;
-            6)  _run "squid_installer.sh" ;;
-            7)  _run "v2ray_installer.sh" ;;
-            8)  _run "shadowsocks_installer.sh" ;;
-            9)  _run "openvpn_installer.sh" ;;
-            10) _run "wireguard_installer.sh" ;;
+            3)  _run "badvpn_installer.sh" ;;
+            4)  _run "websocket_installer.sh" ;;
+            5)  _run "dropbear_installer.sh" ;;
+            6)  _run "slowdns_installer.sh" ;;
+            7)  _run "squid_installer.sh" ;;
+            8)  _run "v2ray_installer.sh" ;;
+            9)  _run "shadowsocks_installer.sh" ;;
+            10) _run "openvpn_installer.sh" ;;
+            11) _run "wireguard_installer.sh" ;;
             [Cc]) client_data ;;
             0) break ;;
             *) echo -e "  ${RD}[-]${CR} Opción no válida."; sleep 1 ;;
