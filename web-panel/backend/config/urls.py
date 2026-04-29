@@ -7,6 +7,7 @@ from django.contrib import admin
 from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
+from django.http import JsonResponse
 from rest_framework_simplejwt.views import (
     TokenObtainPairView,      # Obtener token JWT (login)
     TokenRefreshView,         # Refrescar token JWT
@@ -25,18 +26,15 @@ urlpatterns = [
     path('api/auth/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),      # POST: obtener token
     path('api/auth/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),    # POST: refrescar token
 
+    # ===== HEALTHCHECK =====
+    path('api/health/', lambda request: JsonResponse({'status': 'ok'})),
+
     # ===== API REST =====
     # Usuarios SSH
     path('api/users/', include('apps.users.urls')),              # Gestión de usuarios
 
     # Protocolos (Stunnel, OpenVPN, V2Ray, etc)
     path('api/protocols/', include('apps.protocols.urls')),      # Gestión de protocolos
-
-    # Información del servidor
-    path('api/servers/', include('apps.servers.urls')),          # Estado del VPS
-
-    # Dashboard y estadísticas
-    path('api/dashboard/', include('apps.dashboard.urls')),      # Información general
 ]
 
 # ===================================================================

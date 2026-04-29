@@ -1,24 +1,23 @@
+from datetime import date, timedelta
+
 from django.test import TestCase
-from .models import User
+
+from .models import SSHUser
 
 
-class UserModelTests(TestCase):
-    """Test cases para el modelo User"""
-
+class SSHUserModelTests(TestCase):
     def setUp(self):
-        """Configurar datos de prueba"""
-        self.user = User.objects.create_user(
+        self.user = SSHUser.objects.create(
             username='testuser',
-            password='testpass123',
-            max_connections=2
+            max_connections=2,
+            expiry_date=date.today() + timedelta(days=30),
+            created_by='tests',
         )
 
     def test_user_creation(self):
-        """Test que se crea un usuario correctamente"""
         self.assertEqual(self.user.username, 'testuser')
-        self.assertEqual(self.user.connection_limit, 2)
-        self.assertIsNotNone(self.user.password_hash)
+        self.assertEqual(self.user.max_connections, 2)
+        self.assertTrue(self.user.is_active)
 
     def test_user_string_representation(self):
-        """Test la representación en string del usuario"""
-        self.assertEqual(str(self.user), 'testuser')
+        self.assertIn('testuser', str(self.user))

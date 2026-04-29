@@ -47,22 +47,11 @@ class SSHUserSerializer(serializers.ModelSerializer):
 # ===================================================================
 # SERIALIZER: Crear/Actualizar Usuario SSH
 # ===================================================================
-class SSHUserCreateUpdateSerializer(serializers.ModelSerializer):
-    """
-    Serializer para crear y actualizar usuarios.
-    Incluye validaciones de datos.
-    """
+class SSHUserCreateSerializer(serializers.ModelSerializer):
+    """Serializer para crear usuarios SSH (requiere contraseña)."""
 
-    password = serializers.CharField(
-        write_only=True,  # Solo se escribe, no se lee
-        min_length=8,
-        help_text="Contraseña para el usuario (mínimo 8 caracteres)"
-    )
-
-    confirm_password = serializers.CharField(
-        write_only=True,
-        help_text="Confirmar contraseña"
-    )
+    password = serializers.CharField(write_only=True, min_length=8)
+    confirm_password = serializers.CharField(write_only=True)
 
     class Meta:
         model = SSHUser
@@ -76,39 +65,39 @@ class SSHUserCreateUpdateSerializer(serializers.ModelSerializer):
         ]
 
     def validate(self, data):
-        """
-        Validaciones personalizadas:
-        - Las contraseñas coinciden
-        - El nombre de usuario es válido
-        """
-
-        # Verificar que las contraseñas coincidan
-        if data['password'] != data.pop('confirm_password'):
+        if data['password'] != data['confirm_password']:
             raise serializers.ValidationError("Las contraseñas no coinciden")
 
-        # Validar nombre de usuario (solo letras, números, guiones)
         username = data.get('username', '')
         if not username.replace('_', '').isalnum():
-            raise serializers.ValidationError("El nombre de usuario solo puede contener letras, números y guiones")
-
+            raise serializers.ValidationError(
+                "El nombre de usuario solo puede contener letras, números y guiones"
+            )
         return data
 
     def create(self, validated_data):
-        """
-        Crear nuevo usuario:
-        1. Validar datos
-        2. Crear usuario en BD
-        3. Ejecutar comando SSH para crear en servidor
-        """
-
         password = validated_data.pop('password')
+        validated_data.pop('confirm_password', None)
         user = SSHUser.objects.create(**validated_data)
 
-        # TODO: Aquí irá el código para conectar por SSH y crear el usuario
-        # Ejemplo: SSHClient().execute(f"useradd -m {user.username}")
-        # Y luego: SSHClient().execute(f"echo '{user.username}:{password}' | chpasswd")
+        # TODO: Conectar por SSH y crear el usuario real en el VPS.
+        # Ej: useradd -m {user.username} ; echo '{user.username}:{password}' | chpasswd
 
+        _ = password
         return user
+
+
+class SSHUserUpdateSerializer(serializers.ModelSerializer):
+    """Serializer para actualizar campos NO sensibles del usuario."""
+
+    class Meta:
+        model = SSHUser
+        fields = [
+            'max_connections',
+            'expiry_date',
+            'notes',
+            'is_active',
+        ]
 
 
 # ===================================================================

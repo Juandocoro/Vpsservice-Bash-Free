@@ -19,9 +19,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # 2. SEGURIDAD - SECRET KEY Y DEBUG
 # ===================================================================
 # ⚠️ IMPORTANTE: En producción, usar variables de entorno
-SECRET_KEY = config('DJANGO_SECRET_KEY', default='dev-secret-key-change-in-production')
+SECRET_KEY = config('SECRET_KEY', default='dev-secret-key-change-in-production')
 DEBUG = config('DEBUG', default=True, cast=bool)
-ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='*').split(',')
+ALLOWED_HOSTS = [h.strip() for h in config('ALLOWED_HOSTS', default='localhost,127.0.0.1,0.0.0.0').split(',') if h.strip()]
 
 # ===================================================================
 # 3. APLICACIONES INSTALADAS
@@ -39,12 +39,11 @@ INSTALLED_APPS = [
     'rest_framework',                    # API REST
     'corsheaders',                       # CORS para frontend
     'rest_framework_simplejwt',          # Autenticación JWT
+    'django_filters',                    # Filtros para DRF
 
     # Aplicaciones propias
     'apps.users',                        # Gestión de usuarios SSH
     'apps.protocols',                    # Gestión de protocolos (Stunnel, OpenVPN, etc)
-    'apps.servers',                      # Información del servidor
-    'apps.dashboard',                    # Dashboard y estadísticas
 ]
 
 # ===================================================================
@@ -93,25 +92,25 @@ WSGI_APPLICATION = 'config.wsgi.application'
 # ===================================================================
 # 8. BASE DE DATOS
 # ===================================================================
-# OPCIÓN 1: SQLite (desarrollo)
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+DB_ENGINE = config('DB_ENGINE', default='django.db.backends.sqlite3')
+if DB_ENGINE == 'django.db.backends.postgresql':
+    DATABASES = {
+        'default': {
+            'ENGINE': DB_ENGINE,
+            'NAME': config('DB_NAME', default='vpsservice_db'),
+            'USER': config('DB_USER', default='vpsservice_user'),
+            'PASSWORD': config('DB_PASSWORD', default='vpsservice_password'),
+            'HOST': config('DB_HOST', default='localhost'),
+            'PORT': config('DB_PORT', default='5432'),
+        }
     }
-}
-
-# OPCIÓN 2: PostgreSQL (producción)
-# DATABASES = {
-#     'default': {
-#         'ENGINE': 'django.db.backends.postgresql',
-#         'NAME': config('DB_NAME', default='vpsservice'),
-#         'USER': config('DB_USER', default='postgres'),
-#         'PASSWORD': config('DB_PASSWORD'),
-#         'HOST': config('DB_HOST', default='localhost'),
-#         'PORT': config('DB_PORT', default='5432'),
-#     }
-# }
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+        }
+    }
 
 # ===================================================================
 # 9. AUTENTICACIÓN Y CONTRASEÑAS
@@ -205,13 +204,9 @@ LOGGING = {
         'console': {
             'class': 'logging.StreamHandler',
         },
-        'file': {
-            'class': 'logging.FileHandler',
-            'filename': BASE_DIR / 'logs/django.log',
-        },
     },
     'root': {
-        'handlers': ['console', 'file'],
+        'handlers': ['console'],
         'level': 'INFO',
     },
 }

@@ -21,7 +21,7 @@ function Dashboard() {
   const [sidebarOpen, setSidebarOpen] = useState(true)
 
   // Store de autenticación
-  const { currentUser, logout } = useAuthStore()
+  const { user, logout } = useAuthStore()
 
   // Manejar logout
   const handleLogout = () => {
@@ -101,7 +101,7 @@ function Dashboard() {
           {sidebarOpen && (
             <div className="bg-gray-700 p-3 rounded-lg">
               <p className="text-xs text-gray-400">Conectado como</p>
-              <p className="font-medium text-white truncate">{currentUser?.username}</p>
+              <p className="font-medium text-white truncate">{user?.username || '—'}</p>
             </div>
           )}
 

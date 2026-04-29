@@ -8,19 +8,20 @@ class ProtocolModelTests(TestCase):
     def setUp(self):
         """Configurar datos de prueba"""
         self.protocol = Protocol.objects.create(
-            name='Test Protocol',
-            service_name='test_service',
+            name='stunnel',
             port=8080,
-            status='running'
+            protocol_type='tcp',
+            is_installed=True,
+            is_active=True,
         )
 
     def test_protocol_creation(self):
         """Test que se crea un protocolo correctamente"""
-        self.assertEqual(self.protocol.name, 'Test Protocol')
-        self.assertEqual(self.protocol.service_name, 'test_service')
+        self.assertEqual(self.protocol.name, 'stunnel')
         self.assertEqual(self.protocol.port, 8080)
-        self.assertEqual(self.protocol.status, 'running')
+        self.assertTrue(self.protocol.is_installed)
+        self.assertTrue(self.protocol.is_active)
 
     def test_protocol_string_representation(self):
         """Test la representación en string del protocolo"""
-        self.assertEqual(str(self.protocol), 'Test Protocol (test_service)')
+        self.assertIn('Stunnel', str(self.protocol))

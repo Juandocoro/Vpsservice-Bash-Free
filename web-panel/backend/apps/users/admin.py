@@ -1,31 +1,25 @@
 from django.contrib import admin
-from .models import User
+
+from .models import SSHUser, UserAccessLog
 
 
-@admin.register(User)
-class UserAdmin(admin.ModelAdmin):
-    """Configuración del admin para el modelo User"""
-    
-    list_display = ('username', 'expiration_date', 'connection_limit', 'date_created')
-    list_filter = ('date_created', 'date_modified')
-    search_fields = ('username',)
-    readonly_fields = ('date_created', 'date_modified', 'password_hash')
-    
-    fieldsets = (
-        ('Información Básica', {
-            'fields': ('username', 'password_hash')
-        }),
-        ('Límites', {
-            'fields': ('connection_limit', 'expiration_date')
-        }),
-        ('Metadata', {
-            'fields': ('date_created', 'date_modified'),
-            'classes': ('collapse',)
-        }),
+@admin.register(SSHUser)
+class SSHUserAdmin(admin.ModelAdmin):
+    list_display = (
+        'username',
+        'is_active',
+        'max_connections',
+        'expiry_date',
+        'created_date',
     )
+    list_filter = ('is_active', 'expiry_date', 'created_date')
+    search_fields = ('username', 'notes', 'created_by')
+    readonly_fields = ('created_date', 'last_updated', 'password_changed_date')
 
-    def get_readonly_fields(self, request, obj=None):
-        """Solo lectura en ciertos campos"""
-        if obj:  # Editar
-            return self.readonly_fields + ('username',)
-        return self.readonly_fields
+
+@admin.register(UserAccessLog)
+class UserAccessLogAdmin(admin.ModelAdmin):
+    list_display = ('user', 'timestamp', 'ip_address', 'success', 'status')
+    list_filter = ('success', 'status', 'timestamp')
+    search_fields = ('user__username', 'ip_address')
+    readonly_fields = ('timestamp',)

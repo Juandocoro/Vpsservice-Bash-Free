@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useUsersStore } from '../store'
-import UsersList from '../components/UsersList'
+import { UsersList } from '../components/UsersList'
 import UserForm from '../components/UserForm'
 
 /**
@@ -19,29 +19,16 @@ function UsersPage() {
   // State para mostrar/ocultar modal de crear usuario
   const [showForm, setShowForm] = useState(false)
   const [editingUser, setEditingUser] = useState<any | null>(null)
-  const [loading, setLoading] = useState(false)
 
   // Store de usuarios
-  const { users, fetchUsers, setNotification } = useUsersStore()
+  const { users, fetchUsers, loading } = useUsersStore()
 
   // Cargar usuarios al montar el componente
   useEffect(() => {
-    const loadUsers = async () => {
-      setLoading(true)
-      try {
-        await fetchUsers()
-      } catch (error) {
-        console.error('Error loading users:', error)
-        setNotification({
-          type: 'error',
-          message: 'Error al cargar usuarios',
-        })
-      } finally {
-        setLoading(false)
-      }
-    }
-    loadUsers()
-  }, [fetchUsers, setNotification])
+    fetchUsers().catch((error) => {
+      console.error('Error loading users:', error)
+    })
+  }, [fetchUsers])
 
   // Manejar crear nuevo usuario
   const handleNewUser = () => {
@@ -124,7 +111,7 @@ function UsersPage() {
           </button>
         </div>
       ) : (
-        <UsersList onEditUser={handleEditUser} />
+        <UsersList onSelectUser={handleEditUser} />
       )}
 
       {/* Estadísticas */}
@@ -137,13 +124,13 @@ function UsersPage() {
           <div className="card">
             <div className="text-gray-400 text-sm mb-1">Activos</div>
             <div className="text-3xl font-bold text-green-400">
-              {users.filter(u => new Date(u.expiration_date) > new Date()).length}
+              {users.filter(u => new Date(u.expiry_date) > new Date()).length}
             </div>
           </div>
           <div className="card">
             <div className="text-gray-400 text-sm mb-1">Expirados</div>
             <div className="text-3xl font-bold text-red-400">
-              {users.filter(u => new Date(u.expiration_date) <= new Date()).length}
+              {users.filter(u => new Date(u.expiry_date) <= new Date()).length}
             </div>
           </div>
         </div>

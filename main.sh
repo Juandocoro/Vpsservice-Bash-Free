@@ -261,21 +261,50 @@ function enable_web_panel() {
     echo -e "${WH}           HABILITAR PANEL WEB — Web UI${CR}"
     echo -e "$SEP"
 
-    # Preguntar si ya existe la carpeta web-panel
-    if [ ! -d "$DIR/web-panel" ]; then
-        echo -e "  ${YL}[*]${CR} No se encontró la carpeta web-panel en: $DIR/web-panel"
-        echo -e "  ${DM}Clonando o creando estructura local...${CR}"
-        mkdir -p "$DIR/web-panel"
+    # 1) Asegurar que existe el panel web (permite instalar el manager primero,
+    # y descargar el panel después desde SSH)
+    if [ ! -x "$DIR/web-panel/deploy_web_panel.sh" ]; then
+        echo -e "  ${YL}[*]${CR} Panel web no encontrado localmente. Intentando descargar la carpeta web-panel..."
+
+        if ! command -v curl >/dev/null 2>&1; then
+            echo -e "  ${RD}[-]${CR} Falta 'curl'. Instálalo y reintenta. (apt-get install -y curl)"
+            read -p "Presiona Enter para volver..."
+            return
+        fi
+        if ! command -v tar >/dev/null 2>&1; then
+            echo -e "  ${RD}[-]${CR} Falta 'tar'. Instálalo y reintenta. (apt-get install -y tar)"
+            read -p "Presiona Enter para volver..."
+            return
+        fi
+
+        TMP_DIR=$(mktemp -d)
+        PANEL_ARCHIVE_URL="https://github.com/Juandocoro/Vpsservice-Bash-Free/archive/refs/heads/panel.tar.gz"
+        if curl -fsSL "$PANEL_ARCHIVE_URL" -o "$TMP_DIR/panel.tar.gz"; then
+            tar -xzf "$TMP_DIR/panel.tar.gz" -C "$TMP_DIR"
+            SRC_DIR=$(find "$TMP_DIR" -maxdepth 1 -type d -name "Vpsservice-Bash-Free-panel*" | head -n 1)
+            if [ -n "$SRC_DIR" ] && [ -d "$SRC_DIR/web-panel" ]; then
+                rm -rf "$DIR/web-panel" 2>/dev/null || true
+                cp -a "$SRC_DIR/web-panel" "$DIR/"
+                chmod -R +x "$DIR/web-panel" 2>/dev/null || true
+                echo -e "  ${GR}[+]${CR} Panel web descargado en: $DIR/web-panel"
+            else
+                echo -e "  ${RD}[-]${CR} No se pudo localizar 'web-panel' dentro del paquete descargado."
+                rm -rf "$TMP_DIR" 2>/dev/null || true
+                read -p "Presiona Enter para volver..."
+                return
+            fi
+        else
+            echo -e "  ${RD}[-]${CR} No se pudo descargar el panel desde GitHub."
+            rm -rf "$TMP_DIR" 2>/dev/null || true
+            read -p "Presiona Enter para volver..."
+            return
+        fi
+        rm -rf "$TMP_DIR" 2>/dev/null || true
     fi
 
-    # Ejecutar el instalador/deploy script dentro de web-panel
-    if [ -x "$DIR/web-panel/deploy_web_panel.sh" ]; then
-        sudo "$DIR/web-panel/deploy_web_panel.sh"
-    else
-        echo -e "  ${RD}[-]${CR} Instalador del panel web no encontrado o no ejecutable: $DIR/web-panel/deploy_web_panel.sh"
-        echo -e "  ${DM}Puedes crear el script y volver a intentar.${CR}"
-        read -p "Presiona Enter para volver..."
-    fi
+    # 2) Ejecutar el instalador/deploy script dentro de web-panel
+    echo -e "  ${YL}[*]${CR} Iniciando instalador del panel web..."
+    sudo "$DIR/web-panel/deploy_web_panel.sh"
     sleep 1
 }
 
@@ -304,7 +333,7 @@ function show_menu() {
     echo -e "  ${CY}5)${CR}  ${WH}Habilitar Panel Web (Web UI)${CR}"
     echo -e "  ${CY}0)${CR}  ${WH}Salir${CR}"
     echo -e "$SEP"
-    read -p "$(echo -e ${DM})Digita una acción [0-4]: $(echo -e ${CR})" opcion
+    read -p "$(echo -e ${DM})Digita una acción [0-5]: $(echo -e ${CR})" opcion
 
     case $opcion in
         1) users_menu ;;

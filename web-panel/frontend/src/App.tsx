@@ -13,20 +13,21 @@ import Dashboard from './pages/Dashboard'
  * - Gestiona el estado global de autenticación
  */
 function App() {
-  const { isAuthenticated, currentUser } = useAuthStore()
+  const { isAuthenticated } = useAuthStore()
 
   // Cargar token del localStorage al iniciar
   useEffect(() => {
-    const token = localStorage.getItem('access_token')
-    if (token && !currentUser) {
-      // Intentar restaurar sesión
-      console.log('Sesión restaurada desde token')
+    const token = localStorage.getItem('accessToken')
+    if (token) {
+      // El APIService ya carga tokens del localStorage.
+      // Este efecto se deja solo como “sanity check” visual.
+      console.log('Sesión detectada desde token')
     }
-  }, [currentUser])
+  }, [])
 
   return (
     <div className="min-h-screen bg-gray-900">
-      {isAuthenticated && currentUser ? (
+      {isAuthenticated ? (
         // Usuario autenticado: mostrar dashboard
         <Dashboard />
       ) : (

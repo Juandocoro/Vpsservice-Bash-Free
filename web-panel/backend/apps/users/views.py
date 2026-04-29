@@ -14,7 +14,8 @@ from datetime import timedelta
 from .models import SSHUser, UserAccessLog
 from .serializers import (
     SSHUserSerializer,
-    SSHUserCreateUpdateSerializer,
+    SSHUserCreateSerializer,
+    SSHUserUpdateSerializer,
     UserAccessLogSerializer,
 )
 
@@ -50,8 +51,10 @@ class SSHUserViewSet(viewsets.ModelViewSet):
         - create/update: serializer con validaciones
         - list/retrieve: serializer de lectura
         """
-        if self.action in ['create', 'update', 'partial_update']:
-            return SSHUserCreateUpdateSerializer
+        if self.action == 'create':
+            return SSHUserCreateSerializer
+        if self.action in ['update', 'partial_update']:
+            return SSHUserUpdateSerializer
         return SSHUserSerializer
 
     # ===== LISTAR USUARIOS =====
@@ -75,19 +78,12 @@ class SSHUserViewSet(viewsets.ModelViewSet):
 
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-
-        # TODO: Aquí iría la lógica para conectar por SSH
-        # ssh_client = SSHConnection()
-        # ssh_client.create_user(serializer.validated_data['username'], password)
-
         self.perform_create(serializer)
-        headers = self.get_success_headers(serializer.data)
 
-        return Response(
-            serializer.data,
-            status=status.HTTP_201_CREATED,
-            headers=headers
-        )
+        instance = serializer.instance
+        read_serializer = SSHUserSerializer(instance)
+        headers = self.get_success_headers(read_serializer.data)
+        return Response(read_serializer.data, status=status.HTTP_201_CREATED, headers=headers)
 
     # ===== ACTUALIZAR USUARIO =====
     def update(self, request, *args, **kwargs):
@@ -95,7 +91,9 @@ class SSHUserViewSet(viewsets.ModelViewSet):
         PUT /api/users/{id}/
         Actualizar datos del usuario (excepto nombre, que es única).
         """
-        return super().update(request, *args, **kwargs)
+        response = super().update(request, *args, **kwargs)
+        instance = self.get_object()
+        return Response(SSHUserSerializer(instance).data, status=response.status_code)
 
     # ===== ELIMINAR USUARIO =====
     def destroy(self, request, *args, **kwargs):
@@ -128,11 +126,10 @@ class SSHUserViewSet(viewsets.ModelViewSet):
         user.is_active = not user.is_active
         user.save()
 
-        serializer = self.get_serializer(user)
-        return Response(serializer.data)
+        return Response(SSHUserSerializer(user).data)
 
     # ===== ACCIÓN PERSONALIZADA: Ver Logs de Acceso =====
-    @action(detail=True, methods=['get'])
+    @action(detail=True, methods=['get'], url_path='access-logs')
     def access_logs(self, request, pk=None):
         """
         GET /api/users/{id}/access-logs/
