@@ -92,7 +92,7 @@ function update_script() {
     echo -e "$SEP"
     echo -e "  ${YL}[*]${CR} Buscando nuevas versiones en GitHub..."
     echo ""
-    git fetch origin main &>/dev/null
+    git fetch origin panel &>/dev/null
     LOCAL=$(git rev-parse --short HEAD 2>/dev/null)
     REMOTE=$(git rev-parse --short FETCH_HEAD 2>/dev/null)
     [ -z "$LOCAL" ]  && LOCAL="Desconocida"
@@ -106,14 +106,14 @@ function update_script() {
     else
         echo -e "  ${YL}[!]${CR} Nueva actualización encontrada."
         echo -e "  ${YL}[*]${CR} Actualizando de forma segura (fast-forward)..."
-        if git pull --ff-only origin main &>/dev/null; then
+        if git pull --ff-only origin panel &>/dev/null; then
             chmod -R +x "$DIR" 2>/dev/null
             echo -e "  ${GR}[+]${CR} Actualizado correctamente. Reiniciando..."
             sleep 2
             exec "$DIR/main.sh"
         else
             echo -e "  ${RD}[-]${CR} No se pudo actualizar (cambios locales detectados)."
-            echo -e "  ${DM}    Usa: git stash && git pull origin main${CR}"
+            echo -e "  ${DM}    Usa: git stash && git pull origin panel${CR}"
             read -p "$(echo -e ${DM})Presiona Enter para volver...$(echo -e ${CR})"
         fi
     fi
