@@ -6,8 +6,23 @@ Panel de administración para servidores VPS en Ubuntu. Instala y configura prot
 
 ## Instalación
 
+### Descargar según rama
+
+- `main`: versión estable del panel por terminal
+- `beta`: versión con correcciones y pruebas de seguridad
+- `panel`: versión visual con carpeta `web-panel/`
+
 ```bash
 bash <(curl -sL https://raw.githubusercontent.com/Juandocoro/Vpsservice-Bash-Free/main/setup.sh)
+```
+
+Si quieres instalar una rama específica, cambia `main` por `beta` o `panel` en la URL anterior.
+
+Ejemplos:
+
+```bash
+bash <(curl -sL https://raw.githubusercontent.com/Juandocoro/Vpsservice-Bash-Free/beta/setup.sh)
+bash <(curl -sL https://raw.githubusercontent.com/Juandocoro/Vpsservice-Bash-Free/panel/setup.sh)
 ```
 
 El instalador realiza lo siguiente:
@@ -63,6 +78,12 @@ Si el instalador no puede clonar el repositorio:
 1. Confirma que el repo sea público: `https://github.com/Juandocoro/Vpsservice-Bash-Free`
 2. Verifica que el servidor tenga acceso saliente a GitHub
 3. Revisa los logs del instalador para más detalles
+
+### Enlaces por rama
+
+- Estable: https://raw.githubusercontent.com/Juandocoro/Vpsservice-Bash-Free/main/setup.sh
+- Beta: https://raw.githubusercontent.com/Juandocoro/Vpsservice-Bash-Free/beta/setup.sh
+- Panel: https://raw.githubusercontent.com/Juandocoro/Vpsservice-Bash-Free/panel/setup.sh
 
 ---
 
