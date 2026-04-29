@@ -250,6 +250,35 @@ function sub_menu_installers() {
 # =========================================================
 # MENÚ PRINCIPAL
 # =========================================================
+
+# =========================================================
+# HABILITAR PANEL WEB
+# =========================================================
+function enable_web_panel() {
+    clear
+    print_title
+    echo -e "$SEP"
+    echo -e "${WH}           HABILITAR PANEL WEB — Web UI${CR}"
+    echo -e "$SEP"
+
+    # Preguntar si ya existe la carpeta web-panel
+    if [ ! -d "$DIR/web-panel" ]; then
+        echo -e "  ${YL}[*]${CR} No se encontró la carpeta web-panel en: $DIR/web-panel"
+        echo -e "  ${DM}Clonando o creando estructura local...${CR}"
+        mkdir -p "$DIR/web-panel"
+    fi
+
+    # Ejecutar el instalador/deploy script dentro de web-panel
+    if [ -x "$DIR/web-panel/deploy_web_panel.sh" ]; then
+        sudo "$DIR/web-panel/deploy_web_panel.sh"
+    else
+        echo -e "  ${RD}[-]${CR} Instalador del panel web no encontrado o no ejecutable: $DIR/web-panel/deploy_web_panel.sh"
+        echo -e "  ${DM}Puedes crear el script y volver a intentar.${CR}"
+        read -p "Presiona Enter para volver..."
+    fi
+    sleep 1
+}
+
 function show_menu() {
     clear
     print_title
@@ -272,6 +301,7 @@ function show_menu() {
     echo -e "  ${CY}2)${CR}  ${WH}Instalación de Protocolos${CR}"
     echo -e "  ${CY}3)${CR}  ${WH}Arranque Automático      ${CR}  $AUTO_TAG"
     echo -e "  ${CY}4)${CR}  ${WH}Actualizar${CR}"
+    echo -e "  ${CY}5)${CR}  ${WH}Habilitar Panel Web (Web UI)${CR}"
     echo -e "  ${CY}0)${CR}  ${WH}Salir${CR}"
     echo -e "$SEP"
     read -p "$(echo -e ${DM})Digita una acción [0-4]: $(echo -e ${CR})" opcion
@@ -281,6 +311,7 @@ function show_menu() {
         2) sub_menu_installers ;;
         3) toggle_autostart ;;
         4) update_script ;;
+        5) enable_web_panel ;;
         0) clear; echo -e "${DM}Saliendo... (escribe 'menu' para volver)${CR}"; exit 0 ;;
         *) echo -e "  ${RD}[-]${CR} Opción no reconocida."; sleep 1; show_menu ;;
     esac
