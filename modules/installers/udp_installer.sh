@@ -224,8 +224,11 @@ EOF
         fi
 
         SERVER_IP=$(curl -s ifconfig.me 2>/dev/null || echo "TU_IP")
-        CUENTA="${SERVER_IP}:${INTERNAL_PORT}@${first_user}:${first_pass}"
-
+        # CORRECCIÓN: UDP Custom usa puerto TCP interno internamente, pero escucha TODOS los UDP
+        # por lo que el cliente debe usar:
+        # Formato: servidor_ip:puerto_udp@usuario:pass
+        # Donde puerto_udp puede ser cualquiera en el rango 1-65535 (excepto exclusiones)
+        
         echo ""
         if systemctl is-active --quiet udp-custom; then
             _ok "UDP Custom activo — escuchando en ${CY}TODOS los puertos UDP${CR}"
@@ -247,13 +250,15 @@ EOF
         echo ""
         echo -e "  ${YL}━━━ DATOS DE CONEXION ━━━${CR}"
         echo ""
-        echo -e "  ${GR}$CUENTA${CR}"
+        echo -e "  ${GR}${SERVER_IP}:xxxx@${first_user}:${first_pass}${CR}  ${DM}(xxxx = cualquier puerto UDP)${CR}"
         echo ""
         echo -e "  ${YL}━━━ CONFIGURACION UDP CUSTOM ━━━${CR}"
         echo -e "  ${DM}1. Activa el modo UDP en el cliente${CR}"
         echo -e "  ${DM}2. Activa la casilla ${WH}☑ UDP Custom${DM} en pantalla principal${CR}"
-        echo -e "  ${DM}3. En el campo de cuenta escribe:${CR}"
-        echo -e "     ${WH}$SERVER_IP:$udp_port@$first_user:$first_pass${CR}"
+        echo -e "  ${DM}3. En el campo de cuenta escribe uno de estos formatos:${CR}"
+        echo -e "     ${WH}${SERVER_IP}:53@${first_user}:${first_pass}${CR}  ${DM}(puerto 53)${CR}"
+        echo -e "     ${WH}${SERVER_IP}:123@${first_user}:${first_pass}${CR}  ${DM}(puerto 123)${CR}"
+        echo -e "     ${WH}${SERVER_IP}:8080@${first_user}:${first_pass}${CR}  ${DM}(puerto 8080)${CR}"
         echo -e "  ${DM}4. Presiona Connect — NO necesitas SSH${CR}"
         echo -e "$SEP"
         read -p "$(echo -e ${DM})Presiona Enter para continuar...$(echo -e ${CR})"

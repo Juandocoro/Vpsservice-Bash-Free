@@ -19,17 +19,31 @@ if [[ "$auth" != "s" && "$auth" != "S" ]]; then exit 0; fi
 read -p "Puerto para Squid (Defecto: 3128): " squid_port
 if [ -z "$squid_port" ]; then squid_port=3128; fi
 
+# Validar puerto
+if ! [[ "$squid_port" =~ ^[0-9]+$ ]] || [ "$squid_port" -lt 1 ] || [ "$squid_port" -gt 65535 ]; then
+    echo "[-] Puerto inválido. Usando 3128."
+    squid_port=3128
+fi
+
 echo "[*] Instalando Squid..."
 apt-get install -yq squid &>/dev/null
 
 echo "[*] Escribiendo configuración /etc/squid/squid.conf..."
 cat <<EOF > /etc/squid/squid.conf
-# vpsservice Script FREE - Squid Config
+# vpsservice Script FREE - Squid Config (HARDENED)
 http_port $squid_port
 
-# ACL - Permitir acceso total
+# ACL - Restringir acceso solo a localhost y VPS propias
+acl localhost src 127.0.0.1/32 ::1/128
+acl localnet src 10.0.0.0/8
+acl localnet src 172.16.0.0/12
+acl localnet src 192.168.0.0/16
 acl all src 0.0.0.0/0
-http_access allow all
+
+# DENEGADO por defecto, permitido solo para red local
+http_access deny all
+http_access allow localhost
+http_access allow localnet
 
 # Respuesta de bienvenida (para inyectores HTTP)
 visible_hostname vpsservice

@@ -40,11 +40,12 @@ crear_usuario() {
     useradd -m -s /bin/bash -e "$EXP_DATE" -c "$LIMIT" "$USERNAME"
     echo "$USERNAME:$PASSWORD" | chpasswd
 
-    # Log plano seguro
-    touch "$DB_FILE"
-    chmod 600 "$DB_FILE"
-    sed -i "/^$USERNAME:/d" "$DB_FILE" 2>/dev/null
-    echo "$USERNAME:$PASSWORD" >> "$DB_FILE"
+    # DEPRECATED: Almacenamiento de contraseñas removido por seguridad
+    # Las contraseñas ahora se gestionan únicamente en el sistema (chpasswd)
+    # touch "$DB_FILE"
+    # chmod 600 "$DB_FILE"
+    # sed -i "/^$USERNAME:/d" "$DB_FILE" 2>/dev/null
+    # echo "$USERNAME:$PASSWORD" >> "$DB_FILE"
 
     echo ""
     echo -e "$SEP"
@@ -83,8 +84,8 @@ administrar_usuarios() {
                     LIMITE=$(getent passwd "$u" | cut -d: -f5)
                     [ -z "$LIMITE" ] && LIMITE="1"
                     CONEX=$(ps -u "$u" -o comm= 2>/dev/null | grep -E "^(sshd|dropbear)$" | wc -l)
-                    PASS=$(grep "^$u:" "$DB_FILE" 2>/dev/null | cut -d: -f2)
-                    [ -z "$PASS" ] && PASS="? (no_log)"
+                    # Contraseña no se almacena por seguridad
+                    PASS="●●●●●●●●●●" # Oculto por seguridad
                     echo -e "  ${GR}●${CR} ${WH}$u${CR}  ${DM}pass: $PASS  vence: $EXP  conex: $CONEX/$LIMITE${CR}"
                 done
                 echo ""
@@ -93,7 +94,8 @@ administrar_usuarios() {
                 read -p "$(echo -e ${DM})Usuario a ELIMINAR: $(echo -e ${CR})" DEL_USER
                 if id "$DEL_USER" &>/dev/null; then
                     userdel -r "$DEL_USER" 2>/dev/null
-                    sed -i "/^$DEL_USER:/d" "$DB_FILE" 2>/dev/null
+                    # Registro de contraseña ya no se mantiene
+                    # sed -i "/^$DEL_USER:/d" "$DB_FILE" 2>/dev/null
                     echo -e "  ${GR}[+]${CR} Eliminado correctamente."
                 else
                     echo -e "  ${RD}[-]${CR} Usuario no existe."
@@ -119,8 +121,7 @@ administrar_usuarios() {
                 if id "$PASS_USER" &>/dev/null; then
                     read -s -p "$(echo -e ${DM})Nueva clave: $(echo -e ${CR})" NEW_PASS; echo ""
                     echo "$PASS_USER:$NEW_PASS" | chpasswd
-                    sed -i "/^$PASS_USER:/d" "$DB_FILE" 2>/dev/null
-                    echo "$PASS_USER:$NEW_PASS" >> "$DB_FILE"
+                    # Registro de contraseña ya no se mantiene por seguridad
                     echo -e "  ${GR}[+]${CR} Contraseña actualizada."
                 else
                     echo -e "  ${RD}[-]${CR} Usuario no existe."

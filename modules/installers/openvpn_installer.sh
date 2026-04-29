@@ -63,7 +63,10 @@ verb 0
 EOF
 
 echo "[*] Activando IP forwarding..."
-echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+# Idempotente: solo agrega si no existe
+if ! grep -q '^net.ipv4.ip_forward=1' /etc/sysctl.conf 2>/dev/null; then
+    echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+fi
 sysctl -p &>/dev/null
 
 systemctl enable openvpn@server &>/dev/null

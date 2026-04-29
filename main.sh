@@ -105,12 +105,17 @@ function update_script() {
         read -p "$(echo -e ${DM})Presiona Enter para volver...$(echo -e ${CR})"
     else
         echo -e "  ${YL}[!]${CR} Nueva actualización encontrada."
-        echo -e "  ${YL}[*]${CR} Descargando y reparando permisos..."
-        git reset --hard FETCH_HEAD &>/dev/null
-        chmod -R +x "$DIR" 2>/dev/null
-        echo -e "  ${GR}[+]${CR} Actualizado correctamente. Reiniciando..."
-        sleep 2
-        exec "$DIR/main.sh"
+        echo -e "  ${YL}[*]${CR} Actualizando de forma segura (fast-forward)..."
+        if git pull --ff-only origin main &>/dev/null; then
+            chmod -R +x "$DIR" 2>/dev/null
+            echo -e "  ${GR}[+]${CR} Actualizado correctamente. Reiniciando..."
+            sleep 2
+            exec "$DIR/main.sh"
+        else
+            echo -e "  ${RD}[-]${CR} No se pudo actualizar (cambios locales detectados)."
+            echo -e "  ${DM}    Usa: git stash && git pull origin main${CR}"
+            read -p "$(echo -e ${DM})Presiona Enter para volver...$(echo -e ${CR})"
+        fi
     fi
 }
 
