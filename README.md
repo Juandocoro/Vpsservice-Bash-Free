@@ -10,13 +10,15 @@ Panel de administración para servidores VPS en Ubuntu. Instala y configura prot
 
 - `main`: versión estable del panel por terminal
 - `beta`: versión con correcciones y pruebas de seguridad
-- `panel`: versión visual con carpeta `web-panel/`
+- `panel`: versión visual con carpeta `web-panel/` y flujo web
 
 ```bash
-bash <(curl -sL https://raw.githubusercontent.com/Juandocoro/Vpsservice-Bash-Free/main/setup.sh)
+bash <(curl -sL https://raw.githubusercontent.com/Juandocoro/Vpsservice-Bash-Free/panel/setup.sh)
 ```
 
-Si quieres instalar una rama específica, cambia `main` por `beta` o `panel` en la URL anterior.
+El instalador pregunta qué rama deseas instalar y usa `panel` por defecto para el flujo web.
+
+Si quieres instalar una rama específica, cambia `panel` por `main` o `beta` en la URL anterior.
 
 Ejemplos:
 

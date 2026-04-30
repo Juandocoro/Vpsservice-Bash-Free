@@ -2,7 +2,7 @@
 # =========================================================
 # vpsservice Script FREE — Setup Universal
 # Uso (comando recomendado en el VPS):
-#   curl -sL https://raw.githubusercontent.com/Juandocoro/Vpsservice-Bash-Free/main/setup.sh -o /tmp/vps.sh && sudo bash /tmp/vps.sh
+#   curl -sL https://raw.githubusercontent.com/Juandocoro/Vpsservice-Bash-Free/panel/setup.sh -o /tmp/vps.sh && sudo bash /tmp/vps.sh
 # =========================================================
 
 if [ "$EUID" -ne 0 ]; then
@@ -16,6 +16,13 @@ echo -e "\033[44m\033[1;33m ====►► \033[0;44;36m◈ \033[1;44;37mvpsservice 
 echo ""
 echo -e "\033[0;33m[*]\033[0m Iniciando instalación..."
 echo ""
+
+read -p "¿Qué versión deseas instalar? [panel/main] (panel por defecto): " INSTALL_BRANCH
+INSTALL_BRANCH=${INSTALL_BRANCH:-panel}
+if [ "$INSTALL_BRANCH" != "main" ] && [ "$INSTALL_BRANCH" != "panel" ]; then
+    echo -e "\033[0;33m[*]\033[0m Opción inválida, usando panel por defecto."
+    INSTALL_BRANCH="panel"
+fi
 
 # =========================================================
 # PASO 1: Instalar git si no está presente
@@ -39,11 +46,11 @@ fi
 # PASO 3: Clonar repositorio
 # =========================================================
 echo -e "\033[0;33m[*]\033[0m Clonando repositorio..."
-if ! git clone https://github.com/Juandocoro/Vpsservice-Bash-Free.git "$TARGET_DIR" 2>&1; then
+if ! git clone --branch "$INSTALL_BRANCH" --single-branch https://github.com/Juandocoro/Vpsservice-Bash-Free.git "$TARGET_DIR" 2>&1; then
     echo ""
     echo -e "\033[0;31m[-]\033[0m No se pudo clonar el repositorio."
     echo -e "\033[2;37m    Verifica que el repo exista: https://github.com/Juandocoro/Vpsservice-Bash-Free\033[0m"
-    echo -e "\033[2;37m    Y que sea público (o tengas acceso SSH configurado).\033[0m"
+    echo -e "\033[2;37m    Y que la rama '$INSTALL_BRANCH' exista y sea accesible.\033[0m"
     exit 1
 fi
 
@@ -87,6 +94,7 @@ echo ""
 echo -e "\033[0;33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
 echo -e "\033[1;32m[+]\033[0m Instalación completada."
 echo -e "\033[2;37m    Instalado en: $TARGET_DIR\033[0m"
+echo -e "\033[2;37m    Rama instalada: $INSTALL_BRANCH\033[0m"
 echo -e "\033[2;37m    Comando global: menu\033[0m"
 echo -e "\033[0;33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
 echo ""
