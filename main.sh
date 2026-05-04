@@ -352,6 +352,4 @@ function show_menu() {
 # Lazo de vida infinito
 while true; do
     show_menu
-done
- 
- 
+done
