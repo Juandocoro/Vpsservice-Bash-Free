@@ -122,11 +122,11 @@ class ProtocolViewSet(viewsets.ModelViewSet):
         # Matar cualquier ttyd viejo corriendo en el puerto 8080
         subprocess.run(['fuser', '-k', '8080/tcp'], capture_output=True)
         
-        # Lanzar ttyd en background. 
+        # Lanzar ttyd en background con variable de entorno WEB_PANEL=1.
         # -O: Una vez que el cliente se desconecte, ttyd se cierra.
         try:
             subprocess.Popen(
-                ['ttyd', '-O', '-p', '8080', 'bash', script_path],
+                ['ttyd', '-O', '-p', '8080', 'env', 'WEB_PANEL=1', 'bash', script_path],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL
             )
@@ -139,6 +139,13 @@ class ProtocolViewSet(viewsets.ModelViewSet):
             'terminal_url': '/terminal/',
             'protocol': ProtocolSerializer(protocol).data
         })
+
+    # ===== TERMINAL STATUS: Verificar si el terminal sigue activo =====
+    @action(detail=False, methods=['get'])
+    def terminal_status(self, request):
+        # fuser 8080/tcp devuelve código 0 si alguien escucha ahí
+        result = subprocess.run(['fuser', '8080/tcp'], capture_output=True)
+        return Response({'is_running': result.returncode == 0})
 
     # ===== LOGS: Últimas líneas del log del servicio =====
     @action(detail=True, methods=['get'])

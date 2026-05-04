@@ -322,6 +322,14 @@ class APIService {
   }
 
   /**
+   * Verificar si el terminal web sigue activo
+   */
+  async checkTerminalStatus(): Promise<boolean> {
+    const response = await this.client.get('/protocols/terminal_status/');
+    return response.data.is_running;
+  }
+
+  /**
    * Actualizar protocolo
    */
   async updateProtocol(id: number, protocolData: Partial<Protocol>): Promise<Protocol> {

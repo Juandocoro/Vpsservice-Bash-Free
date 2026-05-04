@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useProtocolsStore } from '../store'
 import ProtocolsList from '../components/ProtocolsList'
+import { APIService } from '../services/api'
 
 /**
  * Página ProtocolsPage
@@ -54,6 +55,33 @@ function ProtocolsPage() {
     }
     loadProtocols()
   }, [fetchProtocols])
+
+  // Polling para detectar cuando el terminal ttyd se cierra por terminar la instalación
+  useEffect(() => {
+    let interval: number | null = null;
+    
+    if (terminalUrl) {
+      interval = window.setInterval(async () => {
+        try {
+          const isRunning = await APIService.checkTerminalStatus();
+          if (!isRunning) {
+            // El terminal se cerró, recargamos y cerramos el modal
+            setTerminalUrl(null)
+            setSelectedProtocol(null)
+            setLoading(true)
+            await fetchProtocols()
+            setLoading(false)
+          }
+        } catch (error) {
+          console.error("Error polling terminal status", error)
+        }
+      }, 2000)
+    }
+
+    return () => {
+      if (interval) window.clearInterval(interval)
+    }
+  }, [terminalUrl, fetchProtocols])
 
   // Manejar instalar protocolo
   const handleInstallProtocol = (protocolId: string) => {
