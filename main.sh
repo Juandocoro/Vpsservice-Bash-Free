@@ -305,7 +305,8 @@ function enable_web_panel() {
     # 2) Ejecutar el instalador/deploy script dentro de web-panel
     echo -e "  ${YL}[*]${CR} Iniciando instalador del panel web..."
     sudo "$DIR/web-panel/deploy_web_panel.sh"
-    sleep 1
+    echo ""
+    read -p "$(echo -e ${DM})Presiona Enter para volver al menu principal...$(echo -e ${CR})"
 }
 
 # =========================================================
