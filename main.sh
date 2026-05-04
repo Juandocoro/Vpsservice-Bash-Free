@@ -308,6 +308,93 @@ function enable_web_panel() {
     sleep 1
 }
 
+# =========================================================
+# DESINSTALAR PANEL
+# =========================================================
+function uninstall_panel() {
+    clear
+    print_title
+    echo -e "$SEP"
+    echo -e "${RD}         ⚠   DESINSTALAR PANEL   ⚠${CR}"
+    echo -e "$SEP"
+    echo -e "  ${YL}[!]${CR} Esta accion eliminara permanentemente:"
+    echo ""
+    echo -e "  ${DM}  •  Directorio /opt/vpsservice-free${CR}"
+    echo -e "  ${DM}  •  Comando global 'menu' (/usr/local/bin/menu)${CR}"
+    echo -e "  ${DM}  •  Cron job del auto-killer${CR}"
+    echo -e "  ${DM}  •  Entrada de arranque automatico en .bashrc${CR}"
+    echo -e "  ${DM}  •  Servicios activos (stunnel, badvpn, udp, ws...)${CR}"
+    echo -e "  ${DM}  •  Servicio del panel web (vpsservice-panel)${CR}"
+    echo ""
+    echo -e "  ${YL}[!]${CR} Los usuarios SSH creados ${WH}NO${CR} seran eliminados."
+    echo ""
+    echo -e "$SEP"
+    read -p "$(echo -e ${DM})¿Deseas continuar? (s/n): $(echo -e ${CR})" resp
+    if [[ "$resp" != "s" && "$resp" != "S" ]]; then
+        echo -e "  ${GR}[+]${CR} Operacion cancelada."
+        sleep 2
+        show_menu
+        return
+    fi
+
+    echo ""
+    echo -e "  ${RD}[!]${CR} Escribe ${WH}CONFIRMAR${CR} para proceder (distingue mayusculas):"
+    read -p "$(echo -e ${DM})  > $(echo -e ${CR})" confirm
+    if [[ "$confirm" != "CONFIRMAR" ]]; then
+        echo -e "  ${RD}[-]${CR} Texto incorrecto. Operacion cancelada."
+        sleep 2
+        show_menu
+        return
+    fi
+
+    echo ""
+    echo -e "  ${YL}[*]${CR} Deteniendo servicios activos..."
+    for svc in stunnel4 dropbear badvpn udp-custom ws-server slowdns squid v2ray shadowsocks openvpn wg-quick@wg0 vpsservice-panel nginx; do
+        systemctl stop "$svc" 2>/dev/null
+        systemctl disable "$svc" 2>/dev/null
+    done
+    pkill -f badvpn    2>/dev/null
+    pkill -f udpgw     2>/dev/null
+    pkill -f ws-server 2>/dev/null
+    pkill -f gunicorn  2>/dev/null
+    echo -e "  ${GR}[+]${CR} Servicios detenidos."
+
+    echo -e "  ${YL}[*]${CR} Eliminando servicio systemd del panel web..."
+    rm -f /etc/systemd/system/vpsservice-panel.service 2>/dev/null
+    systemctl daemon-reload 2>/dev/null
+    echo -e "  ${GR}[+]${CR} Servicio web eliminado."
+
+    echo -e "  ${YL}[*]${CR} Eliminando config de Nginx..."
+    rm -f /etc/nginx/sites-enabled/vpsservice-panel 2>/dev/null
+    rm -f /etc/nginx/sites-available/vpsservice-panel 2>/dev/null
+    systemctl reload nginx 2>/dev/null
+    echo -e "  ${GR}[+]${CR} Nginx limpiado."
+
+    echo -e "  ${YL}[*]${CR} Eliminando cron del auto-killer..."
+    crontab -l 2>/dev/null | grep -v 'killer.sh' | crontab - 2>/dev/null
+    echo -e "  ${GR}[+]${CR} Cron eliminado."
+
+    echo -e "  ${YL}[*]${CR} Eliminando arranque automatico de .bashrc..."
+    sed -i '/^menu$/d' /root/.bashrc 2>/dev/null
+    echo -e "  ${GR}[+]${CR} Autostart eliminado."
+
+    echo -e "  ${YL}[*]${CR} Eliminando comando global 'menu'..."
+    rm -f /usr/local/bin/menu 2>/dev/null
+    echo -e "  ${GR}[+]${CR} Comando eliminado."
+
+    echo -e "  ${YL}[*]${CR} Eliminando directorio del panel..."
+    rm -rf /opt/vpsservice-free 2>/dev/null
+    echo -e "  ${GR}[+]${CR} Directorio eliminado."
+
+    echo ""
+    echo -e "$SEP"
+    echo -e "  ${GR}[+]${CR} Panel desinstalado correctamente."
+    echo -e "  ${DM}    Cierra esta sesion SSH para finalizar.${CR}"
+    echo -e "$SEP"
+    echo ""
+    exit 0
+}
+
 function show_menu() {
     clear
     print_title
@@ -327,13 +414,14 @@ function show_menu() {
     fi
 
     echo -e "  ${CY}1)${CR}  ${WH}Usuarios (Crear/Modificar)${CR}"
-    echo -e "  ${CY}2)${CR}  ${WH}Instalación de Protocolos${CR}"
-    echo -e "  ${CY}3)${CR}  ${WH}Arranque Automático      ${CR}  $AUTO_TAG"
+    echo -e "  ${CY}2)${CR}  ${WH}Instalacion de Protocolos${CR}"
+    echo -e "  ${CY}3)${CR}  ${WH}Arranque Automatico      ${CR}  $AUTO_TAG"
     echo -e "  ${CY}4)${CR}  ${WH}Actualizar${CR}"
     echo -e "  ${CY}5)${CR}  ${WH}Habilitar Panel Web (Web UI)${CR}"
+    echo -e "  ${CY}6)${CR}  ${RD}⚠  Desinstalar Panel${CR}"
     echo -e "  ${CY}0)${CR}  ${WH}Salir${CR}"
     echo -e "$SEP"
-    read -p "$(echo -e ${DM})Digita una acción [0-5]: $(echo -e ${CR})" opcion
+    read -p "$(echo -e ${DM})Digita una accion [0-6]: $(echo -e ${CR})" opcion
 
     case $opcion in
         1) users_menu ;;
@@ -341,8 +429,9 @@ function show_menu() {
         3) toggle_autostart ;;
         4) update_script ;;
         5) enable_web_panel ;;
+        6) uninstall_panel ;;
         0) clear; echo -e "${DM}Saliendo... (escribe 'menu' para volver)${CR}"; exit 0 ;;
-        *) echo -e "  ${RD}[-]${CR} Opción no reconocida."; sleep 1; show_menu ;;
+        *) echo -e "  ${RD}[-]${CR} Opcion no reconocida."; sleep 1; show_menu ;;
     esac
 }
 
