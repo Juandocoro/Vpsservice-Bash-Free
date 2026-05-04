@@ -53,8 +53,47 @@ def get_service_status(service_name):
 
 
 def get_service_port(service_name):
-    """Extrae el puerto del servicio leyendo sus archivos de configuración."""
+    """
+    Extrae el puerto real activo usando ss (socket statistics) 
+    para comprobar la conexión real del servicio en el sistema.
+    """
     key = service_name.lower()
+    
+    # Mapeo de nombre de protocolo a nombre de proceso o comando
+    proc_map = {
+        'stunnel': 'stunnel',
+        'dropbear': 'dropbear',
+        'udp': 'udp-custom',
+        'v2ray': 'v2ray',
+        'badvpn': 'badvpn-udpgw',
+        'shadowsocks': 'ss-server',
+        'openvpn': 'openvpn',
+        'squid': 'squid',
+        'slowdns': 'slowdns',
+    }
+    
+    # 1. Intentar obtener el puerto leyendo las conexiones activas (ss)
+    proc_name = proc_map.get(key)
+    if proc_name:
+        ok, out = run_cmd(['bash', '-c', f"ss -tulnp | grep {proc_name} | head -n 1"])
+        if ok and out:
+            import re
+            # Busca algo como 0.0.0.0:7300 o [::]:80
+            match = re.search(r'(?:[0-9\.]+|(?:\[.*?\])):([0-9]+)', out)
+            if match:
+                return int(match.group(1))
+                
+    # 2. Casos especiales que no aparecen fácilmente en ss
+    if key == 'wireguard':
+        ok, out = run_cmd(['bash', '-c', "wg show wg0 listen-port 2>/dev/null"])
+        if ok and out.strip().isdigit():
+            return int(out.strip())
+    elif key == 'websocket':
+        ok, out = run_cmd(['bash', '-c', "grep 'ExecStart=' /etc/systemd/system/ws-proxy.service 2>/dev/null | awk '{print $NF}'"])
+        if ok and out.strip().isdigit():
+            return int(out.strip())
+
+    # 3. Fallback a la configuración si no está activo o falló ss
     port = 0
     try:
         if key == 'stunnel':
@@ -78,7 +117,7 @@ def get_service_port(service_name):
         elif key == 'openvpn':
             ok, out = run_cmd(['bash', '-c', "grep '^port ' /etc/openvpn/server.conf 2>/dev/null | awk '{print $2}'"])
             if ok and out.isdigit(): port = int(out)
-        elif key == 'wireguard':
+        elif key == 'wireguard' and port == 0:
             ok, out = run_cmd(['bash', '-c', "grep '^ListenPort' /etc/wireguard/wg0.conf 2>/dev/null | awk '{print $3}'"])
             if ok and out.isdigit(): port = int(out)
         elif key == 'slowdns':
@@ -86,11 +125,9 @@ def get_service_port(service_name):
         elif key == 'squid':
             ok, out = run_cmd(['bash', '-c', "grep '^http_port ' /etc/squid/squid.conf 2>/dev/null | awk '{print $2}'"])
             if ok and out.isdigit(): port = int(out)
-        elif key == 'websocket':
-            ok, out = run_cmd(['bash', '-c', "grep 'ExecStart=' /etc/systemd/system/ws-proxy.service 2>/dev/null | awk '{print $NF}'"])
-            if ok and out.isdigit(): port = int(out)
     except Exception:
         pass
+        
     return port
 
 
