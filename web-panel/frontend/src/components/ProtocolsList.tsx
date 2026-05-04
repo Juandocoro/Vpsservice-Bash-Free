@@ -13,7 +13,7 @@ import { useProtocolsStore } from '../store'
  * - Editar configuración
  */
 function ProtocolsList() {
-  const { protocols, uninstallProtocol } = useProtocolsStore()
+  const { protocols, uninstallProtocol, restartProtocol } = useProtocolsStore()
 
   // El padre se encarga de llamar fetchProtocols()
   // Obtener ícono según protocolo
@@ -47,11 +47,10 @@ function ProtocolsList() {
   const handleRestartService = async (protocolId: number, serviceName: string) => {
     if (confirm(`¿Reiniciar servicio ${serviceName}?`)) {
       try {
-        // Aquí iría la llamada a API para reiniciar
-        console.log(`Restarting service: ${serviceName}`)
-        alert(`Servicio ${protocolId} reiniciado correctamente`)
+        await restartProtocol(protocolId)
+        alert(`Servicio ${serviceName} reiniciado correctamente`)
       } catch (error) {
-        alert(`Error al reiniciar servicio ${protocolId}`)
+        alert(`Error al reiniciar servicio ${serviceName}`)
       }
     }
   }
@@ -60,13 +59,12 @@ function ProtocolsList() {
   const handleUninstall = async (protocolId: number, serviceName: string) => {
     if (
       confirm(
-        `¿Desinstalar ${serviceName}? Esta acción no se puede deshacer.`
+        `¿Desinstalar ${serviceName}? Esta acción no se puede deshacer y detendrá el servicio.`
       )
     ) {
       try {
-        // Aquí iría la llamada a API para desinstalar
-        console.log(`Uninstalling protocol: ${serviceName}`)
-        alert('Protocolo desinstalado correctamente')
+        await uninstallProtocol(protocolId)
+        alert(`Protocolo ${serviceName} desinstalado correctamente`)
       } catch (error) {
         alert('Error al desinstalar protocolo')
       }
@@ -128,10 +126,10 @@ function ProtocolsList() {
                 </div>
               </td>
 
-              {/* Puerto */}
-              <td className="py-3 px-4">
-                <span className="px-3 py-1 bg-blue-900/50 text-blue-200 rounded text-sm font-mono">
-                  {protocol.port}
+              {/* Puerto (no disponible por ttyd) */}
+              <td className="py-3 px-4 text-gray-300">
+                <span className="bg-gray-700 px-2 py-1 rounded text-sm text-gray-500">
+                  —
                 </span>
               </td>
 
@@ -180,6 +178,7 @@ function ProtocolsList() {
 
                   {/* Botón Ver configuración */}
                   <button
+                    onClick={() => alert(`La configuración de ${protocol.name} se administra reinstalando el protocolo o mediante SSH.`)}
                     className="p-2 hover:bg-gray-600 rounded text-gray-400 hover:text-white transition-colors"
                     title="Ver configuración"
                   >

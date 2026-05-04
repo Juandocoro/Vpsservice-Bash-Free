@@ -81,6 +81,18 @@ class ProtocolViewSet(viewsets.ModelViewSet):
                 p.save(update_fields=['is_active'])
         return super().list(request, *args, **kwargs)
 
+    def destroy(self, request, *args, **kwargs):
+        """Detiene y deshabilita el servicio antes de eliminarlo."""
+        protocol = self.get_object()
+        key = protocol.name.lower()
+        systemd_name = SERVICE_MAP.get(key, key)
+        
+        # Detener servicio
+        run_cmd(['systemctl', 'stop', systemd_name])
+        run_cmd(['systemctl', 'disable', systemd_name])
+        
+        return super().destroy(request, *args, **kwargs)
+
     # ===== TOGGLE: Iniciar / Detener servicio =====
     @action(detail=True, methods=['post'])
     def toggle(self, request, pk=None):
@@ -103,6 +115,21 @@ class ProtocolViewSet(viewsets.ModelViewSet):
             return Response({'error': msg}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         return Response(ProtocolSerializer(protocol).data)
+
+    # ===== RESTART: Reiniciar servicio =====
+    @action(detail=True, methods=['post'])
+    def restart(self, request, pk=None):
+        protocol = self.get_object()
+        key = protocol.name.lower()
+        systemd_name = SERVICE_MAP.get(key, key)
+
+        ok, msg = run_cmd(['systemctl', 'restart', systemd_name])
+        if ok:
+            protocol.is_active = True
+            protocol.save()
+            return Response({'success': True, 'msg': msg})
+        
+        return Response({'error': msg}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     # ===== INSTALL: Ejecutar script de instalación =====
     @action(detail=True, methods=['post'])

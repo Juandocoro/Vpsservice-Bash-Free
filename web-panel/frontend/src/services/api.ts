@@ -338,6 +338,14 @@ class APIService {
   }
 
   /**
+   * Reiniciar protocolo
+   */
+  async restartProtocol(id: number): Promise<any> {
+    const response = await this.client.post(`/protocols/${id}/restart/`);
+    return response.data;
+  }
+
+  /**
    * Desinstalar protocolo
    */
   async uninstallProtocol(id: number): Promise<void> {

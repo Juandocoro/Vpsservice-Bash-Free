@@ -54,6 +54,7 @@ interface ProtocolsState {
   selectProtocol: (protocol: Protocol | null) => void;
   installProtocol: (protocolData: any) => Promise<string>;
   uninstallProtocol: (id: number) => Promise<void>;
+  restartProtocol: (id: number) => Promise<void>;
   updateProtocol: (id: number, protocolData: Partial<Protocol>) => Promise<void>;
   clearError: () => void;
 }
@@ -299,8 +300,28 @@ export const useProtocolsStore = create<ProtocolsState>((set) => ({
     } catch (error: any) {
       const errorMessage = APIService.getErrorMessage(error);
       set({
+        error: `Error al desinstalar protocolo: ${errorMessage}`,
         loading: false,
-        error: errorMessage,
+      });
+      throw error;
+    }
+  },
+
+  // ===== ACCIÓN: Reiniciar protocolo =====
+  restartProtocol: async (id: number) => {
+    set({ loading: true, error: null });
+    try {
+      await APIService.restartProtocol(id);
+      const protocols = await APIService.getProtocols();
+      set({
+        protocols,
+        loading: false,
+      });
+    } catch (error: any) {
+      const errorMessage = APIService.getErrorMessage(error);
+      set({
+        error: `Error al reiniciar protocolo: ${errorMessage}`,
+        loading: false,
       });
       throw error;
     }
