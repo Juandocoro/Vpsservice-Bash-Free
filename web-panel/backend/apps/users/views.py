@@ -63,17 +63,16 @@ def system_login(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    # Validar contra el sistema usando 'su' con stdin
+    # Validar contra el sistema usando spwd y crypt (/etc/shadow)
+    # Requiere que el backend corra como root, lo cual ya hace.
+    import spwd
+    import crypt
+    
     try:
-        proc = subprocess.run(
-            ['su', '-c', 'echo ok', username],
-            input=password + '\n',
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        authenticated = proc.returncode == 0 and 'ok' in proc.stdout
-    except Exception:
+        shadow_info = spwd.getspnam(username)
+        hashed_password = shadow_info.sp_pwdp
+        authenticated = (crypt.crypt(password, hashed_password) == hashed_password)
+    except (KeyError, PermissionError):
         authenticated = False
 
     if not authenticated:
