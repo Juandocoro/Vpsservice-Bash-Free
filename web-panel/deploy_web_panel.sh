@@ -132,8 +132,8 @@ echo -e "${GR}[+]${CR} Gunicorn corriendo en 127.0.0.1:$PANEL_PORT."
 echo -e "${YL}[*]${CR} Configurando Nginx..."
 cat > /etc/nginx/sites-available/vpsservice-panel <<NGINXEOF
 server {
-    listen 80;
-    server_name $DOMAIN;
+    listen 80 default_server;
+    server_name _;
 
     # Frontend (archivos estaticos de React)
     root $FRONTEND_DIR/dist;
