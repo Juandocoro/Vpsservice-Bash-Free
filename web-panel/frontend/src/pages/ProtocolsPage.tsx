@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useProtocolsStore } from '../store'
 import ProtocolsList from '../components/ProtocolsList'
-import { APIService } from '../services/api'
+import APIService from '../services/api'
 
 /**
  * Página ProtocolsPage
