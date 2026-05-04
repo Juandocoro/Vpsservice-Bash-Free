@@ -52,6 +52,48 @@ def get_service_status(service_name):
     return out.strip() == 'active'
 
 
+def get_service_port(service_name):
+    """Extrae el puerto del servicio leyendo sus archivos de configuración."""
+    key = service_name.lower()
+    port = 0
+    try:
+        if key == 'stunnel':
+            ok, out = run_cmd(['bash', '-c', "grep -i 'accept' /etc/stunnel/stunnel.conf 2>/dev/null | head -n 1 | awk '{print $3}' | grep -o '[0-9]*'"])
+            if ok and out.isdigit(): port = int(out)
+        elif key == 'dropbear':
+            ok, out = run_cmd(['bash', '-c', "grep 'DROPBEAR_PORT=' /etc/default/dropbear 2>/dev/null | cut -d= -f2"])
+            if ok and out.isdigit(): port = int(out)
+        elif key == 'udp':
+            ok, out = run_cmd(['bash', '-c', "grep '\"listen\"' /etc/udp-custom/config.json 2>/dev/null | grep -o '[0-9]*' | head -n 1"])
+            if ok and out.isdigit(): port = int(out)
+        elif key == 'v2ray':
+            ok, out = run_cmd(['python3', '-c', "import json; print(json.load(open('/usr/local/etc/v2ray/config.json'))['inbounds'][0]['port'])"])
+            if ok and out.isdigit(): port = int(out)
+        elif key == 'badvpn':
+            ok, out = run_cmd(['bash', '-c', "grep -o '\\-\\-listen-addr [^ ]*' /etc/systemd/system/badvpn.service 2>/dev/null | awk -F':' '{print $NF}'"])
+            if ok and out.isdigit(): port = int(out)
+        elif key == 'shadowsocks':
+            ok, out = run_cmd(['bash', '-c', "grep '\"server_port\"' /etc/shadowsocks-libev/config.json 2>/dev/null | grep -o '[0-9]*' | head -n 1"])
+            if ok and out.isdigit(): port = int(out)
+        elif key == 'openvpn':
+            ok, out = run_cmd(['bash', '-c', "grep '^port ' /etc/openvpn/server.conf 2>/dev/null | awk '{print $2}'"])
+            if ok and out.isdigit(): port = int(out)
+        elif key == 'wireguard':
+            ok, out = run_cmd(['bash', '-c', "grep '^ListenPort' /etc/wireguard/wg0.conf 2>/dev/null | awk '{print $3}'"])
+            if ok and out.isdigit(): port = int(out)
+        elif key == 'slowdns':
+            port = 53
+        elif key == 'squid':
+            ok, out = run_cmd(['bash', '-c', "grep '^http_port ' /etc/squid/squid.conf 2>/dev/null | awk '{print $2}'"])
+            if ok and out.isdigit(): port = int(out)
+        elif key == 'websocket':
+            ok, out = run_cmd(['bash', '-c', "grep 'ExecStart=' /etc/systemd/system/ws-proxy.service 2>/dev/null | awk '{print $NF}'"])
+            if ok and out.isdigit(): port = int(out)
+    except Exception:
+        pass
+    return port
+
+
 class ProtocolViewSet(viewsets.ModelViewSet):
     """
     API REST para gestionar protocolos del VPS.
@@ -75,10 +117,24 @@ class ProtocolViewSet(viewsets.ModelViewSet):
         """Lista protocolos y actualiza el estado real de cada servicio."""
         protocols = Protocol.objects.all()
         for p in protocols:
+            needs_update = False
+            
+            # Actualizar estado activo
             real_active = get_service_status(p.name)
             if p.is_active != real_active:
                 p.is_active = real_active
-                p.save(update_fields=['is_active'])
+                needs_update = True
+                
+            # Actualizar puerto dinámicamente si está instalado
+            if p.is_installed:
+                real_port = get_service_port(p.name)
+                if real_port > 0 and p.port != real_port:
+                    p.port = real_port
+                    needs_update = True
+                    
+            if needs_update:
+                p.save(update_fields=['is_active', 'port'])
+                
         return super().list(request, *args, **kwargs)
 
     def destroy(self, request, *args, **kwargs):

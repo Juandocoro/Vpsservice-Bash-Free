@@ -126,10 +126,10 @@ function ProtocolsList() {
                 </div>
               </td>
 
-              {/* Puerto (no disponible por ttyd) */}
-              <td className="py-3 px-4 text-gray-300">
-                <span className="bg-gray-700 px-2 py-1 rounded text-sm text-gray-500">
-                  —
+              {/* Puerto (detectado dinámicamente) */}
+              <td className="py-3 px-4">
+                <span className="px-3 py-1 bg-blue-900/50 text-blue-200 rounded text-sm font-mono">
+                  {protocol.port > 0 ? protocol.port : 'N/A'}
                 </span>
               </td>
 
