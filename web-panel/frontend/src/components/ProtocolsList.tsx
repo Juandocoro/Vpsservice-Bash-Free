@@ -13,8 +13,9 @@ import { useProtocolsStore } from '../store'
  * - Editar configuración
  */
 function ProtocolsList() {
-  const { protocols, setNotification } = useProtocolsStore()
+  const { protocols, uninstallProtocol } = useProtocolsStore()
 
+  // El padre se encarga de llamar fetchProtocols()
   // Obtener ícono según protocolo
   const getProtocolIcon = (protocolName: string): string => {
     const icons: Record<string, string> = {
@@ -48,15 +49,9 @@ function ProtocolsList() {
       try {
         // Aquí iría la llamada a API para reiniciar
         console.log(`Restarting service: ${serviceName}`)
-        setNotification({
-          type: 'success',
-          message: `${serviceName} reiniciado correctamente`,
-        })
+        alert(`Servicio ${protocolId} reiniciado correctamente`)
       } catch (error) {
-        setNotification({
-          type: 'error',
-          message: 'Error al reiniciar servicio',
-        })
+        alert(`Error al reiniciar servicio ${protocolId}`)
       }
     }
   }
@@ -71,15 +66,9 @@ function ProtocolsList() {
       try {
         // Aquí iría la llamada a API para desinstalar
         console.log(`Uninstalling protocol: ${serviceName}`)
-        setNotification({
-          type: 'success',
-          message: `${serviceName} desinstalado correctamente`,
-        })
+        alert('Protocolo desinstalado correctamente')
       } catch (error) {
-        setNotification({
-          type: 'error',
-          message: 'Error al desinstalar protocolo',
-        })
+        alert('Error al desinstalar protocolo')
       }
     }
   }

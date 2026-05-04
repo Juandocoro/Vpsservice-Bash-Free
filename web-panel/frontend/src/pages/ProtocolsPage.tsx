@@ -22,7 +22,7 @@ function ProtocolsPage() {
   const [loading, setLoading] = useState(false)
 
   // Store de protocolos
-  const { protocols, fetchProtocols, setNotification } = useProtocolsStore()
+  const { protocols, fetchProtocols } = useProtocolsStore()
 
   // Protocolos disponibles que se pueden instalar
   const AVAILABLE_PROTOCOLS = [
@@ -47,16 +47,13 @@ function ProtocolsPage() {
         await fetchProtocols()
       } catch (error) {
         console.error('Error loading protocols:', error)
-        setNotification({
-          type: 'error',
-          message: 'Error al cargar protocolos',
-        })
+        alert('Error al cargar protocolos')
       } finally {
         setLoading(false)
       }
     }
     loadProtocols()
-  }, [fetchProtocols, setNotification])
+  }, [fetchProtocols])
 
   // Manejar instalar protocolo
   const handleInstallProtocol = (protocolId: string) => {
@@ -72,20 +69,14 @@ function ProtocolsPage() {
     try {
       // Aquí se llamaría a la API para instalar el protocolo
       console.log(`Installing protocol: ${selectedProtocol}`)
-      setNotification({
-        type: 'success',
-        message: `${selectedProtocol} instalado correctamente`,
-      })
+      alert(`${selectedProtocol} instalado correctamente`)
       setShowInstallForm(false)
       setSelectedProtocol(null)
       // Recargar lista de protocolos
       await fetchProtocols()
     } catch (error) {
       console.error('Error installing protocol:', error)
-      setNotification({
-        type: 'error',
-        message: 'Error al instalar protocolo',
-      })
+      alert('Error al instalar protocolo')
     } finally {
       setLoading(false)
     }

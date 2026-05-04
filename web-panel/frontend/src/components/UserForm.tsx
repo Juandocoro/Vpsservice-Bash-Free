@@ -30,7 +30,7 @@ function UserForm({ user, onSuccess, onCancel }: UserFormProps) {
   const [loading, setLoading] = useState(false)
 
   // Store de usuarios
-  const { createUser, updateUser, setNotification } = useUsersStore()
+  const { createUser, updateUser } = useUsersStore()
 
   // Cargar datos del usuario si es edición
   useEffect(() => {
@@ -106,10 +106,7 @@ function UserForm({ user, onSuccess, onCancel }: UserFormProps) {
           expiry_date: formData.expiry_date,
           ...(formData.password && { password: formData.password }),
         })
-        setNotification({
-          type: 'success',
-          message: 'Usuario actualizado correctamente',
-        })
+        alert('Usuario actualizado correctamente')
       } else {
         // Crear nuevo usuario
         await createUser({
@@ -119,19 +116,13 @@ function UserForm({ user, onSuccess, onCancel }: UserFormProps) {
           max_connections: formData.max_connections,
           expiry_date: formData.expiry_date,
         })
-        setNotification({
-          type: 'success',
-          message: 'Usuario creado correctamente',
-        })
+        alert('Usuario creado correctamente')
       }
       onSuccess()
     } catch (error) {
       console.error('Error saving user:', error)
       const message = error instanceof Error ? error.message : 'Error al guardar usuario'
-      setNotification({
-        type: 'error',
-        message,
-      })
+      alert(message)
     } finally {
       setLoading(false)
     }

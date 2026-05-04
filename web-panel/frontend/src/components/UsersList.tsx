@@ -3,7 +3,7 @@
 // Muestra tabla con todos los usuarios SSH y opciones de acción
 // ===================================================================
 
-import React, { useEffect } from 'react';
+import React from 'react';
 import { useUsersStore } from '@/store';
 import { SSHUser } from '@/services/api';
 
@@ -34,10 +34,8 @@ export const UsersList: React.FC<UsersListProps> = ({ onSelectUser }) => {
     deleteUser,
   } = useUsersStore();
 
-  // ===== EFECTO: Cargar usuarios al montar componente =====
-  useEffect(() => {
-    fetchUsers();
-  }, [fetchUsers]);
+  // El componente padre (UsersPage) ya se encarga de llamar a fetchUsers()
+  // No lo llamamos aquí para evitar un bucle infinito de re-renderizado.
 
   // ===== MANEJADOR: Clic en usuario =====
   const handleSelectUser = (user: SSHUser) => {
