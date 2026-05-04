@@ -261,6 +261,7 @@ EOF
         echo -e "     ${WH}${SERVER_IP}:8080@${first_user}:${first_pass}${CR}  ${DM}(puerto 8080)${CR}"
         echo -e "  ${DM}4. Presiona Connect — NO necesitas SSH${CR}"
         echo -e "$SEP"
+        [ "$WEB_PANEL" = "1" ] && exit 0
         read -p "$(echo -e ${DM})Presiona Enter para continuar...$(echo -e ${CR})"
         ;;
 

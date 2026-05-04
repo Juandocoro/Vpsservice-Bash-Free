@@ -70,4 +70,5 @@ echo "[+] Squid HTTP Proxy activo."
 echo "    Puerto: $squid_port/TCP"
 echo "    Acceso: Abierto (sin auth)"
 echo "================================================="
+        [ "$WEB_PANEL" = "1" ] && exit 0
 read -p "Presiona Enter para volver..."

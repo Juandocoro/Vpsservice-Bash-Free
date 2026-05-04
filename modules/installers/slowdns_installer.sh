@@ -95,4 +95,5 @@ echo "    $PUBLIC_KEY" | cut -c1-50
 echo "================================================="
 echo "[!] Recuerda apuntar tu registro NS a: $server_ip"
 echo "================================================="
+        [ "$WEB_PANEL" = "1" ] && exit 0
 read -p "Presiona Enter para volver..."

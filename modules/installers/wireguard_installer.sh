@@ -68,4 +68,5 @@ echo "    Clave Pública: $SERVER_PUBLIC"
 echo "================================================="
 echo "[!] Para agregar clientes usa: wg set wg0 peer <PUB_KEY> allowed-ips 10.9.0.x/32"
 echo "================================================="
+        [ "$WEB_PANEL" = "1" ] && exit 0
 read -p "Presiona Enter para volver..."

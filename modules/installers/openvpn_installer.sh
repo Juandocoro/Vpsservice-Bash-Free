@@ -84,4 +84,5 @@ echo "    Puerto   : $ovpn_port/$ovpn_proto"
 echo "    Cifrado  : AES-256-CBC"
 echo "    Red VPN  : 10.8.0.0/24"
 echo "================================================="
+        [ "$WEB_PANEL" = "1" ] && exit 0
 read -p "Presiona Enter para volver..."

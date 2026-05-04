@@ -46,6 +46,7 @@ EOF
     echo "   Escuchando en el puerto: 443"
     echo "   Dirigiendo internamente a: 22"
     echo "================================================="
+        [ "$WEB_PANEL" = "1" ] && exit 0
     read -p "Presiona Enter para volver al menú de inicio..."
 }
 

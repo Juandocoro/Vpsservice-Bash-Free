@@ -58,4 +58,5 @@ echo "    Cifrado  : aes-256-gcm"
 echo "    Password : $ss_pass"
 echo "    Modo     : TCP + UDP"
 echo "================================================="
+        [ "$WEB_PANEL" = "1" ] && exit 0
 read -p "Presiona Enter para volver..."

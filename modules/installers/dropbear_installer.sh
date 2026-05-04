@@ -56,4 +56,5 @@ echo "================================================="
 echo "[+] Dropbear SSH instalado y activo."
 echo "    Puerto: $db_port/TCP"
 echo "================================================="
+        [ "$WEB_PANEL" = "1" ] && exit 0
 read -p "Presiona Enter para volver..."

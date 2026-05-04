@@ -221,6 +221,7 @@ while true; do
         [ -n "$v2_bughost" ] && echo -e "     ${WH}Host/SNI :${CR} ${CY}$v2_bughost${CR}"
         echo -e "  ${DM}5. Guarda y presiona Start en la pantalla principal${CR}"
         echo -e "$SEP"
+        [ "$WEB_PANEL" = "1" ] && exit 0
         read -p "$(echo -e ${DM})Presiona Enter para continuar...$(echo -e ${CR})"
         ;;
 
