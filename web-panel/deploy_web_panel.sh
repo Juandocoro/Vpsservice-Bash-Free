@@ -145,6 +145,13 @@ server {
         try_files \$uri \$uri/ /index.html;
     }
 
+    # Prevenir caché agresivo de index.html
+    location = /index.html {
+        add_header Cache-Control "no-cache, no-store, must-revalidate";
+        add_header Pragma "no-cache";
+        add_header Expires "0";
+    }
+
     # API -> Gunicorn
     location /api/ {
         proxy_pass http://127.0.0.1:$PANEL_PORT;
