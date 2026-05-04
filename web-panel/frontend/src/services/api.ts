@@ -48,8 +48,8 @@ export interface Protocol {
 // CLASE: API Service
 // ===================================================================
 class APIService {
-  // URL base del backend Django
-  private baseURL: string = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
+  // URL base del backend Django (ruta relativa para que funcione sin rebuild)
+  private baseURL: string = '/api';
 
   // Instancia de Axios configurada
   private client: AxiosInstance;

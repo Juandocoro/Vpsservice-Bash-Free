@@ -45,7 +45,7 @@ echo ""
 # =========================================================
 echo -e "${YL}[*]${CR} Instalando dependencias del sistema..."
 apt-get update -yq &>/dev/null
-apt-get install -yq python3 python3-pip python3-venv nginx nodejs npm &>/dev/null
+apt-get install -yq python3 python3-pip python3-venv nginx &>/dev/null
 echo -e "${GR}[+]${CR} Dependencias instaladas."
 
 # =========================================================
@@ -85,20 +85,15 @@ deactivate
 echo -e "${GR}[+]${CR} Backend configurado."
 
 # =========================================================
-# 4. Frontend: build con npm
+# 4. Frontend: usar build precompilado
 # =========================================================
-echo -e "${YL}[*]${CR} Construyendo frontend..."
-cd "$FRONTEND_DIR"
-
-# Generar .env para Vite
-cat > .env <<ENVEOF
-VITE_API_URL=http://$DOMAIN/api
-VITE_APP_TITLE=VPSService Panel
-ENVEOF
-
-npm install -q --legacy-peer-deps &>/dev/null
-npm run build &>/dev/null
-echo -e "${GR}[+]${CR} Frontend construido en dist/."
+echo -e "${YL}[*]${CR} Verificando frontend..."
+if [ ! -d "$FRONTEND_DIR/dist" ]; then
+    echo -e "${RD}[-]${CR} Error: La carpeta 'dist' del frontend no existe."
+    echo -e "${DM}    Asegurate de descargar la version completa del panel desde GitHub.${CR}"
+    exit 1
+fi
+echo -e "${GR}[+]${CR} Frontend detectado correctamente."
 
 # =========================================================
 # 5. Configurar servicio systemd para Gunicorn
