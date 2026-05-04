@@ -45,11 +45,35 @@ def run_cmd(cmd, input_text=None):
 
 
 def get_service_status(service_name):
-    """Retorna True si el servicio está activo."""
+    """Retorna True si el servicio está activo según systemctl."""
     key = service_name.lower()
     systemd_name = SERVICE_MAP.get(key, key)
     ok, out = run_cmd(['systemctl', 'is-active', systemd_name])
     return out.strip() == 'active'
+
+
+import socket
+def check_port_online(port, protocol_type='tcp'):
+    """
+    Verifica mediante una conexión intermitente de socket si el puerto 
+    está realmente en línea y respondiendo.
+    """
+    if not port or port <= 0:
+        return False
+        
+    try:
+        if protocol_type.lower() == 'tcp' or protocol_type == 'tcp':
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(0.5)
+                # Intenta conexión local
+                result = s.connect_ex(('127.0.0.1', port))
+                return result == 0
+        else:
+            # En UDP no podemos hacer connect real, validamos si existe en netstat/ss
+            ok, out = run_cmd(['bash', '-c', f"ss -uln | grep ':{port}'"])
+            return ok and len(out.strip()) > 0
+    except:
+        return False
 
 
 def get_service_port(service_name):
@@ -72,18 +96,21 @@ def get_service_port(service_name):
         'slowdns': 'slowdns',
     }
     
-    # 1. Intentar obtener el puerto leyendo las conexiones activas (ss)
-    proc_name = proc_map.get(key)
-    if proc_name:
-        ok, out = run_cmd(['bash', '-c', f"ss -tulnp | grep {proc_name} | head -n 1"])
-        if ok and out:
-            import re
-            # Busca algo como 0.0.0.0:7300 o [::]:80
-            match = re.search(r'(?:[0-9\.]+|(?:\[.*?\])):([0-9]+)', out)
-            if match:
-                return int(match.group(1))
-                
-    # 2. Casos especiales que no aparecen fácilmente en ss
+    # 1. Intentar obtener el puerto leyendo las conexiones activas (ss) usando el PID exacto del servicio
+    systemd_name = SERVICE_MAP.get(key, key)
+    ok, pid_out = run_cmd(['systemctl', 'show', systemd_name, '-p', 'MainPID'])
+    
+    if ok and 'MainPID=' in pid_out:
+        pid = pid_out.replace('MainPID=', '').strip()
+        if pid and pid != '0':
+            ok_ss, out_ss = run_cmd(['bash', '-c', f"ss -tulnp | grep 'pid={pid},' | head -n 1"])
+            if ok_ss and out_ss:
+                import re
+                match = re.search(r'(?:[0-9\.]+|(?:\[.*?\])):([0-9]+)', out_ss)
+                if match:
+                    return int(match.group(1))
+                    
+    # 2. Casos especiales que no aparecen fácilmente en ss con PID
     if key == 'wireguard':
         ok, out = run_cmd(['bash', '-c', "wg show wg0 listen-port 2>/dev/null"])
         if ok and out.strip().isdigit():
@@ -156,12 +183,6 @@ class ProtocolViewSet(viewsets.ModelViewSet):
         for p in protocols:
             needs_update = False
             
-            # Actualizar estado activo
-            real_active = get_service_status(p.name)
-            if p.is_active != real_active:
-                p.is_active = real_active
-                needs_update = True
-                
             # Actualizar puerto dinámicamente si está instalado
             if p.is_installed:
                 real_port = get_service_port(p.name)
@@ -169,6 +190,20 @@ class ProtocolViewSet(viewsets.ModelViewSet):
                     p.port = real_port
                     needs_update = True
                     
+            # Actualizar estado activo: debe estar activo en systemd Y el puerto debe responder (conexión intermitente)
+            real_active = get_service_status(p.name)
+            
+            if real_active and p.is_installed and p.port > 0:
+                is_online = check_port_online(p.port, p.protocol_type)
+                if not is_online:
+                    real_active = False # El servicio está "running" pero el puerto no responde
+            elif not real_active and p.is_active:
+                real_active = False
+                
+            if p.is_active != real_active:
+                p.is_active = real_active
+                needs_update = True
+                
             if needs_update:
                 p.save(update_fields=['is_active', 'port'])
                 
