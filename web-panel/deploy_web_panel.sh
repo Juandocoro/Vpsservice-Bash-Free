@@ -1,124 +1,184 @@
-#!/usr/bin/env bash
+#!/bin/bash
+# =========================================================
+# VPSService Web Panel - Deploy sin Docker
+# Instala backend (Django + Gunicorn) y frontend (Vite build)
+# sirviendo todo desde Nginx en el mismo VPS
+# =========================================================
 set -euo pipefail
 
-# Instalador / Despliegue del panel web
-# - Pide el dominio a usar
-# - Genera archivos .env para backend y frontend
-# - Opción para levantar con docker-compose
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BACKEND_DIR="$DIR/backend"
+FRONTEND_DIR="$DIR/frontend"
+PANEL_PORT=8765
+DOMAIN=""
 
-DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-ROOT_DIR="$( cd "$DIR/.." && pwd )"
-
-CR="\033[0m"
 GR="\033[1;32m"
 RD="\033[0;31m"
 YL="\033[0;33m"
-DM="\033[2;37m"
 WH="\033[1;37m"
+DM="\033[2;37m"
+CR="\033[0m"
 
-echo -e "${WH}==> VPSService Web Panel - Instalador${CR}"
-echo
+echo -e "${WH}=> VPSService Web Panel - Instalador${CR}"
+echo ""
 
-read -p "Dominio (ej: panel.midominio.com) [dejar vacío para usar IP]: " DOMAIN
-
-# Validar dominio simple
-if [ -n "$DOMAIN" ]; then
-    if ! echo "$DOMAIN" | grep -Eq "^([a-zA-Z0-9][-a-zA-Z0-9]{0,62})(\.[a-zA-Z0-9][-a-zA-Z0-9]{0,62})+$"; then
-        echo -e "${YL}[!]${CR} Dominio con formato inválido, continúa con el valor ingresado pero revisa manualmente."
-    fi
+# =========================================================
+# 0. Verificar root
+# =========================================================
+if [ "$EUID" -ne 0 ]; then
+    echo -e "${RD}[-]${CR} Ejecutar como root: sudo bash deploy_web_panel.sh"
+    exit 1
 fi
 
-# Determinar API URL
-if [ -n "$DOMAIN" ]; then
-    API_URL="http://$DOMAIN/api"
-else
-    SERVER_IP=$(curl -s ifconfig.me || echo "127.0.0.1")
-    API_URL="http://$SERVER_IP/api"
-    DOMAIN="$SERVER_IP"
+# =========================================================
+# 1. Pedir dominio (opcional)
+# =========================================================
+read -p "Dominio o IP para el panel [dejar vacio = usar IP publica]: " DOMAIN
+if [ -z "$DOMAIN" ]; then
+    DOMAIN=$(curl -s ifconfig.me 2>/dev/null || echo "127.0.0.1")
 fi
+echo -e "${DM}  Usando: $DOMAIN${CR}"
+echo ""
 
-echo
-echo -e "${DM}Generando archivos .env para backend y frontend...${CR}"
+# =========================================================
+# 2. Instalar dependencias del sistema
+# =========================================================
+echo -e "${YL}[*]${CR} Instalando dependencias del sistema..."
+apt-get update -yq &>/dev/null
+apt-get install -yq python3 python3-pip python3-venv nginx nodejs npm &>/dev/null
+echo -e "${GR}[+]${CR} Dependencias instaladas."
 
-# BACKEND .env
-BACKEND_ENV="$DIR/backend/.env"
-if [ -f "$DIR/backend/.env.example" ]; then
-    cp "$DIR/backend/.env.example" "$BACKEND_ENV"
-else
-    echo -e "${YL}[!]${CR} No se encontró backend/.env.example; creando .env básico"
-    cat > "$BACKEND_ENV" <<EOF
+# =========================================================
+# 3. Backend: entorno virtual + dependencias Python
+# =========================================================
+echo -e "${YL}[*]${CR} Configurando backend Python..."
+cd "$BACKEND_DIR"
+
+# Crear entorno virtual si no existe
+if [ ! -d "venv" ]; then
+    python3 -m venv venv
+fi
+source venv/bin/activate
+
+# Instalar dependencias
+pip install -q --upgrade pip
+pip install -q -r requirements.txt
+pip install -q gunicorn
+
+# Generar .env si no existe
+if [ ! -f ".env" ]; then
+    SECRET=$(python3 -c "import secrets; print(secrets.token_urlsafe(50))")
+    cat > .env <<ENVEOF
 DEBUG=False
-SECRET_KEY=replace-me
-ALLOWED_HOSTS=$DOMAIN
-DB_ENGINE=django.db.backends.postgresql
-DB_NAME=vpsservice_db
-DB_USER=vpsservice_user
-DB_PASSWORD=vpsservice_password
-DB_HOST=localhost
-DB_PORT=5432
-REDIS_URL=redis://localhost:6379/0
-EOF
+SECRET_KEY=$SECRET
+ALLOWED_HOSTS=$DOMAIN,localhost,127.0.0.1
+DB_ENGINE=django.db.backends.sqlite3
+CORS_ALLOWED_ORIGINS=http://$DOMAIN,http://localhost
+ENVEOF
+    echo -e "${GR}[+]${CR} Archivo .env generado."
 fi
 
-# Generar SECRET_KEY si está en la plantilla
-if grep -q "SECRET_KEY" "$BACKEND_ENV" 2>/dev/null; then
-    # generar secret key
-    if command -v python3 >/dev/null 2>&1; then
-        SECRET_KEY=$(python3 - <<'PY'
-import secrets
-print(secrets.token_urlsafe(50))
-PY
-)
-    else
-        SECRET_KEY=$(head -c 32 /dev/urandom | base64)
-    fi
-    sed -i "s/^SECRET_KEY=.*/SECRET_KEY=$SECRET_KEY/" "$BACKEND_ENV" || true
-fi
+# Migraciones y superusuario
+python3 manage.py migrate --run-syncdb &>/dev/null
+python3 manage.py collectstatic --noinput &>/dev/null
+deactivate
+echo -e "${GR}[+]${CR} Backend configurado."
 
-# Actualizar ALLOWED_HOSTS
-sed -i "s/^ALLOWED_HOSTS=.*/ALLOWED_HOSTS=${DOMAIN}/" "$BACKEND_ENV" || true
+# =========================================================
+# 4. Frontend: build con npm
+# =========================================================
+echo -e "${YL}[*]${CR} Construyendo frontend..."
+cd "$FRONTEND_DIR"
 
-# FRONTEND .env
-FRONTEND_ENV="$DIR/frontend/.env"
-if [ -f "$DIR/frontend/.env.example" ]; then
-    cp "$DIR/frontend/.env.example" "$FRONTEND_ENV"
-else
-    cat > "$FRONTEND_ENV" <<EOF
-VITE_API_URL=$API_URL
-VITE_APP_TITLE=VPSService Web Panel
-EOF
-fi
+# Generar .env para Vite
+cat > .env <<ENVEOF
+VITE_API_URL=http://$DOMAIN/api
+VITE_APP_TITLE=VPSService Panel
+ENVEOF
 
-# Reemplazar VITE_API_URL si existe
-if grep -q "VITE_API_URL" "$FRONTEND_ENV" 2>/dev/null; then
-    sed -i "s|^VITE_API_URL=.*|VITE_API_URL=$API_URL|" "$FRONTEND_ENV" || true
-else
-    echo "VITE_API_URL=$API_URL" >> "$FRONTEND_ENV"
-fi
+npm install -q --legacy-peer-deps &>/dev/null
+npm run build &>/dev/null
+echo -e "${GR}[+]${CR} Frontend construido en dist/."
 
-echo -e "${GR}[+]${CR} Archivos .env generados:
-  - $BACKEND_ENV
-  - $FRONTEND_ENV"
+# =========================================================
+# 5. Configurar servicio systemd para Gunicorn
+# =========================================================
+echo -e "${YL}[*]${CR} Configurando servicio Gunicorn..."
+cat > /etc/systemd/system/vpsservice-panel.service <<SVCEOF
+[Unit]
+Description=VPSService Web Panel (Gunicorn)
+After=network.target
 
-echo
-read -p "¿Deseas levantar los servicios con Docker Compose ahora? (recomendado) (s/n): " DOCKER_ANS
-if [[ "$DOCKER_ANS" =~ ^[sS] ]]; then
-    if ! command -v docker >/dev/null 2>&1; then
-        echo -e "${RD}[-]${CR} Docker no está instalado en este sistema. Instala Docker y vuelve a intentar."
-        exit 1
-    fi
-    if [ -f "$DIR/docker-compose.yml" ]; then
-        echo -e "${DM}Ejecutando docker-compose up -d...${CR}"
-        (cd "$DIR" && docker-compose up -d)
-        echo -e "${GR}[+]${CR} Servicios levantados con Docker Compose."
-    else
-        echo -e "${YL}[!]${CR} No se encontró $DIR/docker-compose.yml. Ejecuta el despliegue manualmente."
-    fi
-else
-    echo -e "${DM}Omitiendo levantamiento con Docker. Puedes iniciar manualmente más tarde.${CR}"
-fi
+[Service]
+User=root
+WorkingDirectory=$BACKEND_DIR
+ExecStart=$BACKEND_DIR/venv/bin/gunicorn config.wsgi:application --bind 127.0.0.1:$PANEL_PORT --workers 2
+Restart=always
+RestartSec=5
+Environment="DJANGO_SETTINGS_MODULE=config.settings"
 
-echo
-echo -e "${GR}[+]${CR} Instalación básica completada. Accede a: http://$DOMAIN (frontend) y http://$DOMAIN/api (API) si todo está levantado."
-echo
-exit 0
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+
+systemctl daemon-reload
+systemctl enable vpsservice-panel &>/dev/null
+systemctl restart vpsservice-panel
+echo -e "${GR}[+]${CR} Gunicorn corriendo en 127.0.0.1:$PANEL_PORT."
+
+# =========================================================
+# 6. Configurar Nginx
+# =========================================================
+echo -e "${YL}[*]${CR} Configurando Nginx..."
+cat > /etc/nginx/sites-available/vpsservice-panel <<NGINXEOF
+server {
+    listen 80;
+    server_name $DOMAIN;
+
+    # Frontend (archivos estaticos de React)
+    root $FRONTEND_DIR/dist;
+    index index.html;
+
+    # SPA fallback
+    location / {
+        try_files \$uri \$uri/ /index.html;
+    }
+
+    # API -> Gunicorn
+    location /api/ {
+        proxy_pass http://127.0.0.1:$PANEL_PORT;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_read_timeout 60s;
+    }
+
+    # Admin Django
+    location /admin/ {
+        proxy_pass http://127.0.0.1:$PANEL_PORT;
+        proxy_set_header Host \$host;
+    }
+
+    # Estaticos Django
+    location /static/ {
+        alias $BACKEND_DIR/staticfiles/;
+    }
+}
+NGINXEOF
+
+ln -sf /etc/nginx/sites-available/vpsservice-panel /etc/nginx/sites-enabled/vpsservice-panel
+rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
+nginx -t && systemctl reload nginx
+echo -e "${GR}[+]${CR} Nginx configurado y recargado."
+
+# =========================================================
+# LISTO
+# =========================================================
+echo ""
+echo -e "${YL}--------------------------------------------------------${CR}"
+echo -e "${GR}[+]${CR} Panel web instalado correctamente."
+echo -e "${DM}    URL del panel  : ${WH}http://$DOMAIN${CR}"
+echo -e "${DM}    API Backend    : ${WH}http://$DOMAIN/api/${CR}"
+echo -e "${DM}    Usuario login  : ${WH}root${CR} (usa tu password root actual)"
+echo -e "${YL}--------------------------------------------------------${CR}"
+echo ""

@@ -119,7 +119,7 @@ class APIService {
    */
   async login(username: string, password: string): Promise<TokenResponse> {
     try {
-      const response = await this.client.post<TokenResponse>('/auth/token/', {
+      const response = await this.client.post<TokenResponse>('/auth/login/', {
         username,
         password,
       });

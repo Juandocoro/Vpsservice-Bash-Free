@@ -1,45 +1,32 @@
-# ===================================================================
-# VPSService Web Panel - URL Routing (Principal)
-# Enruta todas las peticiones HTTP a las vistas correctas
-# ===================================================================
-
 from django.contrib import admin
 from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
 from django.http import JsonResponse
-from rest_framework_simplejwt.views import (
-    TokenObtainPairView,      # Obtener token JWT (login)
-    TokenRefreshView,         # Refrescar token JWT
-)
+from rest_framework_simplejwt.views import TokenRefreshView
+from rest_framework.routers import DefaultRouter
+from apps.users.views import SSHUserViewSet, system_login
+from apps.protocols.views import ProtocolViewSet
 
-# ===================================================================
-# URL PATTERNS - RUTAS PRINCIPALES
-# ===================================================================
+router = DefaultRouter()
+router.register(r'users', SSHUserViewSet, basename='users')
+router.register(r'protocols', ProtocolViewSet, basename='protocols')
+
 urlpatterns = [
-    # ===== ADMINISTRACIÓN =====
-    # Panel administrativo de Django (solo para desarrolladores)
     path('admin/', admin.site.urls),
 
-    # ===== AUTENTICACIÓN =====
-    # Endpoints para obtener y refrescar tokens JWT
-    path('api/auth/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),      # POST: obtener token
-    path('api/auth/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),    # POST: refrescar token
+    # Auth: login con password root del sistema
+    path('api/auth/login/', system_login, name='system_login'),
+    path('api/auth/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
 
-    # ===== HEALTHCHECK =====
+    # Healthcheck
     path('api/health/', lambda request: JsonResponse({'status': 'ok'})),
 
-    # ===== API REST =====
-    # Usuarios SSH
-    path('api/users/', include('apps.users.urls')),              # Gestión de usuarios
-
-    # Protocolos (Stunnel, OpenVPN, V2Ray, etc)
-    path('api/protocols/', include('apps.protocols.urls')),      # Gestión de protocolos
+    # API REST (usuarios + protocolos)
+    path('api/', include(router.urls)),
 ]
 
-# ===================================================================
-# ARCHIVOS ESTÁTICOS Y MEDIA (en desarrollo)
-# ===================================================================
 if settings.DEBUG:
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
     urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
+
