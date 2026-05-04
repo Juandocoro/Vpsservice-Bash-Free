@@ -90,35 +90,32 @@ function update_script() {
     echo -e "$SEP"
     echo -e "${WH}                ACTUALIZAR${CR}"
     echo -e "$SEP"
-    CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+    CURRENT_BRANCH=$(git -C "$DIR" rev-parse --abbrev-ref HEAD 2>/dev/null)
     [ -z "$CURRENT_BRANCH" ] && CURRENT_BRANCH="panel"
     echo -e "  ${YL}[*]${CR} Buscando nuevas versiones en GitHub..."
     echo ""
-    git fetch origin "$CURRENT_BRANCH" &>/dev/null
-    LOCAL=$(git rev-parse --short HEAD 2>/dev/null)
-    REMOTE=$(git rev-parse --short FETCH_HEAD 2>/dev/null)
-    [ -z "$LOCAL" ] && LOCAL="Desconocida"
+    git -C "$DIR" fetch origin "$CURRENT_BRANCH" &>/dev/null
+    LOCAL=$(git -C "$DIR" rev-parse --short HEAD 2>/dev/null)
+    REMOTE=$(git -C "$DIR" rev-parse --short FETCH_HEAD 2>/dev/null)
+    [ -z "$LOCAL" ]  && LOCAL="Desconocida"
     [ -z "$REMOTE" ] && REMOTE="Desconocida"
     echo -e "  ${DM}Rama activa       :${CR} ${WH}$CURRENT_BRANCH${CR}"
-    echo -e "  ${DM}Versión Instalada :${CR} ${WH}$LOCAL${CR}"
-    echo -e "  ${DM}Versión Nube      :${CR} ${WH}$REMOTE${CR}"
+    echo -e "  ${DM}Version Instalada :${CR} ${WH}$LOCAL${CR}"
+    echo -e "  ${DM}Version Nube      :${CR} ${WH}$REMOTE${CR}"
     echo ""
     if [ "$LOCAL" == "$REMOTE" ]; then
-        echo -e "  ${GR}[+]${CR} Tienes la última versión instalada."
+        echo -e "  ${GR}[+]${CR} Tienes la ultima version instalada."
         read -p "$(echo -e ${DM})Presiona Enter para volver...$(echo -e ${CR})"
     else
-        echo -e "  ${YL}[!]${CR} Nueva actualización encontrada."
-        echo -e "  ${YL}[*]${CR} Actualizando de forma segura (fast-forward)..."
-        if git pull --ff-only origin "$CURRENT_BRANCH" &>/dev/null; then
-            chmod -R +x "$DIR" 2>/dev/null
-            echo -e "  ${GR}[+]${CR} Actualizado correctamente. Reiniciando..."
-            sleep 2
-            exec "$DIR/main.sh"
-        else
-            echo -e "  ${RD}[-]${CR} No se pudo actualizar (cambios locales detectados)."
-            echo -e "  ${DM}    Usa: git stash && git pull origin $CURRENT_BRANCH${CR}"
-            read -p "$(echo -e ${DM})Presiona Enter para volver...$(echo -e ${CR})"
-        fi
+        echo -e "  ${YL}[!]${CR} Nueva actualizacion encontrada."
+        echo -e "  ${YL}[*]${CR} Aplicando actualizacion..."
+        git -C "$DIR" reset --hard "origin/$CURRENT_BRANCH" &>/dev/null
+        echo -e "  ${YL}[*]${CR} Normalizando scripts (CRLF -> LF)..."
+        find "$DIR" -name "*.sh" -exec sed -i 's/\r//' {} \;
+        chmod -R +x "$DIR" 2>/dev/null
+        echo -e "  ${GR}[+]${CR} Actualizado correctamente. Reiniciando..."
+        sleep 2
+        exec bash "$DIR/main.sh"
     fi
 }
 
