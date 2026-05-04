@@ -28,9 +28,9 @@ if ! crontab -l 2>/dev/null | grep -q "killer.sh"; then
 fi
 
 echo -e "\033[0;33m[*]\033[0m Registrando comando global 'menu'..."
-cat <<EOF > /usr/local/bin/menu
+cat <<'EOF' > /usr/local/bin/menu
 #!/bin/bash
-sudo "$DIR/main.sh"
+sudo /opt/vpsservice-free/main.sh
 EOF
 chmod +x /usr/local/bin/menu
 
@@ -41,4 +41,4 @@ echo -e "\033[2;37m    Comando global: menu\033[0m"
 echo -e "\033[0;33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
 echo ""
 read -p "$(echo -e "\033[2;37m")Presiona Enter para abrir el panel...$(echo -e "\033[0m")"
-sudo "$DIR/main.sh"
+exec sudo /opt/vpsservice-free/main.sh

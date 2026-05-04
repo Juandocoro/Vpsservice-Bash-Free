@@ -64,9 +64,9 @@ chmod -R +x "$TARGET_DIR"
 # PASO 5: Registrar comando global 'menu'
 # =========================================================
 echo -e "\033[0;33m[*]\033[0m Registrando comando global..."
-cat <<EOF > /usr/local/bin/menu
+cat <<'EOF' > /usr/local/bin/menu
 #!/bin/bash
-sudo "$TARGET_DIR/main.sh"
+sudo /opt/vpsservice-free/main.sh
 EOF
 chmod +x /usr/local/bin/menu
 
@@ -99,4 +99,4 @@ echo -e "\033[2;37m    Comando global: menu\033[0m"
 echo -e "\033[0;33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
 echo ""
 read -p "$(echo -e "\033[2;37m")Presiona Enter para abrir el panel...$(echo -e "\033[0m")"
-sudo "$TARGET_DIR/main.sh"
+exec sudo /opt/vpsservice-free/main.sh
