@@ -114,16 +114,16 @@ function ProtocolsList() {
               {/* Nombre del protocolo */}
               <td className="py-3 px-4">
                 <div className="flex items-center gap-3">
-                  <span className="text-2xl">
-                    {getProtocolIcon(protocol.service_name)}
-                  </span>
-                  <div>
-                    <p className="font-medium text-white">
-                      {protocol.name || protocol.service_name}
-                    </p>
-                    <p className="text-xs text-gray-400">
-                      {protocol.service_name}
-                    </p>
+                    <span className="text-2xl">
+                      {getProtocolIcon(protocol.name)}
+                    </span>
+                    <div>
+                      <p className="font-medium text-white">
+                        {protocol.name}
+                      </p>
+                      <p className="text-xs text-gray-400">
+                        {protocol.name}
+                      </p>
                   </div>
                 </div>
               </td>
@@ -140,19 +140,19 @@ function ProtocolsList() {
                 <div className="flex items-center gap-2">
                   <span
                     className={`inline-block w-2 h-2 rounded-full ${
-                      protocol.status === 'running'
+                      protocol.is_active
                         ? 'bg-green-500'
                         : 'bg-red-500'
                     }`}
                   ></span>
                   <span
                     className={`text-sm font-medium ${
-                      protocol.status === 'running'
+                      protocol.is_active
                         ? 'text-green-400'
                         : 'text-red-400'
                     }`}
                   >
-                    {protocol.status === 'running' ? 'Activo' : 'Inactivo'}
+                    {protocol.is_active ? 'Activo' : 'Inactivo'}
                   </span>
                 </div>
               </td>
@@ -160,7 +160,7 @@ function ProtocolsList() {
               {/* Fecha de instalación */}
               <td className="py-3 px-4">
                 <span className="text-sm text-gray-400">
-                  {formatDate(protocol.date_installed)}
+                  {protocol.installed_date ? formatDate(protocol.installed_date) : 'N/A'}
                 </span>
               </td>
 
@@ -170,7 +170,7 @@ function ProtocolsList() {
                   {/* Botón Reiniciar */}
                   <button
                     onClick={() =>
-                      handleRestartService(protocol.id, protocol.service_name)
+                      handleRestartService(protocol.id, protocol.name)
                     }
                     className="p-2 hover:bg-blue-600/50 rounded text-blue-400 hover:text-blue-300 transition-colors"
                     title="Reiniciar servicio"
@@ -189,7 +189,7 @@ function ProtocolsList() {
                   {/* Botón Desinstalar */}
                   <button
                     onClick={() =>
-                      handleUninstall(protocol.id, protocol.service_name)
+                      handleUninstall(protocol.id, protocol.name)
                     }
                     className="p-2 hover:bg-red-600/50 rounded text-red-400 hover:text-red-300 transition-colors"
                     title="Desinstalar"

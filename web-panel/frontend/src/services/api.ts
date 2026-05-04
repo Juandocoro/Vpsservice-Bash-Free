@@ -306,10 +306,18 @@ class APIService {
   }
 
   /**
-   * Instalar protocolo
+   * Crear registro de protocolo (si no existe)
    */
-  async installProtocol(protocolData: Partial<Protocol>): Promise<Protocol> {
+  async createProtocol(protocolData: Partial<Protocol>): Promise<Protocol> {
     const response = await this.client.post<Protocol>('/protocols/', protocolData);
+    return response.data;
+  }
+
+  /**
+   * Ejecutar instalador del protocolo
+   */
+  async runInstallProtocol(id: number): Promise<any> {
+    const response = await this.client.post(`/protocols/${id}/install/`);
     return response.data;
   }
 

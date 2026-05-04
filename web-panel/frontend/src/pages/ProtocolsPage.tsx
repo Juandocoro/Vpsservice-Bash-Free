@@ -22,7 +22,7 @@ function ProtocolsPage() {
   const [loading, setLoading] = useState(false)
 
   // Store de protocolos
-  const { protocols, fetchProtocols } = useProtocolsStore()
+  const { protocols, fetchProtocols, installProtocol } = useProtocolsStore()
 
   // Protocolos disponibles que se pueden instalar
   const AVAILABLE_PROTOCOLS = [
@@ -67,8 +67,10 @@ function ProtocolsPage() {
 
     setLoading(true)
     try {
-      // Aquí se llamaría a la API para instalar el protocolo
       console.log(`Installing protocol: ${selectedProtocol}`)
+      // Enviar nombre (y puerto predeterminado = 0, el instalador usa el suyo)
+      await installProtocol({ name: selectedProtocol, port: 0 })
+      
       alert(`${selectedProtocol} instalado correctamente`)
       setShowInstallForm(false)
       setSelectedProtocol(null)

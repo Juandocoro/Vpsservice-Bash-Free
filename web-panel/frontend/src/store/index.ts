@@ -265,11 +265,18 @@ export const useProtocolsStore = create<ProtocolsState>((set) => ({
   installProtocol: async (protocolData: any) => {
     set({ loading: true, error: null });
     try {
-      const newProtocol = await APIService.installProtocol(protocolData);
-      set((state) => ({
-        protocols: [...state.protocols, newProtocol],
+      // 1. Crear registro en BD
+      const newProtocol = await APIService.createProtocol(protocolData);
+      
+      // 2. Ejecutar instalador bash
+      await APIService.runInstallProtocol(newProtocol.id);
+      
+      // 3. Recargar para obtener estado final real
+      const protocols = await APIService.getProtocols();
+      set({
+        protocols,
         loading: false,
-      }));
+      });
     } catch (error: any) {
       const errorMessage = APIService.getErrorMessage(error);
       set({
