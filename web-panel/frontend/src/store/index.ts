@@ -52,7 +52,7 @@ interface ProtocolsState {
   // Acciones
   fetchProtocols: () => Promise<void>;
   selectProtocol: (protocol: Protocol | null) => void;
-  installProtocol: (protocolData: any) => Promise<void>;
+  installProtocol: (protocolData: any) => Promise<string>;
   uninstallProtocol: (id: number) => Promise<void>;
   updateProtocol: (id: number, protocolData: Partial<Protocol>) => Promise<void>;
   clearError: () => void;
@@ -262,21 +262,17 @@ export const useProtocolsStore = create<ProtocolsState>((set) => ({
   },
 
   // ===== ACCIÓN: Instalar protocolo =====
-  installProtocol: async (protocolData: any) => {
+  installProtocol: async (protocolData: any): Promise<string> => {
     set({ loading: true, error: null });
     try {
       // 1. Crear registro en BD
       const newProtocol = await APIService.createProtocol(protocolData);
       
-      // 2. Ejecutar instalador bash
-      await APIService.runInstallProtocol(newProtocol.id);
+      // 2. Ejecutar instalador bash y obtener URL del terminal
+      const res = await APIService.runInstallProtocol(newProtocol.id);
       
-      // 3. Recargar para obtener estado final real
-      const protocols = await APIService.getProtocols();
-      set({
-        protocols,
-        loading: false,
-      });
+      set({ loading: false });
+      return res.terminal_url;
     } catch (error: any) {
       const errorMessage = APIService.getErrorMessage(error);
       set({

@@ -16,10 +16,10 @@ import ProtocolsList from '../components/ProtocolsList'
  * - Ver estado/logs del protocolo
  */
 function ProtocolsPage() {
-  // State para mostrar/ocultar modal de instalar protocolo
   const [showInstallForm, setShowInstallForm] = useState(false)
   const [selectedProtocol, setSelectedProtocol] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  const [terminalUrl, setTerminalUrl] = useState<string | null>(null)
 
   // Store de protocolos
   const { protocols, fetchProtocols, installProtocol } = useProtocolsStore()
@@ -69,13 +69,10 @@ function ProtocolsPage() {
     try {
       console.log(`Installing protocol: ${selectedProtocol}`)
       // Enviar nombre (y puerto predeterminado = 0, el instalador usa el suyo)
-      await installProtocol({ name: selectedProtocol, port: 0 })
+      const url = await installProtocol({ name: selectedProtocol, port: 0 })
       
-      alert(`${selectedProtocol} instalado correctamente`)
+      setTerminalUrl(url)
       setShowInstallForm(false)
-      setSelectedProtocol(null)
-      // Recargar lista de protocolos
-      await fetchProtocols()
     } catch (error) {
       console.error('Error installing protocol:', error)
       alert('Error al instalar protocolo')
@@ -146,9 +143,42 @@ function ProtocolsPage() {
                 disabled={loading}
                 className="btn-primary flex-1 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {loading ? 'Instalando...' : 'Instalar'}
+                {loading ? 'Abriendo Terminal...' : 'Instalar'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Terminal TTYD */}
+      {terminalUrl && (
+        <div className="fixed inset-0 bg-black/90 flex flex-col z-[100]">
+          {/* Header del Terminal */}
+          <div className="bg-gray-900 p-4 flex justify-between items-center border-b border-gray-800">
+            <h2 className="text-xl font-bold text-white">
+              Instalando {AVAILABLE_PROTOCOLS.find(p => p.id === selectedProtocol)?.name}
+            </h2>
+            <button
+              onClick={async () => {
+                setTerminalUrl(null)
+                setSelectedProtocol(null)
+                setLoading(true)
+                await fetchProtocols()
+                setLoading(false)
+              }}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded shadow transition-colors"
+            >
+              Terminar y Recargar
+            </button>
+          </div>
+          
+          {/* Iframe del Terminal */}
+          <div className="flex-1 w-full relative">
+            <iframe 
+              src={terminalUrl} 
+              className="absolute inset-0 w-full h-full border-none"
+              title="Terminal Web"
+            />
           </div>
         </div>
       )}

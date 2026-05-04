@@ -45,7 +45,13 @@ echo ""
 # =========================================================
 echo -e "${YL}[*]${CR} Instalando dependencias del sistema..."
 apt-get update -yq &>/dev/null
-apt-get install -yq python3 python3-pip python3-venv nginx &>/dev/null
+apt-get install -yq python3 python3-pip python3-venv nginx curl wget &>/dev/null
+
+if ! command -v ttyd &> /dev/null; then
+    echo -e "${YL}[*]${CR} Instalando ttyd para terminales web..."
+    wget -qO /usr/local/bin/ttyd https://github.com/tsl0922/ttyd/releases/download/1.7.3/ttyd.x86_64
+    chmod +x /usr/local/bin/ttyd
+fi
 echo -e "${GR}[+]${CR} Dependencias instaladas."
 
 # =========================================================
@@ -146,6 +152,18 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_read_timeout 60s;
+    }
+
+    # Terminal Web TTYD (WebSockets)
+    location /terminal/ {
+        proxy_pass http://127.0.0.1:8080/;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_read_timeout 86400;
     }
 
     # Admin Django

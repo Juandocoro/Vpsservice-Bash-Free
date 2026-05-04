@@ -34,9 +34,9 @@ SERVICE_MAP = {
 }
 
 
-def run_cmd(cmd):
+def run_cmd(cmd, input_text=None):
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        result = subprocess.run(cmd, input=input_text, capture_output=True, text=True, timeout=120)
         return result.returncode == 0, result.stdout.strip() or result.stderr.strip()
     except subprocess.TimeoutExpired:
         return False, 'Timeout'
@@ -118,16 +118,25 @@ class ProtocolViewSet(viewsets.ModelViewSet):
             )
 
         script_path = f'{VPS_DIR}/modules/installers/{installer}'
-        ok, msg = run_cmd(['bash', script_path])
+        
+        # Matar cualquier ttyd viejo corriendo en el puerto 8080
+        subprocess.run(['fuser', '-k', '8080/tcp'], capture_output=True)
+        
+        # Lanzar ttyd en background. 
+        # -O: Una vez que el cliente se desconecte, ttyd se cierra.
+        try:
+            subprocess.Popen(
+                ['ttyd', '-O', '-p', '8080', 'bash', script_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        if ok:
-            protocol.is_installed = True
-            protocol.is_active = get_service_status(key)
-            protocol.save()
-
+        # Devolvemos URL del terminal (el Nginx lo proxea a 8080)
         return Response({
-            'success': ok,
-            'output': msg,
+            'success': True,
+            'terminal_url': '/terminal/',
             'protocol': ProtocolSerializer(protocol).data
         })
 

@@ -316,7 +316,7 @@ class APIService {
   /**
    * Ejecutar instalador del protocolo
    */
-  async runInstallProtocol(id: number): Promise<any> {
+  async runInstallProtocol(id: number): Promise<{ terminal_url: string }> {
     const response = await this.client.post(`/protocols/${id}/install/`);
     return response.data;
   }
