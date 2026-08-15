@@ -36,26 +36,56 @@ crear_usuario() {
     EXP_DATE=$(date -d "+$DAYS days" +%Y-%m-%d 2>/dev/null)
     SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || echo "N/A")
 
-    # Garantizar que sshd permita autenticación por contraseña (crítico para SSL/Stunnel)
+    # ================================================================
+    # FIX SSH — 4 capas para garantizar auth sin depender de
+    # PasswordAuthentication (Ubuntu Cloud lo deshabilita por defecto)
+    # ================================================================
     SSHD_CONF="/etc/ssh/sshd_config"
-    _fix_sshd() {
-        local key="$1" val="$2"
-        if grep -qE "^#?\s*${key}" "$SSHD_CONF" 2>/dev/null; then
-            sed -i -E "s|^#?\s*${key}.*|${key} ${val}|g" "$SSHD_CONF"
+
+    # Helper: aplica una directiva en el archivo objetivo
+    _ssh_set() {
+        local file="$1" key="$2" val="$3"
+        if grep -qE "^#?\s*${key}" "$file" 2>/dev/null; then
+            sed -i -E "s|^#?\s*${key}.*|${key} ${val}|g" "$file"
         else
-            echo "${key} ${val}" >> "$SSHD_CONF"
+            echo "${key} ${val}" >> "$file"
         fi
     }
-    _fix_sshd "PasswordAuthentication" "yes"
-    _fix_sshd "PubkeyAuthentication"   "yes"
-    _fix_sshd "PermitEmptyPasswords"   "no"
-    # Recargar sshd para aplicar cambios sin cortar sesión activa
+
+    # CAPA 1 — Parchar sshd_config principal
+    _ssh_set "$SSHD_CONF" "UsePAM"                      "yes"
+    _ssh_set "$SSHD_CONF" "KbdInteractiveAuthentication" "yes"  # SSH moderno (Ubuntu 22+)
+    _ssh_set "$SSHD_CONF" "ChallengeResponseAuthentication" "yes"  # SSH antiguo (Ubuntu 20)
+    _ssh_set "$SSHD_CONF" "PasswordAuthentication"      "yes"
+    _ssh_set "$SSHD_CONF" "PermitEmptyPasswords"        "no"
+
+    # CAPA 2 — Neutralizar overrides en sshd_config.d/ (Ubuntu Cloud los pone aquí)
+    # Cualquier archivo con PasswordAuthentication no o KbdInteractive no queda corregido
+    if [ -d /etc/ssh/sshd_config.d ]; then
+        for f in /etc/ssh/sshd_config.d/*.conf; do
+            [ -f "$f" ] || continue
+            sed -i -E 's|^#?\s*PasswordAuthentication.*|PasswordAuthentication yes|g' "$f"
+            sed -i -E 's|^#?\s*KbdInteractiveAuthentication.*|KbdInteractiveAuthentication yes|g' "$f"
+            sed -i -E 's|^#?\s*ChallengeResponseAuthentication.*|ChallengeResponseAuthentication yes|g' "$f"
+        done
+    fi
+
+    # CAPA 3 — Si sshd tiene AllowUsers, agregar el usuario nuevo a la lista
+    if grep -qE "^AllowUsers" "$SSHD_CONF" 2>/dev/null; then
+        if ! grep -qE "^AllowUsers.*\b${USERNAME}\b" "$SSHD_CONF"; then
+            sed -i -E "s|^(AllowUsers.*)$|\1 ${USERNAME}|" "$SSHD_CONF"
+        fi
+    fi
+
+    # Recargar sshd (reload, no restart — no corta sesión activa)
     systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null
 
     # Crear usuario sistema
     useradd -m -s /bin/bash -e "$EXP_DATE" -c "$LIMIT" "$USERNAME"
     echo "$USERNAME:$PASSWORD" | chpasswd
-    # Desbloquear la cuenta explícitamente (chpasswd ya lo hace, pero usermod -U lo fuerza)
+
+    # CAPA 4 — Desbloqueo forzado de la cuenta (passwd -u quita el prefijo ! del hash)
+    passwd -u "$USERNAME" 2>/dev/null
     usermod -U "$USERNAME" 2>/dev/null
 
     # Log plano seguro

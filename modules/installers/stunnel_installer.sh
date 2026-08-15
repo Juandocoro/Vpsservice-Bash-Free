@@ -35,18 +35,35 @@ accept = 443
 connect = 127.0.0.1:22
 EOF
 
-    echo "[*] Garantizando autenticación por contraseña en SSH (requerida para túnel SSL)..."
+    echo "[*] Configurando SSH para autenticación por túnel SSL..."
     SSHD_CONF="/etc/ssh/sshd_config"
-    _patch() {
-        if grep -qE "^#?\s*${1}" "$SSHD_CONF" 2>/dev/null; then
-            sed -i -E "s|^#?\s*${1}.*|${1} ${2}|g" "$SSHD_CONF"
+
+    _ssh_set() {
+        local file="$1" key="$2" val="$3"
+        if grep -qE "^#?\s*${key}" "$file" 2>/dev/null; then
+            sed -i -E "s|^#?\s*${key}.*|${key} ${val}|g" "$file"
         else
-            echo "${1} ${2}" >> "$SSHD_CONF"
+            echo "${key} ${val}" >> "$file"
         fi
     }
-    _patch "PasswordAuthentication" "yes"
-    _patch "PubkeyAuthentication"   "yes"
-    _patch "PermitEmptyPasswords"   "no"
+
+    # CAPA 1 — sshd_config principal
+    _ssh_set "$SSHD_CONF" "UsePAM"                       "yes"
+    _ssh_set "$SSHD_CONF" "KbdInteractiveAuthentication"  "yes"
+    _ssh_set "$SSHD_CONF" "ChallengeResponseAuthentication" "yes"
+    _ssh_set "$SSHD_CONF" "PasswordAuthentication"        "yes"
+    _ssh_set "$SSHD_CONF" "PermitEmptyPasswords"          "no"
+
+    # CAPA 2 — neutralizar overrides en sshd_config.d/ (Ubuntu Cloud/VPS los activa)
+    if [ -d /etc/ssh/sshd_config.d ]; then
+        for f in /etc/ssh/sshd_config.d/*.conf; do
+            [ -f "$f" ] || continue
+            sed -i -E 's|^#?\s*PasswordAuthentication.*|PasswordAuthentication yes|g' "$f"
+            sed -i -E 's|^#?\s*KbdInteractiveAuthentication.*|KbdInteractiveAuthentication yes|g' "$f"
+            sed -i -E 's|^#?\s*ChallengeResponseAuthentication.*|ChallengeResponseAuthentication yes|g' "$f"
+        done
+    fi
+
     systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null
 
     echo "[*] Montando puertos en el sistema y arrancando el servicio..."
