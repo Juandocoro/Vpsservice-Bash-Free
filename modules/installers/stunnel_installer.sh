@@ -35,6 +35,20 @@ accept = 443
 connect = 127.0.0.1:22
 EOF
 
+    echo "[*] Garantizando autenticación por contraseña en SSH (requerida para túnel SSL)..."
+    SSHD_CONF="/etc/ssh/sshd_config"
+    _patch() {
+        if grep -qE "^#?\s*${1}" "$SSHD_CONF" 2>/dev/null; then
+            sed -i -E "s|^#?\s*${1}.*|${1} ${2}|g" "$SSHD_CONF"
+        else
+            echo "${1} ${2}" >> "$SSHD_CONF"
+        fi
+    }
+    _patch "PasswordAuthentication" "yes"
+    _patch "PubkeyAuthentication"   "yes"
+    _patch "PermitEmptyPasswords"   "no"
+    systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null
+
     echo "[*] Montando puertos en el sistema y arrancando el servicio..."
     sed -i 's/ENABLED=0/ENABLED=1/' /etc/default/stunnel4 2>/dev/null
     systemctl enable stunnel4

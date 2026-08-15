@@ -22,7 +22,7 @@ if [ -z "$ovpn_port" ]; then ovpn_port=1194; fi
 read -p "Protocolo UDP o TCP [udp/tcp] (Defecto: udp): " ovpn_proto
 if [ -z "$ovpn_proto" ]; then ovpn_proto="udp"; fi
 
-SERVER_IP=$(curl -s ifconfig.me)
+SERVER_IP=$(curl -4 -s ifconfig.me)
 
 echo "[*] Instalando OpenVPN y Easy-RSA..."
 apt-get install -yq openvpn easy-rsa &>/dev/null

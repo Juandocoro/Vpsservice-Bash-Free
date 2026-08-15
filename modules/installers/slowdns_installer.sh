@@ -24,7 +24,7 @@ fi
 
 read -p "IP pública del servidor (Enter para auto-detectar): " server_ip
 if [ -z "$server_ip" ]; then
-    server_ip=$(curl -s ifconfig.me)
+    server_ip=$(curl -4 -s ifconfig.me)
 fi
 
 echo "[*] Instalando dependencias..."

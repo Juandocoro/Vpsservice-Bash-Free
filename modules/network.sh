@@ -8,6 +8,7 @@ RD="\033[0;31m"
 YL="\033[0;33m"
 WH="\033[1;37m"
 DM="\033[2;37m"
+BL="\033[1;34m"   # Azul bold — indicador bajo uso
 SEP="${YL}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${CR}"
 
 function extract_port() {
@@ -74,22 +75,49 @@ function refresh_ports() {
     fi
 }
 
+# Devuelve un bombillo coloreado según % de uso
+# Azul < 50% | Verde 50-85% | Rojo > 85%
+_bombillo() {
+    local pct=${1:-0}
+    if   [ "$pct" -ge 85 ]; then echo -e "${RD}💡${CR}"
+    elif [ "$pct" -ge 50 ]; then echo -e "${GR}💡${CR}"
+    else                          echo -e "${BL}💡${CR}"
+    fi
+}
+
 function show_network_status() {
-    IP_PUBLICA=$(curl -s ifconfig.me 2>/dev/null)
+    IP_PUBLICA=$(curl -4 -s ifconfig.me 2>/dev/null)
     [ -z "$IP_PUBLICA" ] && IP_PUBLICA="N/A"
 
     refresh_ports
 
+    # ── Métricas de RAM ──
     RAM_U=$(free -m | awk '/Mem:/ {print $3}')
     RAM_T=$(free -m | awk '/Mem:/ {print $2}')
+    RAM_PCT=0
+    [ "${RAM_T:-0}" -gt 0 ] && RAM_PCT=$(( RAM_U * 100 / RAM_T ))
+
+    # ── Métricas de Disco ──
     DISK_U=$(df -h / | awk 'NR==2 {print $3}')
     DISK_T=$(df -h / | awk 'NR==2 {print $2}')
-    CPU_U=$(grep -o "^cpu \+.*" /proc/stat | awk '{print int(100 - ($5 * 100 / ($2+$3+$4+$5+$6+$7+$8)))"%"}')
+    DISK_PCT=$(df / | awk 'NR==2 {gsub(/%/,""); print $5}' 2>/dev/null)
+    DISK_PCT=${DISK_PCT:-0}
+
+    # ── Métricas de CPU ──
+    CPU_PCT=$(grep -o "^cpu \+.*" /proc/stat | awk '{print int(100 - ($5 * 100 / ($2+$3+$4+$5+$6+$7+$8)))}')
+    CPU_PCT=${CPU_PCT:-0}
+
+    # ── Bombillos ──
+    BOMB_RAM=$(_bombillo  "$RAM_PCT")
+    BOMB_DISK=$(_bombillo "$DISK_PCT")
+    BOMB_CPU=$(_bombillo  "$CPU_PCT")
 
     echo -e "  ${WH}IP: ${GR}$IP_PUBLICA${CR}"
     echo ""
     echo -e "  ${YL}[ ESTADO DE MÁQUINA ]${CR}"
-    echo -e "  ${DM}RAM: ${RAM_U}MB/${RAM_T}MB  |  Disco: $DISK_U/$DISK_T  |  CPU: $CPU_U${CR}"
+    echo -e "  $BOMB_RAM ${DM}RAM  :${CR} ${WH}${RAM_U}MB / ${RAM_T}MB${CR}  ${DM}(${RAM_PCT}%)${CR}"
+    echo -e "  $BOMB_DISK ${DM}Disco:${CR} ${WH}${DISK_U} / ${DISK_T}${CR}  ${DM}(${DISK_PCT}%)${CR}"
+    echo -e "  $BOMB_CPU ${DM}CPU  :${CR} ${WH}${CPU_PCT}%${CR}"
     echo ""
     echo -e "  ${YL}[ PROTOCOLOS ACTIVOS ]${CR}"
     echo ""
@@ -115,25 +143,21 @@ function show_network_status() {
     else
         local i=0
         while [ $i -lt ${#entries[@]} ]; do
-            local left="${entries[$i]}"
-            local right="${entries[$((i+1))]:-}"
-
-            local lname lport
-            IFS='|' read -r lname lport <<< "$left"
-            local lcell
-            lcell=$(printf "  ${GR}●${CR} ${WH}%-13s${CR}${DM}:${CR} ${CY}%-6s${CR}" "$lname" "$lport")
-
-            if [ -n "$right" ]; then
-                local rname rport
-                IFS='|' read -r rname rport <<< "$right"
-                local rcell
-                rcell=$(printf "  ${GR}●${CR} ${WH}%-13s${CR}${DM}:${CR} ${CY}%-6s${CR}" "$rname" "$rport")
-                echo -e "$lcell$rcell"
-            else
-                echo -e "$lcell"
-            fi
-
-            ((i+=2))
+            local row=""
+            # Imprimir hasta 3 protocoles por fila
+            for col in 0 1 2; do
+                local idx=$(( i + col ))
+                [ $idx -ge ${#entries[@]} ] && break
+                local entry="${entries[$idx]}"
+                local ename eport
+                IFS='|' read -r ename eport <<< "$entry"
+                # Celda: ● NOMBRE [PUERTO]  — ancho fijo de 22 chars para alineación
+                local cell
+                cell=$(printf "${GR}●${CR} ${WH}%s${CR} ${DM}[${CR}${CY}%s${CR}${DM}]${CR}" "$ename" "$eport")
+                row="${row}  ${cell}"
+            done
+            echo -e "$row"
+            (( i += 3 ))
         done
         echo ""
     fi

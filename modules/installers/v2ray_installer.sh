@@ -178,7 +178,7 @@ while true; do
             ufw allow "${v2_port}/tcp" &>/dev/null
         fi
 
-        SERVER_IP=$(curl -s ifconfig.me 2>/dev/null || echo "TU_IP")
+        SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || echo "TU_IP")
         VMESS_LINK=$(generate_vmess_link "$FIRST_UUID" "$SERVER_IP" "$v2_port" "$v2_path" "$FIRST_NAME" "$v2_bughost" "")
 
         echo ""
@@ -276,7 +276,7 @@ print(json.dumps(clients, indent=2))
         systemctl restart v2ray &>/dev/null
         sleep 1
 
-        SERVER_IP=$(curl -s ifconfig.me 2>/dev/null || echo "TU_IP")
+        SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || echo "TU_IP")
         VMESS_LINK=$(generate_vmess_link "$NEW_UUID" "$SERVER_IP" "$CURR_PORT" "$CURR_PATH" "$uname" "$new_bughost" "")
 
         echo ""
@@ -325,7 +325,7 @@ print(json.dumps(clients, indent=2))
             _err "V2Ray no está instalado."; sleep 2; continue
         fi
 
-        SERVER_IP=$(curl -s ifconfig.me 2>/dev/null || echo "TU_IP")
+        SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || echo "TU_IP")
         CURR_PORT=$(python3 -c "import json; c=json.load(open('$CONFIG_FILE')); print(c['inbounds'][0]['port'])" 2>/dev/null || echo "?")
         CURR_PATH=$(python3 -c "import json; c=json.load(open('$CONFIG_FILE')); print(c['inbounds'][0]['streamSettings']['wsSettings']['path'])" 2>/dev/null || echo "/v2ray")
 

@@ -124,7 +124,7 @@ function client_data() {
     echo -e "$SEP"
     echo -e "${WH}       DATOS DE CONEXIÓN — CLIENTES${CR}"
     echo -e "$SEP"
-    SERVER_IP=$(curl -s ifconfig.me 2>/dev/null || echo "N/A")
+    SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || echo "N/A")
     echo -e "  ${DM}Servidor  :${CR}  ${GR}$SERVER_IP${CR}"
     echo ""
 

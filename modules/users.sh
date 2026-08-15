@@ -34,11 +34,29 @@ crear_usuario() {
     if [[ ! "$LIMIT" =~ ^[0-9]+$ ]]; then echo -e "  ${RD}[-]${CR} Formato numérico requerido."; sleep 1; return; fi
 
     EXP_DATE=$(date -d "+$DAYS days" +%Y-%m-%d 2>/dev/null)
-    SERVER_IP=$(curl -s ifconfig.me 2>/dev/null || echo "N/A")
+    SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || echo "N/A")
+
+    # Garantizar que sshd permita autenticación por contraseña (crítico para SSL/Stunnel)
+    SSHD_CONF="/etc/ssh/sshd_config"
+    _fix_sshd() {
+        local key="$1" val="$2"
+        if grep -qE "^#?\s*${key}" "$SSHD_CONF" 2>/dev/null; then
+            sed -i -E "s|^#?\s*${key}.*|${key} ${val}|g" "$SSHD_CONF"
+        else
+            echo "${key} ${val}" >> "$SSHD_CONF"
+        fi
+    }
+    _fix_sshd "PasswordAuthentication" "yes"
+    _fix_sshd "PubkeyAuthentication"   "yes"
+    _fix_sshd "PermitEmptyPasswords"   "no"
+    # Recargar sshd para aplicar cambios sin cortar sesión activa
+    systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null
 
     # Crear usuario sistema
     useradd -m -s /bin/bash -e "$EXP_DATE" -c "$LIMIT" "$USERNAME"
     echo "$USERNAME:$PASSWORD" | chpasswd
+    # Desbloquear la cuenta explícitamente (chpasswd ya lo hace, pero usermod -U lo fuerza)
+    usermod -U "$USERNAME" 2>/dev/null
 
     # Log plano seguro
     touch "$DB_FILE"
@@ -59,9 +77,79 @@ crear_usuario() {
     read -p "$(echo -e ${DM})Presiona Enter para volver...$(echo -e ${CR})"
 }
 
+# =========================================================
+# TABLA DE USUARIOS — reutilizable por todas las acciones
+# =========================================================
+_tabla_usuarios() {
+    local NOW_SEC
+    NOW_SEC=$(date +%s)
+
+    # Cabecera de tabla
+    echo -e ""
+    printf "  ${YL}%-3s  %-16s  %-12s  %-12s  %-8s  %-10s  %s${CR}\n" \
+        "#" "USUARIO" "CONTRASEÑA" "VENCE" "DÍAS" "CONEX" "ESTADO"
+    echo -e "  ${YL}$(printf '─%.0s' {1..75})${CR}"
+
+    local idx=0
+    awk -F':' '($3 >= 1000 && $3 != 65534 && $1 != "nobody" && $1 != "ubuntu") {print $1}' /etc/passwd | \
+    while read u; do
+        idx=$((idx + 1))
+
+        # Contraseña del log plano
+        PASS=$(grep "^$u:" "$DB_FILE" 2>/dev/null | cut -d: -f2)
+        [ -z "$PASS" ] && PASS="?(sin log)"
+
+        # Fecha de expiración desde chage
+        EXP_RAW=$(chage -l "$u" 2>/dev/null | grep "Account expires" | cut -d: -f2 | xargs)
+
+        # Calcular días restantes
+        if [[ "$EXP_RAW" == "never" || -z "$EXP_RAW" ]]; then
+            DIAS_REST="∞"
+            ESTADO="${GR}ACTIVO${CR}"
+        else
+            EXP_SEC=$(date -d "$EXP_RAW" +%s 2>/dev/null)
+            if [ -z "$EXP_SEC" ]; then
+                DIAS_REST="?"
+                ESTADO="${DM}UNKNOWN${CR}"
+            else
+                DIFF=$(( (EXP_SEC - NOW_SEC) / 86400 ))
+                if [ "$DIFF" -lt 0 ]; then
+                    DIAS_REST="0"
+                    ESTADO="${RD}VENCIDO${CR}"
+                elif [ "$DIFF" -le 3 ]; then
+                    DIAS_REST="${DIFF}d"
+                    ESTADO="${YL}POR VENCER${CR}"
+                else
+                    DIAS_REST="${DIFF}d"
+                    ESTADO="${GR}ACTIVO${CR}"
+                fi
+            fi
+        fi
+
+        # Conexiones activas / límite
+        LIMITE=$(getent passwd "$u" | cut -d: -f5)
+        [[ ! "$LIMITE" =~ ^[0-9]+$ ]] && LIMITE="1"
+        CONEX=$(ps -u "$u" -o comm= 2>/dev/null | grep -E "^(sshd|dropbear)$" | wc -l)
+
+        # Imprimir fila con índice de color alterno
+        if [ $(( idx % 2 )) -eq 0 ]; then
+            NCOLOR="${CY}"
+        else
+            NCOLOR="${WH}"
+        fi
+
+        printf "  ${NCOLOR}%-3s${CR}  ${WH}%-16s${CR}  ${DM}%-12s${CR}  ${DM}%-12s${CR}  ${CY}%-8s${CR}  ${DM}%s/%s${CR}       " \
+            "$idx" "$u" "$PASS" "${EXP_RAW:-N/A}" "$DIAS_REST" "$CONEX" "$LIMITE"
+        echo -e "$ESTADO"
+    done
+    echo -e "  ${YL}$(printf '─%.0s' {1..75})${CR}"
+    echo ""
+}
+
 administrar_usuarios() {
     while true; do
         clear
+        print_title 2>/dev/null || true
         echo -e "$SEP"
         echo -e "${WH}           ADMINISTRAR USUARIOS${CR}"
         echo -e "$SEP"
@@ -75,59 +163,89 @@ administrar_usuarios() {
 
         case $sub_opt in
             1)
-                echo ""
-                echo -e "  ${YL}--- USUARIOS ACTIVOS (UID >= 1000) ---${CR}"
-                echo ""
-                awk -F':' '($3 >= 1000 && $3 != 65534 && $1 != "nobody" && $1 != "ubuntu") {print $1}' /etc/passwd | while read u; do
-                    EXP=$(chage -l "$u" | grep "Account expires" | cut -d: -f2 | xargs)
-                    LIMITE=$(getent passwd "$u" | cut -d: -f5)
-                    [ -z "$LIMITE" ] && LIMITE="1"
-                    CONEX=$(ps -u "$u" -o comm= 2>/dev/null | grep -E "^(sshd|dropbear)$" | wc -l)
-                    PASS=$(grep "^$u:" "$DB_FILE" 2>/dev/null | cut -d: -f2)
-                    [ -z "$PASS" ] && PASS="? (no_log)"
-                    echo -e "  ${GR}●${CR} ${WH}$u${CR}  ${DM}pass: $PASS  vence: $EXP  conex: $CONEX/$LIMITE${CR}"
-                done
-                echo ""
+                clear
+                print_title 2>/dev/null || true
+                echo -e "$SEP"
+                echo -e "${WH}           LISTA DE USUARIOS${CR}"
+                echo -e "$SEP"
+                _tabla_usuarios
                 read -p "$(echo -e ${DM})Enter para continuar...$(echo -e ${CR})" ;;
+
             2)
-                read -p "$(echo -e ${DM})Usuario a ELIMINAR: $(echo -e ${CR})" DEL_USER
+                clear
+                print_title 2>/dev/null || true
+                echo -e "$SEP"
+                echo -e "${WH}           ELIMINAR USUARIO${CR}"
+                echo -e "$SEP"
+                _tabla_usuarios
+                read -p "$(echo -e ${DM})Nombre del usuario a ELIMINAR (0=cancelar): $(echo -e ${CR})" DEL_USER
+                [[ "$DEL_USER" == "0" || -z "$DEL_USER" ]] && continue
                 if id "$DEL_USER" &>/dev/null; then
-                    userdel -r "$DEL_USER" 2>/dev/null
-                    sed -i "/^$DEL_USER:/d" "$DB_FILE" 2>/dev/null
-                    echo -e "  ${GR}[+]${CR} Eliminado correctamente."
+                    read -p "$(echo -e ${RD})¿Confirmar eliminación de '$DEL_USER'? (s/n): $(echo -e ${CR})" CONF
+                    if [[ "$CONF" == "s" || "$CONF" == "S" ]]; then
+                        # Cerrar sesiones activas antes de borrar
+                        pkill -u "$DEL_USER" 2>/dev/null
+                        userdel -r "$DEL_USER" 2>/dev/null
+                        sed -i "/^$DEL_USER:/d" "$DB_FILE" 2>/dev/null
+                        echo -e "  ${GR}[+]${CR} Usuario ${WH}$DEL_USER${CR} eliminado correctamente."
+                    else
+                        echo -e "  ${DM}[·]${CR} Operación cancelada."
+                    fi
                 else
-                    echo -e "  ${RD}[-]${CR} Usuario no existe."
+                    echo -e "  ${RD}[-]${CR} Usuario '$DEL_USER' no existe."
                 fi
-                read -p "$(echo -e ${DM})Enter...$(echo -e ${CR})" ;;
+                sleep 1 ;;
+
             3)
-                read -p "$(echo -e ${DM})Usuario a modificar: $(echo -e ${CR})" MOD_USER
+                clear
+                print_title 2>/dev/null || true
+                echo -e "$SEP"
+                echo -e "${WH}           MODIFICAR EXPIRACIÓN${CR}"
+                echo -e "$SEP"
+                _tabla_usuarios
+                read -p "$(echo -e ${DM})Usuario a modificar (0=cancelar): $(echo -e ${CR})" MOD_USER
+                [[ "$MOD_USER" == "0" || -z "$MOD_USER" ]] && continue
                 if id "$MOD_USER" &>/dev/null; then
-                    read -p "$(echo -e ${DM})Nuevos días (desde hoy): $(echo -e ${CR})" NEW_DAYS
+                    read -p "$(echo -e ${DM})Nuevos días desde hoy: $(echo -e ${CR})" NEW_DAYS
                     if [[ "$NEW_DAYS" =~ ^[0-9]+$ ]]; then
                         NEW_EXP=$(date -d "+$NEW_DAYS days" +%Y-%m-%d)
                         usermod -e "$NEW_EXP" "$MOD_USER"
-                        echo -e "  ${GR}[+]${CR} Vencimiento actualizado a ${WH}$NEW_EXP${CR}."
+                        echo -e "  ${GR}[+]${CR} Vencimiento de ${WH}$MOD_USER${CR} → ${CY}$NEW_EXP${CR} (${NEW_DAYS} días)."
                     else
                         echo -e "  ${RD}[-]${CR} Valor inválido."
                     fi
                 else
-                    echo -e "  ${RD}[-]${CR} Usuario no existe."
+                    echo -e "  ${RD}[-]${CR} Usuario '$MOD_USER' no existe."
                 fi
-                read -p "$(echo -e ${DM})Enter...$(echo -e ${CR})" ;;
+                sleep 1 ;;
+
             4)
-                read -p "$(echo -e ${DM})Usuario: $(echo -e ${CR})" PASS_USER
+                clear
+                print_title 2>/dev/null || true
+                echo -e "$SEP"
+                echo -e "${WH}           CAMBIAR CONTRASEÑA${CR}"
+                echo -e "$SEP"
+                _tabla_usuarios
+                read -p "$(echo -e ${DM})Usuario (0=cancelar): $(echo -e ${CR})" PASS_USER
+                [[ "$PASS_USER" == "0" || -z "$PASS_USER" ]] && continue
                 if id "$PASS_USER" &>/dev/null; then
                     read -s -p "$(echo -e ${DM})Nueva clave: $(echo -e ${CR})" NEW_PASS; echo ""
-                    echo "$PASS_USER:$NEW_PASS" | chpasswd
-                    sed -i "/^$PASS_USER:/d" "$DB_FILE" 2>/dev/null
-                    echo "$PASS_USER:$NEW_PASS" >> "$DB_FILE"
-                    echo -e "  ${GR}[+]${CR} Contraseña actualizada."
+                    if [ -z "$NEW_PASS" ]; then
+                        echo -e "  ${RD}[-]${CR} Contraseña vacía, operación cancelada."
+                    else
+                        echo "$PASS_USER:$NEW_PASS" | chpasswd
+                        sed -i "/^$PASS_USER:/d" "$DB_FILE" 2>/dev/null
+                        echo "$PASS_USER:$NEW_PASS" >> "$DB_FILE"
+                        echo -e "  ${GR}[+]${CR} Contraseña de ${WH}$PASS_USER${CR} actualizada."
+                    fi
                 else
-                    echo -e "  ${RD}[-]${CR} Usuario no existe."
+                    echo -e "  ${RD}[-]${CR} Usuario '$PASS_USER' no existe."
                 fi
-                read -p "$(echo -e ${DM})Enter...$(echo -e ${CR})" ;;
+                sleep 1 ;;
+
             0) break ;;
             *) echo -e "  ${RD}[-]${CR} Opción inválida."; sleep 1 ;;
         esac
     done
 }
+

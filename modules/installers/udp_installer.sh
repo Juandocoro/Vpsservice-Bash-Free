@@ -223,7 +223,7 @@ EOF
             _ok "Firewall: puerto interno $INTERNAL_PORT abierto."
         fi
 
-        SERVER_IP=$(curl -s ifconfig.me 2>/dev/null || echo "TU_IP")
+        SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || echo "TU_IP")
         CUENTA="${SERVER_IP}:${INTERNAL_PORT}@${first_user}:${first_pass}"
 
         echo ""
@@ -289,7 +289,7 @@ EOF
         write_config "$UDP_PORT" "$EXCL"
         systemctl restart udp-custom &>/dev/null; sleep 1
 
-        SERVER_IP=$(curl -s ifconfig.me 2>/dev/null || echo "TU_IP")
+        SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || echo "TU_IP")
         CUENTA="${SERVER_IP}:${UDP_PORT}@${new_user}:${new_pass}"
 
         echo ""
@@ -318,7 +318,7 @@ EOF
             _err "No hay usuarios."; sleep 2; continue
         fi
 
-        SERVER_IP=$(curl -s ifconfig.me 2>/dev/null || echo "TU_IP")
+        SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || echo "TU_IP")
         UDP_PORT=$(grep '"listen"' "$CONFIG_FILE" 2>/dev/null | grep -o '[0-9]*')
 
         echo -e "  ${DM}Servidor: ${GR}$SERVER_IP${CR}  Puerto: ${CY}$UDP_PORT${CR}"

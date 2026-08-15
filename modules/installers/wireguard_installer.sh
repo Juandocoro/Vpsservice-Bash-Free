@@ -53,7 +53,7 @@ if command -v ufw &>/dev/null; then
     ufw allow "$wg_port"/udp &>/dev/null
 fi
 
-SERVER_IP=$(curl -s ifconfig.me)
+SERVER_IP=$(curl -4 -s ifconfig.me)
 
 echo ""
 echo "================================================="
