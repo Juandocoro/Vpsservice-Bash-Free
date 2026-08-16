@@ -19,6 +19,7 @@ SEP="${YL}━━━━━━━━━━━━━━━━━━━━━━━�
 # Referencias Modulares
 source "$DIR/modules/network.sh"
 source "$DIR/modules/users.sh"
+source "$DIR/modules/optimize.sh"
 
 # =========================================================
 # CABECERA GENERAL — Banner grande con degradado azul→blanco
@@ -322,9 +323,9 @@ function uninstall_panel() {
     pkill -f ws-server 2>/dev/null
     echo -e "  ${GR}[+]${CR} Servicios detenidos."
 
-    echo -e "  ${YL}[*]${CR} Eliminando cron del auto-killer..."
-    crontab -l 2>/dev/null | grep -v 'killer.sh' | crontab - 2>/dev/null
-    echo -e "  ${GR}[+]${CR} Cron eliminado."
+    echo -e "  ${YL}[*]${CR} Eliminando cron del auto-killer y optimización..."
+    crontab -l 2>/dev/null | grep -v 'killer.sh' | grep -v 'optimize.sh' | crontab - 2>/dev/null
+    echo -e "  ${GR}[+]${CR} Tareas cron eliminadas."
 
     echo -e "  ${YL}[*]${CR} Eliminando arranque automático de .bashrc..."
     sed -i '/^menu$/d' /root/.bashrc 2>/dev/null
@@ -374,9 +375,10 @@ function show_menu() {
     echo -e "  ${CY}4)${CR}  ${WH}Actualizar${CR}"
     echo -e "  ${CY}5)${CR}  ${RD}⚠  Desinstalar Panel${CR}"
     echo -e "  ${CY}6)${CR}  ${WH}Sincronizar Cortafuegos${CR}"
+    echo -e "  ${CY}7)${CR}  ${WH}Optimización del Servidor${CR}"
     echo -e "  ${CY}0)${CR}  ${WH}Salir${CR}"
     echo -e "$SEP"
-    read -p "$(echo -e ${DM})Digita una acción [0-6]: $(echo -e ${CR})" opcion
+    read -p "$(echo -e ${DM})Digita una acción [0-7]: $(echo -e ${CR})" opcion
 
     case $opcion in
         1) users_menu ;;
@@ -385,6 +387,7 @@ function show_menu() {
         4) update_script ;;
         5) uninstall_panel ;;
         6) clear; print_title; sync_firewall ;;
+        7) optimize_menu ;;
         0) clear; echo -e "${DM}Saliendo... (escribe 'menu' para volver)${CR}"; exit 0 ;;
         *) echo -e "  ${RD}[-]${CR} Opción no reconocida."; sleep 1; show_menu ;;
     esac
