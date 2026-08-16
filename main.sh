@@ -21,10 +21,39 @@ source "$DIR/modules/network.sh"
 source "$DIR/modules/users.sh"
 
 # =========================================================
-# CABECERA GENERAL
+# CABECERA GENERAL — Banner grande con degradado azul→blanco
 # =========================================================
+
+# Colores para el degradado azul→blanco del banner
+_B1="\033[1;34m"   # Azul brillante
+_B2="\033[1;94m"   # Azul claro
+_B3="\033[1;96m"   # Cian brillante (intermedio)
+_B4="\033[1;37m"   # Blanco tenue
+_B5="\033[1;97m"   # Blanco puro
+
 function print_title() {
-    echo -e "\033[44m\033[1;33m ====►► \033[0;44;36m◈ \033[1;44;37mvpsservice \033[1;44;32mFREE \033[0;44;36m◈ \033[1;44;33m ◄◄==== \033[0m"
+    local VER=""
+    # Obtener versión/commit de git si está disponible
+    if git -C "$DIR" rev-parse --is-inside-work-tree &>/dev/null 2>&1; then
+        local COMMIT
+        COMMIT=$(git -C "$DIR" rev-parse --short HEAD 2>/dev/null)
+        local BRANCH
+        BRANCH=$(git -C "$DIR" rev-parse --abbrev-ref HEAD 2>/dev/null)
+        VER="${COMMIT}@${BRANCH}"
+    fi
+
+    echo ""
+    # Arte ASCII: "vpsservice" — estilo hueco, degradado azul a blanco (vertical)
+    echo -e "${_B1}                                     _          ${CR}"
+    echo -e "${_B1}__   ___ __  ___ ___  ___ _ ____   _(_) ___ ___ ${CR}"
+    echo -e "${_B2}\\\\ \\ / / '_ \\\\/ __/ __|/ _ \\\\ '__\\\\ \\ / / |/ __/ _ \\\\${CR}"
+    echo -e "${_B3} \\\\ V /| |_) \\\\__ \\\\__ \\\\  __/ |   \\\\ V /| | (_|  __/${CR}"
+    echo -e "${_B4}  \\\\_/ | .__/|___/___/\\___|_|    \\\\_/ |_|\\___\\___|${CR}"
+    echo -e "${_B5}      |_|                                       ${CR}"
+    echo ""
+    # Línea de versión y subtítulo
+    echo -e "  ${_B3}▸${CR} ${WH}FREE Edition${CR}   ${DM}│${CR}   ${_B2}v1.0${CR}  ${DM}│${CR}   ${DM}GitHub:${CR} ${_B4}${VER}${CR}"
+    echo -e "${YL}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${CR}"
 }
 
 # =========================================================
