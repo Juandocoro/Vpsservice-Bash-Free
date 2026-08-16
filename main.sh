@@ -98,12 +98,14 @@ function users_menu() {
         echo -e "$SEP"
         echo -e "  ${CY}1)${CR}  ${WH}Crear Usuario${CR}"
         echo -e "  ${CY}2)${CR}  ${WH}Administrar Usuarios${CR}"
+        echo -e "  ${CY}3)${CR}  ${WH}Usuarios Conectados${CR}"
         echo -e "  ${CY}0)${CR}  ${WH}Volver${CR}"
         echo -e "$SEP"
-        read -p "$(echo -e ${DM})Elige [0-2]: $(echo -e ${CR})" op
+        read -p "$(echo -e ${DM})Elige [0-3]: $(echo -e ${CR})" op
         case $op in
             1) crear_usuario ;;
             2) administrar_usuarios ;;
+            3) monitor_conexiones ;;
             0) break ;;
             *) echo -e "  ${RD}[-]${CR} Opción inválida."; sleep 1 ;;
         esac
@@ -371,9 +373,10 @@ function show_menu() {
     echo -e "  ${CY}3)${CR}  ${WH}Arranque Automático      ${CR}  $AUTO_TAG"
     echo -e "  ${CY}4)${CR}  ${WH}Actualizar${CR}"
     echo -e "  ${CY}5)${CR}  ${RD}⚠  Desinstalar Panel${CR}"
+    echo -e "  ${CY}6)${CR}  ${WH}Sincronizar Cortafuegos${CR}"
     echo -e "  ${CY}0)${CR}  ${WH}Salir${CR}"
     echo -e "$SEP"
-    read -p "$(echo -e ${DM})Digita una acción [0-5]: $(echo -e ${CR})" opcion
+    read -p "$(echo -e ${DM})Digita una acción [0-6]: $(echo -e ${CR})" opcion
 
     case $opcion in
         1) users_menu ;;
@@ -381,10 +384,16 @@ function show_menu() {
         3) toggle_autostart ;;
         4) update_script ;;
         5) uninstall_panel ;;
+        6) clear; print_title; sync_firewall ;;
         0) clear; echo -e "${DM}Saliendo... (escribe 'menu' para volver)${CR}"; exit 0 ;;
         *) echo -e "  ${RD}[-]${CR} Opción no reconocida."; sleep 1; show_menu ;;
     esac
 }
+
+# Ejecución de seguridad inicial (Mejora 6)
+clear
+print_title
+sync_firewall
 
 # Lazo de vida infinito
 while true; do

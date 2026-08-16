@@ -59,21 +59,56 @@ function refresh_ports() {
         PORT_WG=$(grep 'ListenPort' /etc/wireguard/wg0.conf 2>/dev/null | awk '{print $3}')
     fi
 
-    # Auto-firewall driller
-    if command -v ufw &>/dev/null; then
-        [ -n "$PORT_SSH" ]          && ufw allow "$PORT_SSH"/tcp          &>/dev/null
-        [ -n "$PORT_SSL" ]          && ufw allow "$PORT_SSL"/tcp          &>/dev/null
-        [ -n "$PORT_UDPCUSTOM" ]    && ufw allow "$PORT_UDPCUSTOM"/udp    &>/dev/null
-        [ -n "$PORT_UDPCUSTOM" ]    && ufw allow "$PORT_UDPCUSTOM"/tcp    &>/dev/null
-        [ -n "$PORT_WS" ]           && ufw allow "$PORT_WS"/tcp           &>/dev/null
-        [ -n "$PORT_DROPBEAR" ]     && ufw allow "$PORT_DROPBEAR"/tcp     &>/dev/null
-        [ -n "$PORT_SQUID" ]        && ufw allow "$PORT_SQUID"/tcp        &>/dev/null
-        [ -n "$PORT_V2RAY" ]        && ufw allow "$PORT_V2RAY"/tcp        &>/dev/null
-        [ -n "$PORT_SS" ]           && ufw allow "$PORT_SS"/tcp           &>/dev/null
-        [ -n "$PORT_OVPN" ]         && ufw allow "$PORT_OVPN"/udp         &>/dev/null
-        [ -n "$PORT_WG" ]           && ufw allow "$PORT_WG"/udp           &>/dev/null
-    fi
 }
+
+# =========================================================
+# PROTECCIÓN Y SINCRONIZACIÓN DEL CORTAFUEGOS (UFW)
+# =========================================================
+function sync_firewall() {
+    echo -e "  ${YL}[*] Analizando puertos y aplicando reglas del cortafuegos (UFW)...${CR}"
+    
+    # 1. Asegurar instalación de UFW
+    if ! command -v ufw &>/dev/null; then
+        echo -e "  ${YL}[*] Instalando UFW...${CR}"
+        apt-get update -y &>/dev/null
+        apt-get install ufw -y &>/dev/null
+    fi
+
+    # Refrescar las variables de puertos actuales
+    refresh_ports
+
+    # 2. Resetear el cortafuegos para limpieza absoluta (borra reglas externas)
+    echo "y" | ufw reset &>/dev/null
+    
+    # 3. Políticas Base
+    ufw default deny incoming &>/dev/null
+    ufw default allow outgoing &>/dev/null
+    
+    # 4. Reglas Inquebrantables (SSH, Web básica)
+    # Protegemos el puerto 22, pero también leemos si hay un puerto custom SSH ($PORT_SSH)
+    ufw allow 22/tcp &>/dev/null
+    ufw allow 80/tcp &>/dev/null
+    ufw allow 443/tcp &>/dev/null
+    
+    # 5. Escaneo dinámico: Habilitamos solo lo que esté activo en el script
+    [ -n "$PORT_SSH" ]          && ufw allow "$PORT_SSH"/tcp          &>/dev/null
+    [ -n "$PORT_SSL" ]          && ufw allow "$PORT_SSL"/tcp          &>/dev/null
+    [ -n "$PORT_UDPCUSTOM" ]    && ufw allow "$PORT_UDPCUSTOM"/udp    &>/dev/null
+    [ -n "$PORT_UDPCUSTOM" ]    && ufw allow "$PORT_UDPCUSTOM"/tcp    &>/dev/null
+    [ -n "$PORT_WS" ]           && ufw allow "$PORT_WS"/tcp           &>/dev/null
+    [ -n "$PORT_DROPBEAR" ]     && ufw allow "$PORT_DROPBEAR"/tcp     &>/dev/null
+    [ -n "$PORT_SQUID" ]        && ufw allow "$PORT_SQUID"/tcp        &>/dev/null
+    [ -n "$PORT_V2RAY" ]        && ufw allow "$PORT_V2RAY"/tcp        &>/dev/null
+    [ -n "$PORT_SS" ]           && ufw allow "$PORT_SS"/tcp           &>/dev/null
+    [ -n "$PORT_OVPN" ]         && ufw allow "$PORT_OVPN"/udp         &>/dev/null
+    [ -n "$PORT_WG" ]           && ufw allow "$PORT_WG"/udp           &>/dev/null
+    
+    # 6. Activar definitivamente
+    echo "y" | ufw enable &>/dev/null
+    echo -e "  ${GR}[+] Cortafuegos seguro activado.${CR}"
+    sleep 2
+}
+
 
 # Devuelve un bombillo coloreado según % de uso
 # Azul < 50% | Verde 50-85% | Rojo > 85%

@@ -279,3 +279,50 @@ administrar_usuarios() {
     done
 }
 
+# =========================================================
+# MONITOR DE CONEXIONES ACTIVAS
+# =========================================================
+monitor_conexiones() {
+    clear
+    print_title 2>/dev/null || true
+    echo -e "$SEP"
+    echo -e "${WH}           MONITOR DE CONEXIONES${CR}"
+    echo -e "$SEP"
+    printf "  ${YL}%-15s  %-15s  %-15s${CR}\n" "USUARIO" "MÉTODO" "CONEXIONES"
+    echo -e "  ${YL}$(printf '─%.0s' {1..50})${CR}"
+
+    local total_conexiones=0
+
+    # Contar SSH y Dropbear
+    for u in $(awk -F':' '($3 >= 1000 && $3 != 65534 && $1 != "nobody" && $1 != "ubuntu") {print $1}' /etc/passwd); do
+        ssh_count=$(ps -u "$u" -o comm= 2>/dev/null | grep -c "^sshd$")
+        dropbear_count=$(ps -u "$u" -o comm= 2>/dev/null | grep -c "^dropbear$")
+        
+        if [ "$ssh_count" -gt 0 ]; then
+            printf "  ${WH}%-15s${CR}  ${CY}%-15s${CR}  ${GR}%-15s${CR}\n" "$u" "SSH" "$ssh_count"
+            total_conexiones=$((total_conexiones + ssh_count))
+        fi
+        if [ "$dropbear_count" -gt 0 ]; then
+            printf "  ${WH}%-15s${CR}  ${CY}%-15s${CR}  ${GR}%-15s${CR}\n" "$u" "Dropbear" "$dropbear_count"
+            total_conexiones=$((total_conexiones + dropbear_count))
+        fi
+    done
+
+    # Contar OpenVPN
+    if [ -f /var/log/openvpn/openvpn-status.log ]; then
+        while read count user; do
+            printf "  ${WH}%-15s${CR}  ${GR}%-15s${CR}  ${GR}%-15s${CR}\n" "$user" "OpenVPN" "$count"
+            total_conexiones=$((total_conexiones + count))
+        done < <(awk -F',' '/^CLIENT_LIST/ {print $2}' /var/log/openvpn/openvpn-status.log | sort | uniq -c)
+    elif [ -f /etc/openvpn/openvpn-status.log ]; then
+        while read count user; do
+            printf "  ${WH}%-15s${CR}  ${GR}%-15s${CR}  ${GR}%-15s${CR}\n" "$user" "OpenVPN" "$count"
+            total_conexiones=$((total_conexiones + count))
+        done < <(awk -F',' '/^CLIENT_LIST/ {print $2}' /etc/openvpn/openvpn-status.log | sort | uniq -c)
+    fi
+
+    echo -e "  ${YL}$(printf '─%.0s' {1..50})${CR}"
+    echo -e "  ${WH}Total de conexiones activas:${CR} ${CY}$total_conexiones${CR}"
+    echo ""
+    read -p "$(echo -e ${DM})Presiona Enter para volver...$(echo -e ${CR})"
+}
