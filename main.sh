@@ -401,6 +401,16 @@ if [ ! -f "/tmp/.firewall_synced" ]; then
     touch "/tmp/.firewall_synced"
 fi
 
+# Asegurar configuración SSH para todos los usuarios (Corrección Global)
+if [ -d /etc/ssh/sshd_config.d ]; then
+    if [ ! -f /etc/ssh/sshd_config.d/10-vpsservice.conf ]; then
+        rm -f /etc/ssh/sshd_config.d/99-vpsservice.conf 2>/dev/null
+        echo -e "PasswordAuthentication yes\nKbdInteractiveAuthentication yes\nChallengeResponseAuthentication yes" > /etc/ssh/sshd_config.d/10-vpsservice.conf
+        systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null
+    fi
+fi
+
+
 # Lazo de vida infinito
 while true; do
     show_menu
