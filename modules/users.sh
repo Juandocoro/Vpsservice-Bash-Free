@@ -79,7 +79,8 @@ crear_usuario() {
 
     # CAPA EXTRA - Garantizar configuración de contraseñas creando drop-in
     if [ -d /etc/ssh/sshd_config.d ]; then
-        echo -e "PasswordAuthentication yes\nKbdInteractiveAuthentication yes\nChallengeResponseAuthentication yes" > /etc/ssh/sshd_config.d/99-vpsservice.conf
+        rm -f /etc/ssh/sshd_config.d/99-vpsservice.conf 2>/dev/null
+        echo -e "PasswordAuthentication yes\nKbdInteractiveAuthentication yes\nChallengeResponseAuthentication yes" > /etc/ssh/sshd_config.d/10-vpsservice.conf
     fi
 
     # Reiniciar sshd (restart garantiza que apliquen los cambios, no corta sesiones activas)
