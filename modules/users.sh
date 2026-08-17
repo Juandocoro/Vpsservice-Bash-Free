@@ -77,8 +77,13 @@ crear_usuario() {
         fi
     fi
 
-    # Recargar sshd (reload, no restart — no corta sesión activa)
-    systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null
+    # CAPA EXTRA - Garantizar configuración de contraseñas creando drop-in
+    if [ -d /etc/ssh/sshd_config.d ]; then
+        echo -e "PasswordAuthentication yes\nKbdInteractiveAuthentication yes\nChallengeResponseAuthentication yes" > /etc/ssh/sshd_config.d/99-vpsservice.conf
+    fi
+
+    # Reiniciar sshd (restart garantiza que apliquen los cambios, no corta sesiones activas)
+    systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null
 
     # Crear usuario sistema
     useradd -m -s /bin/bash -e "$EXP_DATE" -c "$LIMIT" "$USERNAME"

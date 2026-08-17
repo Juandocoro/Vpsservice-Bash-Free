@@ -396,7 +396,10 @@ function show_menu() {
 # Ejecución de seguridad inicial (Mejora 6)
 clear
 print_title
-sync_firewall
+if [ ! -f "/tmp/.firewall_synced" ]; then
+    sync_firewall
+    touch "/tmp/.firewall_synced"
+fi
 
 # Lazo de vida infinito
 while true; do
