@@ -160,43 +160,69 @@ function client_data() {
     echo -e "  ${DM}Servidor  :${CR}  ${GR}$SERVER_IP${CR}"
     echo ""
 
-    echo -e "  ${YL}[ PROTOCOLOS SSH ]${CR}"
-    [ -n "$PORT_SSH" ]          && echo -e "  ${WH}SSH          :${CR}  ${CY}$PORT_SSH${CR}  (TCP)"
-    [ -n "$PORT_DROPBEAR" ]     && echo -e "  ${WH}Dropbear     :${CR}  ${CY}$PORT_DROPBEAR${CR}  (TCP)"
-    [ -n "$PORT_SSL" ]          && echo -e "  ${WH}SSL/Stunnel  :${CR}  ${CY}$PORT_SSL${CR}  (TCP)"
-    [ -n "$PORT_WS" ]           && echo -e "  ${WH}WebSocket    :${CR}  ${CY}$PORT_WS${CR}  path: ${DM}/${CR}"
-    if [ -n "$PORT_UDPCUSTOM" ]; then
-        echo -e "  ${WH}UDP Custom   :${CR}  ${CY}$PORT_UDPCUSTOM${CR}  ${DM}(túnel UDP directo — sin SSH)${CR}"
-    fi
-    if [ -n "$PORT_BADVPN" ]; then
-        echo -e "  ${WH}BadVPN       :${CR}  ${DM}127.0.0.1:${CR}${CY}$PORT_BADVPN${CR}  ${DM}(juegos/llamadas via SSH)${CR}"
-    fi
-    echo ""
-
-    echo -e "  ${YL}[ PROTOCOLOS PROXY / VPN ]${CR}"
-    [ -n "$PORT_SLOWDNS" ]      && echo -e "  ${WH}SlowDNS      :${CR}  ${CY}$PORT_SLOWDNS${CR}"
-    [ -n "$PORT_SQUID" ]        && echo -e "  ${WH}Squid        :${CR}  ${CY}$PORT_SQUID${CR}"
-    [ -n "$PORT_V2RAY" ]        && echo -e "  ${WH}V2Ray VMess  :${CR}  ${CY}$PORT_V2RAY${CR}  path: ${DM}/v2ray${CR}"
-    [ -n "$PORT_SS" ]           && echo -e "  ${WH}Shadowsocks  :${CR}  ${CY}$PORT_SS${CR}  ${DM}aes-256-gcm${CR}"
-    [ -n "$PORT_OVPN" ]         && echo -e "  ${WH}OpenVPN      :${CR}  ${CY}$PORT_OVPN${CR}  (UDP)"
-    [ -n "$PORT_WG" ]           && echo -e "  ${WH}WireGuard    :${CR}  ${CY}$PORT_WG${CR}  (UDP)"
-    echo ""
-
-    echo -e "  ${YL}━━━ PAYLOAD WEBSOCKET ━━━${CR}"
-    echo -e "  ${DM}GET / HTTP/1.1[crlf]${CR}"
-    echo -e "  ${DM}Host: ${SERVER_IP}[crlf]${CR}"
-    echo -e "  ${DM}Upgrade: websocket[crlf]${CR}"
-    echo -e "  ${DM}Connection: Upgrade[crlf]${CR}"
-    echo -e "  ${DM}[crlf]${CR}"
-    echo ""
-
-    if [ -n "$PORT_UDPCUSTOM" ]; then
-        echo -e "  ${YL}━━━ UDP CUSTOM ━━━${CR}"
-        echo -e "  ${DM}Tunnel Type: UDP${CR}"
-        echo -e "  ${DM}Server     : ${CR}${WH}$SERVER_IP${CR}"
-        echo -e "  ${DM}Port       : ${CR}${CY}$PORT_UDPCUSTOM${CR}  (NO requiere SSH)${CR}"
+    # ── HTTP INJECTOR — WebSocket ───────────────────────────────────────────
+    if [ -n "$PORT_WS" ]; then
+        echo -e "  ${YL}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${CR}"
+        echo -e "  ${WH}HTTP INJECTOR — WebSocket (método principal)${CR}"
+        echo -e "  ${YL}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${CR}"
+        echo -e "  ${DM}SSH Host    :${CR}  ${GR}$SERVER_IP${CR}"
+        echo -e "  ${DM}SSH Port    :${CR}  ${CY}${PORT_SSH:-22}${CR}  ${DM}(o Dropbear: ${PORT_DROPBEAR:-N/A})${CR}"
+        echo ""
+        echo -e "  ${CY}── Configuración Remote Proxy ──${CR}"
+        echo -e "  ${DM}Remote Proxy:${CR}  ${WH}$SERVER_IP:$PORT_WS${CR}  ${DM}(tipo: HTTP)${CR}"
+        echo ""
+        echo -e "  ${CY}── Payload (pegar exacto en HTTP Injector) ──${CR}"
+        echo -e "  ${WH}GET / HTTP/1.1[crlf]${CR}"
+        echo -e "  ${WH}Host: $SERVER_IP[crlf]${CR}"
+        echo -e "  ${WH}Upgrade: websocket[crlf]${CR}"
+        echo -e "  ${WH}Connection: Upgrade[crlf]${CR}"
+        echo -e "  ${WH}[crlf]${CR}"
+        echo ""
+        echo -e "  ${DM}Pasos en la app:${CR}"
+        echo -e "  ${DM}  1. SSH Host → ${CR}${WH}$SERVER_IP${CR}"
+        echo -e "  ${DM}  2. SSH Port → ${CR}${CY}${PORT_SSH:-22}${CR}"
+        echo -e "  ${DM}  3. Proxy Type → ${CR}${WH}Websocket${CR}"
+        echo -e "  ${DM}  4. Server → ${CR}${WH}$SERVER_IP${CR}  ${DM}Port → ${CR}${CY}$PORT_WS${CR}"
+        echo -e "  ${DM}  5. Pegar payload de arriba${CR}"
         echo ""
     fi
+
+    # ── HTTP INJECTOR — SSL/Stunnel ─────────────────────────────────────────
+    if [ -n "$PORT_SSL" ]; then
+        echo -e "  ${YL}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${CR}"
+        echo -e "  ${WH}HTTP INJECTOR — SSL/Stunnel (HTTPS)${CR}"
+        echo -e "  ${YL}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${CR}"
+        echo -e "  ${DM}SSH Host    :${CR}  ${GR}$SERVER_IP${CR}"
+        echo -e "  ${DM}SSH Port    :${CR}  ${CY}${PORT_SSH:-22}${CR}"
+        echo -e "  ${DM}SSL/TLS     :${CR}  ${WH}ACTIVADO${CR}  ${DM}(certificado autofirmado — ignorar advertencia)${CR}"
+        echo ""
+        echo -e "  ${CY}── Configuración Remote Proxy ──${CR}"
+        echo -e "  ${DM}Remote Proxy:${CR}  ${WH}$SERVER_IP:$PORT_SSL${CR}  ${DM}(tipo: SSL)${CR}"
+        echo ""
+        echo -e "  ${CY}── Payload para SSL Injector ──${CR}"
+        echo -e "  ${WH}CONNECT $SERVER_IP:22 HTTP/1.0[crlf]${CR}"
+        echo -e "  ${WH}Host: $SERVER_IP[crlf]${CR}"
+        echo -e "  ${WH}[crlf]${CR}"
+        echo ""
+    fi
+
+    # ── SSH Directo / Dropbear ──────────────────────────────────────────────
+    echo -e "  ${YL}[ PUERTOS SSH ]${CR}"
+    [ -n "$PORT_SSH" ]      && echo -e "  ${WH}SSH OpenSSH  :${CR}  ${CY}$PORT_SSH${CR}  (TCP)"
+    [ -n "$PORT_DROPBEAR" ] && echo -e "  ${WH}Dropbear SSH :${CR}  ${CY}$PORT_DROPBEAR${CR}  (TCP)"
+    echo ""
+
+    # ── Otros protocolos ───────────────────────────────────────────────────
+    echo -e "  ${YL}[ OTROS PROTOCOLOS ]${CR}"
+    [ -n "$PORT_UDPCUSTOM" ] && echo -e "  ${WH}UDP Custom   :${CR}  ${CY}$PORT_UDPCUSTOM${CR}  ${DM}(túnel UDP directo — sin SSH)${CR}"
+    [ -n "$PORT_BADVPN" ]    && echo -e "  ${WH}BadVPN       :${CR}  ${DM}127.0.0.1:${CR}${CY}$PORT_BADVPN${CR}  ${DM}(juegos/llamadas via SSH)${CR}"
+    [ -n "$PORT_SLOWDNS" ]   && echo -e "  ${WH}SlowDNS      :${CR}  ${CY}$PORT_SLOWDNS${CR}"
+    [ -n "$PORT_SQUID" ]     && echo -e "  ${WH}Squid        :${CR}  ${CY}$PORT_SQUID${CR}"
+    [ -n "$PORT_V2RAY" ]     && echo -e "  ${WH}V2Ray VMess  :${CR}  ${CY}$PORT_V2RAY${CR}  path: ${DM}/v2ray${CR}"
+    [ -n "$PORT_SS" ]        && echo -e "  ${WH}Shadowsocks  :${CR}  ${CY}$PORT_SS${CR}  ${DM}aes-256-gcm${CR}"
+    [ -n "$PORT_OVPN" ]      && echo -e "  ${WH}OpenVPN      :${CR}  ${CY}$PORT_OVPN${CR}  (UDP)"
+    [ -n "$PORT_WG" ]        && echo -e "  ${WH}WireGuard    :${CR}  ${CY}$PORT_WG${CR}  (UDP)"
+    echo ""
 
     if [ -n "$PORT_BADVPN" ]; then
         echo -e "  ${YL}━━━ BADVPN — Gateway UDP ━━━${CR}"
@@ -209,6 +235,7 @@ function client_data() {
     echo -e "$SEP"
     read -p "$(echo -e ${DM})Presiona Enter para volver...$(echo -e ${CR})"
 }
+
 
 # =========================================================
 # FÁBRICA DE TÚNELES & PROXIES
@@ -405,7 +432,15 @@ fi
 if [ -d /etc/ssh/sshd_config.d ]; then
     if [ ! -f /etc/ssh/sshd_config.d/10-vpsservice.conf ]; then
         rm -f /etc/ssh/sshd_config.d/99-vpsservice.conf 2>/dev/null
-        echo -e "PasswordAuthentication yes\nKbdInteractiveAuthentication yes\nChallengeResponseAuthentication yes" > /etc/ssh/sshd_config.d/10-vpsservice.conf
+        # FIX: el drop-in incluye AllowTcpForwarding para HTTP Injector
+        cat > /etc/ssh/sshd_config.d/10-vpsservice.conf <<'SSHEOF'
+PasswordAuthentication yes
+KbdInteractiveAuthentication yes
+ChallengeResponseAuthentication yes
+AllowTcpForwarding yes
+GatewayPorts no
+X11Forwarding no
+SSHEOF
         systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null
     fi
 fi

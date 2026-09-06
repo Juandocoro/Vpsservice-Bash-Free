@@ -68,7 +68,9 @@ chmod +x /usr/local/bin/menu
 # =========================================================
 if ! crontab -l 2>/dev/null | grep -q "killer.sh"; then
     echo -e "\033[0;33m[*]\033[0m Activando monitor de cuotas..."
-    (crontab -l 2>/dev/null; echo "* * * * * $TARGET_DIR/modules/killer.sh") | crontab -
+    # FIX: usar 'bash' explícito para evitar fallos si los permisos del .sh
+    # no son ejecutables o el shebang no puede resolverse en el entorno cron.
+    (crontab -l 2>/dev/null; echo "* * * * * bash $TARGET_DIR/modules/killer.sh") | crontab -
 fi
 
 # =========================================================
@@ -79,6 +81,38 @@ apt-get update -yq &>/dev/null
 apt-get install -yq curl stunnel4 openssl dropbear net-tools cmake build-essential python3 python3-pip &>/dev/null
 systemctl stop stunnel4 &>/dev/null
 systemctl disable stunnel4 &>/dev/null
+
+# =========================================================
+# PASO 8: Bootstrap SSH — habilitar forwarding desde el inicio
+# Sin esto, HTTP Injector falla aunque las credenciales sean correctas.
+# =========================================================
+echo -e "\033[0;33m[*]\033[0m Configurando SSH para tunneling..."
+SSHD_CONF="/etc/ssh/sshd_config"
+_ssh_set() {
+    local file="$1" key="$2" val="$3"
+    if grep -qE "^#?\s*${key}" "$file" 2>/dev/null; then
+        sed -i -E "s|^#?\s*${key}.*|${key} ${val}|g" "$file"
+    else
+        echo "${key} ${val}" >> "$file"
+    fi
+}
+_ssh_set "$SSHD_CONF" "PasswordAuthentication"        "yes"
+_ssh_set "$SSHD_CONF" "KbdInteractiveAuthentication"  "yes"
+_ssh_set "$SSHD_CONF" "ChallengeResponseAuthentication" "yes"
+_ssh_set "$SSHD_CONF" "AllowTcpForwarding"            "yes"
+_ssh_set "$SSHD_CONF" "GatewayPorts"                 "no"
+if [ -d /etc/ssh/sshd_config.d ]; then
+    cat > /etc/ssh/sshd_config.d/10-vpsservice.conf <<'SSHEOF'
+PasswordAuthentication yes
+KbdInteractiveAuthentication yes
+ChallengeResponseAuthentication yes
+AllowTcpForwarding yes
+GatewayPorts no
+X11Forwarding no
+SSHEOF
+fi
+systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null
+echo -e "\033[1;32m[+]\033[0m SSH configurado para HTTP Injector."
 
 # =========================================================
 # LISTO

@@ -53,11 +53,17 @@ crear_usuario() {
     }
 
     # CAPA 1 — Parchar sshd_config principal
-    _ssh_set "$SSHD_CONF" "UsePAM"                      "yes"
-    _ssh_set "$SSHD_CONF" "KbdInteractiveAuthentication" "yes"  # SSH moderno (Ubuntu 22+)
+    _ssh_set "$SSHD_CONF" "UsePAM"                       "yes"
+    _ssh_set "$SSHD_CONF" "KbdInteractiveAuthentication"  "yes"  # SSH moderno (Ubuntu 22+)
     _ssh_set "$SSHD_CONF" "ChallengeResponseAuthentication" "yes"  # SSH antiguo (Ubuntu 20)
-    _ssh_set "$SSHD_CONF" "PasswordAuthentication"      "yes"
-    _ssh_set "$SSHD_CONF" "PermitEmptyPasswords"        "no"
+    _ssh_set "$SSHD_CONF" "PasswordAuthentication"       "yes"
+    _ssh_set "$SSHD_CONF" "PermitEmptyPasswords"         "no"
+    # FIX: AllowTcpForwarding es REQUERIDO para HTTP Injector y cualquier tunel SSH.
+    # Ubuntu 22+ Cloud lo deshabilita por defecto → los usuarios se autentican pero
+    # no pueden crear el tunel (conexión cae inmediatamente después del handshake).
+    _ssh_set "$SSHD_CONF" "AllowTcpForwarding"           "yes"
+    _ssh_set "$SSHD_CONF" "GatewayPorts"                "no"
+    _ssh_set "$SSHD_CONF" "X11Forwarding"               "no"
 
     # CAPA 2 — Neutralizar overrides en sshd_config.d/ (Ubuntu Cloud los pone aquí)
     # Cualquier archivo con PasswordAuthentication no o KbdInteractive no queda corregido
@@ -77,10 +83,17 @@ crear_usuario() {
         fi
     fi
 
-    # CAPA EXTRA - Garantizar configuración de contraseñas creando drop-in
+    # CAPA EXTRA — Drop-in que garantiza auth por contraseña Y forwarding para HTTP Injector
     if [ -d /etc/ssh/sshd_config.d ]; then
         rm -f /etc/ssh/sshd_config.d/99-vpsservice.conf 2>/dev/null
-        echo -e "PasswordAuthentication yes\nKbdInteractiveAuthentication yes\nChallengeResponseAuthentication yes" > /etc/ssh/sshd_config.d/10-vpsservice.conf
+        cat > /etc/ssh/sshd_config.d/10-vpsservice.conf <<'SSHEOF'
+PasswordAuthentication yes
+KbdInteractiveAuthentication yes
+ChallengeResponseAuthentication yes
+AllowTcpForwarding yes
+GatewayPorts no
+X11Forwarding no
+SSHEOF
     fi
 
     # Reiniciar sshd (restart garantiza que apliquen los cambios, no corta sesiones activas)
@@ -135,8 +148,9 @@ _tabla_usuarios() {
         PASS=$(grep "^$u:" "$DB_FILE" 2>/dev/null | cut -d: -f2)
         [ -z "$PASS" ] && PASS="?(sin log)"
 
-        # Fecha de expiración desde chage
-        EXP_RAW=$(chage -l "$u" 2>/dev/null | grep "Account expires" | cut -d: -f2 | xargs)
+        # Fecha de expiración desde chage — LANG=C garantiza formato en inglés
+        # independiente del locale del servidor (evita fallos silenciosos en date -d)
+        EXP_RAW=$(LANG=C chage -l "$u" 2>/dev/null | grep "Account expires" | cut -d: -f2 | xargs)
 
         # Calcular días restantes
         if [[ "$EXP_RAW" == "never" || -z "$EXP_RAW" ]]; then

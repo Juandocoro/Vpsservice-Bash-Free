@@ -53,6 +53,9 @@ EOF
     _ssh_set "$SSHD_CONF" "ChallengeResponseAuthentication" "yes"
     _ssh_set "$SSHD_CONF" "PasswordAuthentication"        "yes"
     _ssh_set "$SSHD_CONF" "PermitEmptyPasswords"          "no"
+    # FIX: necesario para HTTP Injector y tuneles SSH por Stunnel SSL
+    _ssh_set "$SSHD_CONF" "AllowTcpForwarding"            "yes"
+    _ssh_set "$SSHD_CONF" "GatewayPorts"                 "no"
 
     # CAPA 2 — neutralizar overrides en sshd_config.d/ (Ubuntu Cloud/VPS los activa)
     if [ -d /etc/ssh/sshd_config.d ]; then

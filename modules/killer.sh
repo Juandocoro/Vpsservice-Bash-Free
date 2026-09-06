@@ -13,16 +13,29 @@ awk -F':' '($3 >= 1000 && $3 != 65534 && $1 != "nobody" && $1 != "ubuntu") {prin
     # Si no tiene un número lícito, lo omitimos para no causar errores
     if [[ ! "$LIMITE" =~ ^[0-9]+$ ]]; then continue; fi
 
-    # Escanea las conexiones reales
-    CONEX=$(ps -u "$u" -o comm= 2>/dev/null | grep -E "^(sshd|dropbear)$" | wc -l)
+    # FIX: Contar sesiones SSH reales usando 'ss' (más preciso que ps).
+    # ps contaba procesos hijos de sshd incluyendo los del WebSocket proxy
+    # que corren como root → conteo erróneo que mataba sesiones legítimas.
+    CONEX=$(ss -tnp 2>/dev/null | grep -E "ESTABLISHED" | \
+            grep -v "127\.0\.0\.1" | \
+            awk '{print $NF}' | grep -o "pid=[0-9]*" | \
+            sed 's/pid=//' | \
+            xargs -I{} sh -c 'ps -p {} -o user= 2>/dev/null' | \
+            grep -c "^${u}$" 2>/dev/null || echo 0)
+
+    # Fallback: si ss no da resultado, usar ps directamente
+    if [ -z "$CONEX" ] || ! [[ "$CONEX" =~ ^[0-9]+$ ]]; then
+        CONEX=$(ps -u "$u" -o comm= 2>/dev/null | grep -E "^(sshd|dropbear)$" | wc -l)
+    fi
 
     # Si las conexiones superan el límite de la licencia del usuario...
     if [ "$CONEX" -gt "$LIMITE" ]; then
-        # Manda una señal de terminación de procesos (SIGTERM / SIGKILL)
-        # a cualquier hilo nativo o túnel del infractor, obligándolo a reconectarse.
-        pkill -u "$u" -f "sshd" 2>/dev/null
-        pkill -u "$u" -f "dropbear" 2>/dev/null
-        pkill -u "$u" -f "stunnel" 2>/dev/null
+        # FIX: NO usar pkill -f "sshd" porque -f hace match sobre la ruta completa
+        # del daemon padre (/usr/sbin/sshd) y puede matar el servicio SSH entero.
+        # Se usa pkill sin -f para hacer match exacto solo en el nombre del proceso.
+        pkill -u "$u" sshd 2>/dev/null
+        pkill -u "$u" dropbear 2>/dev/null
+        pkill -u "$u" stunnel 2>/dev/null
     fi
 
 done
