@@ -289,7 +289,14 @@ wghome_show_pubkey() {
     echo -e "  ${WH}${PUB}${CR}"
     echo ""
     echo -e "  ${DM}━━━ Configuración para el PC doméstico ━━━${CR}"
-    echo -e "  ${DM}Copia esto en el [Peer] de tu PC:${CR}"
+    echo -e "  ${DM}Copia esto en el archivo WireGuard de tu PC (ej. /etc/wireguard/wg-home.conf):${CR}"
+    echo ""
+    echo -e "  ${CY}[Interface]${CR}"
+    echo -e "  ${WH}PrivateKey          = <ClavePrivada_Del_PC>${CR}"
+    echo -e "  ${WH}Address             = ${WGH_PEER_IP}/24${CR}"
+    echo -e "  ${DM}# En Linux, para que el PC doméstico comparta su internet residencial:${CR}"
+    echo -e "  ${DM}# PostUp = iptables -A FORWARD -i ${WGH_IFACE} -j ACCEPT; iptables -t nat -A POSTROUTING -o <interfaz_internet> -j MASQUERADE${CR}"
+    echo -e "  ${DM}# PostDown = iptables -D FORWARD -i ${WGH_IFACE} -j ACCEPT; iptables -t nat -D POSTROUTING -o <interfaz_internet> -j MASQUERADE${CR}"
     echo ""
     echo -e "  ${CY}[Peer]${CR}"
     echo -e "  ${WH}PublicKey           = ${PUB}${CR}"
@@ -585,13 +592,27 @@ _wgh_routing_off_internal() {
     } > "${WGH_RT_BACKUP}" 2>/dev/null
 
     # Eliminar reglas que apunten a la tabla homevpn
-    # Usamos un bucle para eliminar todas las ocurrencias
     while ip rule show | grep -q "lookup ${WGH_RT_NAME}\|lookup ${WGH_RT_TABLE}"; do
         ip rule del table "${WGH_RT_TABLE}" 2>/dev/null || break
     done
 
     # Vaciar tabla de rutas homevpn
     ip route flush table "${WGH_RT_TABLE}" 2>/dev/null || true
+
+    # Eliminar reglas iptables asociadas a wg-home
+    while iptables -t nat -D POSTROUTING -o "${WGH_IFACE}" -m comment --comment "wghome-nat" -j MASQUERADE 2>/dev/null; do :; done
+    while iptables -t nat -D POSTROUTING -o "${WGH_IFACE}" -j MASQUERADE 2>/dev/null; do :; done
+    while iptables -D FORWARD -o "${WGH_IFACE}" -m comment --comment "wghome-fwd" -j ACCEPT 2>/dev/null; do :; done
+    while iptables -D FORWARD -o "${WGH_IFACE}" -j ACCEPT 2>/dev/null; do :; done
+    while iptables -D FORWARD -i "${WGH_IFACE}" -m state --state RELATED,ESTABLISHED -m comment --comment "wghome-fwd-in" -j ACCEPT 2>/dev/null; do :; done
+    while iptables -D FORWARD -i "${WGH_IFACE}" -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null; do :; done
+    while iptables -t mangle -D OUTPUT -m comment --comment "wghome-mangle" -j MARK --set-mark 0x77 2>/dev/null; do :; done
+    while iptables -t mangle -D OUTPUT -p tcp --sport 22 -m comment --comment "wghome-mangle" -j RETURN 2>/dev/null; do :; done
+    local SSH_P="${PORT_SSH:-22}"
+    [ "$SSH_P" != "22" ] && while iptables -t mangle -D OUTPUT -p tcp --sport "$SSH_P" -m comment --comment "wghome-mangle" -j RETURN 2>/dev/null; do :; done
+    while iptables -t mangle -D OUTPUT -p udp --dport "${WGH_PORT}" -m comment --comment "wghome-mangle" -j RETURN 2>/dev/null; do :; done
+    while iptables -t mangle -D OUTPUT -d "${WGH_SUBNET}" -m comment --comment "wghome-mangle" -j RETURN 2>/dev/null; do :; done
+    while iptables -t mangle -D OUTPUT -d 127.0.0.0/8 -m comment --comment "wghome-mangle" -j RETURN 2>/dev/null; do :; done
 
     # Verificar que la tabla main está intacta
     _wgh_verify_ssh_route
@@ -609,13 +630,26 @@ wghome_routing_on() {
     echo ""
 
     if ! _wgh_is_installed; then
-        echo -e "  ${RD}[-]${CR} Gateway no instalado."
+        echo -e "  ${RD}[-]${CR} Gateway no instalado. Usa la opción 1 primero."
         sleep 2; return
     fi
 
     if ! _wgh_is_up; then
-        echo -e "  ${RD}[-]${CR} El túnel ${WGH_IFACE} no está activo. Actívalo primero (opción 4)."
-        sleep 2; return
+        echo -e "  ${YL}[!]${CR} El túnel ${WGH_IFACE} no está activo."
+        read -p "$(echo -e ${DM})¿Deseas activar el túnel ahora? (s/n) [s]: $(echo -e ${CR})" autoup
+        autoup=${autoup:-s}
+        if [[ "$autoup" == "s" || "$autoup" == "S" ]]; then
+            echo -e "  ${YL}[*]${CR} Levantando túnel wg-quick@${WGH_IFACE}..."
+            systemctl start "wg-quick@${WGH_IFACE}" 2>/dev/null
+            sleep 2
+            if ! _wgh_is_up; then
+                echo -e "  ${RD}[-]${CR} Error al iniciar el túnel. Revisa la opción 4 y 6."
+                sleep 2; return
+            fi
+            echo -e "  ${GR}[+]${CR} Túnel ${WGH_IFACE} activo."
+        else
+            echo -e "  ${GR}[+]${CR} Operación cancelada."; sleep 1; return
+        fi
     fi
 
     if _wgh_routing_is_active; then
@@ -636,12 +670,13 @@ wghome_routing_on() {
         sleep 3; return
     }
 
-    # 2. Verificar que el túnel tiene handshake (PC doméstico conectado)
+    # 2. Verificar si el túnel tiene handshake (PC doméstico conectado)
     if ! _wgh_has_handshake; then
-        echo -e "  ${YL}[!]${CR} ADVERTENCIA: No hay handshake WireGuard reciente."
-        echo -e "  ${YL}[!]${CR} El PC doméstico puede no estar conectado aún."
+        echo -e "  ${YL}[!]${CR} ADVERTENCIA: No se detecta handshake reciente en WireGuard."
+        echo -e "  ${YL}[!]${CR} El PC doméstico puede no estar conectado o sincronizado aún."
         echo ""
-        read -p "$(echo -e ${DM})¿Continuar de todas formas? (s/n): $(echo -e ${CR})" resp
+        read -p "$(echo -e ${DM})¿Activar la salida de todas formas? (s/n) [s]: $(echo -e ${CR})" resp
+        resp=${resp:-s}
         if [[ "$resp" != "s" && "$resp" != "S" ]]; then
             echo -e "  ${GR}[+]${CR} Operación cancelada."; sleep 1; return
         fi
@@ -662,27 +697,107 @@ wghome_routing_on() {
     # 4. Registrar tabla si no existe
     _wgh_ensure_rt_table
 
-    # 5. Añadir ruta por defecto en tabla homevpn (apunta al PC doméstico)
-    #    Usar 'replace' para evitar duplicados
+    # 5. Asegurar IP Forwarding
+    _wgh_enable_forwarding
+
+    # 6. Añadir ruta por defecto en tabla homevpn (apunta al PC doméstico)
     echo -e "  ${YL}[*]${CR} Añadiendo ruta en tabla ${WGH_RT_NAME} (${WGH_RT_TABLE})..."
     ip route replace default via "${WGH_PEER_IP}" dev "${WGH_IFACE}" table "${WGH_RT_TABLE}" 2>/dev/null
     echo -e "  ${GR}[+]${CR} Ruta: default via ${WGH_PEER_IP} dev ${WGH_IFACE} table ${WGH_RT_NAME}"
 
-    # 6. Información sobre qué tráfico usar con esta tabla
+    # 7. Selección del modo de salida residencial
     echo ""
-    echo -e "  ${CY}━━━ La tabla ${WGH_RT_NAME} está lista ━━━${CR}"
-    echo -e "  ${DM}La ruta residencial existe SOLO en la tabla ${WGH_RT_TABLE}.${CR}"
-    echo -e "  ${DM}La tabla main y el SSH no están afectados.${CR}"
+    echo -e "  ${CY}━━━ Modo de Salida Residencial ━━━${CR}"
+    echo -e "  ${CY}1)${CR} ${WH}Usuarios VPN y Túneles${CR} ${GR}[Recomendado]${CR}"
+    echo -e "     ${DM}Enruta usuarios SSH/HTTP Injector (UID 1000+) y VPNs.${CR}"
+    echo -e "     ${DM}SSH administrativo de root permanece por la IP de la VPS.${CR}"
+    echo -e "  ${CY}2)${CR} ${WH}Modo Global (Todo el VPS excepto SSH de admin)${CR}"
+    echo -e "     ${DM}Enruta todo el tráfico saliente del servidor por el PC doméstico.${CR}"
     echo ""
-    echo -e "  ${YL}[!]${CR} Para enrutar tráfico por esta tabla, añade reglas como:"
-    echo -e "  ${WH}  ip rule add from <IP_ORIGEN> table ${WGH_RT_TABLE}${CR}"
-    echo -e "  ${WH}  ip rule add fwmark 0x77 table ${WGH_RT_TABLE}${CR}"
-    echo -e "  ${WH}  ip rule add uidrange <UID>-<UID> table ${WGH_RT_TABLE}${CR}"
-    echo ""
+    read -p "$(echo -e ${DM})Elige una opción [1-2] (Defecto: 1): $(echo -e ${CR})" mode_rt
+    mode_rt=${mode_rt:-1}
 
-    # 7. Verificación final
+    echo ""
+    echo -e "  ${YL}[*]${CR} Aplicando reglas de enrutamiento (Policy Routing)..."
+
+    # Regla base: tráfico originado desde la IP local de wg-home (10.77.77.1)
+    if ! ip rule show | grep -q "from ${WGH_DROPLET_IP} lookup"; then
+        ip rule add from "${WGH_DROPLET_IP}" table "${WGH_RT_TABLE}" priority 1000 2>/dev/null || true
+    fi
+
+    # Regla base: tráfico con marca fwmark 0x77
+    if ! ip rule show | grep -q "fwmark 0x77 lookup"; then
+        ip rule add fwmark 0x77 table "${WGH_RT_TABLE}" priority 1001 2>/dev/null || true
+    fi
+
+    if [ "$mode_rt" = "2" ]; then
+        echo -e "  ${YL}[*]${CR} Configurando marcado de paquetes global..."
+        local SSH_P="22"
+        [ -n "$PORT_SSH" ] && SSH_P="$PORT_SSH"
+
+        iptables -t mangle -C OUTPUT -p tcp --sport "$SSH_P" -m comment --comment "wghome-mangle" -j RETURN 2>/dev/null || \
+            iptables -t mangle -A OUTPUT -p tcp --sport "$SSH_P" -m comment --comment "wghome-mangle" -j RETURN
+        [ "$SSH_P" != "22" ] && {
+            iptables -t mangle -C OUTPUT -p tcp --sport 22 -m comment --comment "wghome-mangle" -j RETURN 2>/dev/null || \
+                iptables -t mangle -A OUTPUT -p tcp --sport 22 -m comment --comment "wghome-mangle" -j RETURN
+        }
+        iptables -t mangle -C OUTPUT -p udp --dport "${WGH_PORT}" -m comment --comment "wghome-mangle" -j RETURN 2>/dev/null || \
+            iptables -t mangle -A OUTPUT -p udp --dport "${WGH_PORT}" -m comment --comment "wghome-mangle" -j RETURN
+        iptables -t mangle -C OUTPUT -d "${WGH_SUBNET}" -m comment --comment "wghome-mangle" -j RETURN 2>/dev/null || \
+            iptables -t mangle -A OUTPUT -d "${WGH_SUBNET}" -m comment --comment "wghome-mangle" -j RETURN
+        iptables -t mangle -C OUTPUT -d 127.0.0.0/8 -m comment --comment "wghome-mangle" -j RETURN 2>/dev/null || \
+            iptables -t mangle -A OUTPUT -d 127.0.0.0/8 -m comment --comment "wghome-mangle" -j RETURN
+        iptables -t mangle -C OUTPUT -m comment --comment "wghome-mangle" -j MARK --set-mark 0x77 2>/dev/null || \
+            iptables -t mangle -A OUTPUT -m comment --comment "wghome-mangle" -j MARK --set-mark 0x77
+
+        echo -e "  ${GR}[+]${CR} Modo Global activo (SSH protegido en puerto $SSH_P y 22)."
+    else
+        # Modo Usuarios VPN (UID 1000+)
+        if ! ip rule show | grep -q "uidrange 1000-65535 lookup"; then
+            ip rule add uidrange 1000-65535 table "${WGH_RT_TABLE}" priority 1002 2>/dev/null || true
+            echo -e "  ${GR}[+]${CR} Regla aplicada: usuarios VPN (UID 1000-65535)."
+        fi
+
+        # Clientes WireGuard (wg0)
+        if ip link show wg0 &>/dev/null; then
+            if ! ip rule show | grep -q "iif wg0 lookup"; then
+                ip rule add iif wg0 table "${WGH_RT_TABLE}" priority 1003 2>/dev/null || true
+                echo -e "  ${GR}[+]${CR} Regla aplicada: clientes WireGuard (wg0)."
+            fi
+        fi
+
+        # Clientes OpenVPN (tun0)
+        if ip link show tun0 &>/dev/null; then
+            if ! ip rule show | grep -q "iif tun0 lookup"; then
+                ip rule add iif tun0 table "${WGH_RT_TABLE}" priority 1004 2>/dev/null || true
+                echo -e "  ${GR}[+]${CR} Regla aplicada: clientes OpenVPN (tun0)."
+            fi
+        fi
+    fi
+
+    # Reglas NAT / Forwarding en iptables para la interfaz wg-home
+    echo -e "  ${YL}[*]${CR} Configurando NAT / Forwarding en iptables..."
+    iptables -t nat -C POSTROUTING -o "${WGH_IFACE}" -m comment --comment "wghome-nat" -j MASQUERADE 2>/dev/null || \
+        iptables -t nat -A POSTROUTING -o "${WGH_IFACE}" -m comment --comment "wghome-nat" -j MASQUERADE
+    iptables -C FORWARD -o "${WGH_IFACE}" -m comment --comment "wghome-fwd" -j ACCEPT 2>/dev/null || \
+        iptables -A FORWARD -o "${WGH_IFACE}" -m comment --comment "wghome-fwd" -j ACCEPT
+    iptables -C FORWARD -i "${WGH_IFACE}" -m state --state RELATED,ESTABLISHED -m comment --comment "wghome-fwd-in" -j ACCEPT 2>/dev/null || \
+        iptables -A FORWARD -i "${WGH_IFACE}" -m state --state RELATED,ESTABLISHED -m comment --comment "wghome-fwd-in" -j ACCEPT
+    echo -e "  ${GR}[+]${CR} Reenvío y NAT activos en interfaz ${WGH_IFACE}."
+
+    # 8. Verificación final de seguridad SSH
+    echo ""
     echo -e "  ${YL}[*]${CR} Verificación final de SSH..."
     _wgh_verify_ssh_route && echo -e "  ${GR}[+]${CR} SSH protegido — tabla main intacta."
+
+    echo ""
+    if _wgh_routing_is_active; then
+        echo -e "  ${GR}━━━ [✓] SALIDA RESIDENCIAL ACTIVADA CON ÉXITO ━━━${CR}"
+        echo -e "  ${DM}El tráfico seleccionado sale a Internet vía PC Doméstico.${CR}"
+        echo -e "  ${DM}Puedes comprobar la IP en la opción 10 del menú.${CR}"
+    else
+        echo -e "  ${RD}[-] Error: No se pudo verificar la activación de las reglas.${CR}"
+    fi
 
     echo ""
     read -p "$(echo -e ${DM})Presiona Enter para continuar...$(echo -e ${CR})"
@@ -708,6 +823,7 @@ wghome_routing_off() {
     _wgh_routing_off_internal
 
     echo -e "  ${GR}[+]${CR} Reglas de tabla ${WGH_RT_NAME} eliminadas."
+    echo -e "  ${GR}[+]${CR} Reglas iptables asociadas eliminadas."
     echo -e "  ${GR}[+]${CR} Tabla main intacta — SSH seguro."
     echo ""
     echo -e "  ${DM}Backup del estado previo guardado en: ${WGH_RT_BACKUP}${CR}"
@@ -729,33 +845,33 @@ wghome_check_ip() {
 
     echo -e "  ${YL}[*]${CR} Obteniendo IP pública normal de la Droplet..."
     local IP_NORMAL
-    IP_NORMAL=$(curl -4 -s --max-time 8 ifconfig.me 2>/dev/null || echo "N/A")
+    IP_NORMAL=$(curl -4 -s --max-time 6 https://api.ipify.org 2>/dev/null || curl -4 -s --max-time 6 https://ifconfig.me 2>/dev/null || echo "N/A")
     echo -e "  ${DM}IP Droplet (tabla main) :${CR} ${GR}${IP_NORMAL}${CR}"
     echo ""
 
     if _wgh_is_up && _wgh_routing_is_active; then
         echo -e "  ${YL}[*]${CR} Obteniendo IP residencial vía gateway doméstico..."
-        # Enrutar la petición curl por la interfaz wg-home usando la tabla homevpn
-        local IP_RESIDENCIAL
-        IP_RESIDENCIAL=$(ip route show table "${WGH_RT_TABLE}" | grep default | head -1 | awk '{print $3}')
-        if [ -n "$IP_RESIDENCIAL" ]; then
-            # Intentar curl directo por la interfaz si el routing está correctamente configurado
-            IP_RESIDENCIAL_CHECK=$(curl -4 -s --max-time 10 --interface "${WGH_IFACE}" ifconfig.me 2>/dev/null || echo "N/A")
-            echo -e "  ${DM}IP Residencial (wg-home):${CR} ${CY}${IP_RESIDENCIAL_CHECK}${CR}"
-            if [ "$IP_NORMAL" != "$IP_RESIDENCIAL_CHECK" ] && [ "$IP_RESIDENCIAL_CHECK" != "N/A" ]; then
-                echo -e "  ${GR}[+]${CR} ¡Gateway residencial funcionando! IPs diferentes."
-            else
-                echo -e "  ${YL}[!]${CR} Misma IP o sin respuesta por wg-home."
-                echo -e "  ${DM}  El PC doméstico debe tener NAT/masquerade configurado.${CR}"
-            fi
+        local IP_RESIDENCIAL_CHECK
+        IP_RESIDENCIAL_CHECK=$(curl -4 -s --max-time 8 --interface "${WGH_IFACE}" https://api.ipify.org 2>/dev/null || curl -4 -s --max-time 8 --interface "${WGH_IFACE}" https://ifconfig.me 2>/dev/null || echo "N/A")
+        echo -e "  ${DM}IP Residencial (wg-home):${CR} ${CY}${IP_RESIDENCIAL_CHECK}${CR}"
+        echo ""
+        if [ "$IP_NORMAL" != "$IP_RESIDENCIAL_CHECK" ] && [ "$IP_RESIDENCIAL_CHECK" != "N/A" ]; then
+            echo -e "  ${GR}[+] ¡Gateway residencial funcionando correctamente!${CR}"
+            echo -e "  ${DM}    La IP residencial es diferente a la de la VPS.${CR}"
+        elif [ "$IP_RESIDENCIAL_CHECK" = "N/A" ]; then
+            echo -e "  ${YL}[!] Sin respuesta por ${WGH_IFACE}.${CR}"
+            echo -e "  ${DM}    Verifica que el PC doméstico esté encendido y tenga NAT/masquerade activo.${CR}"
+            echo -e "  ${DM}    Prueba hacer ping al PC doméstico con la opción 7.${CR}"
         else
-            echo -e "  ${RD}[-]${CR} No hay ruta por defecto en tabla ${WGH_RT_NAME}."
+            echo -e "  ${YL}[!] Misma IP o tráfico saliendo por la VPS.${CR}"
+            echo -e "  ${DM}    Verifica las reglas con la opción 11 (Diagnóstico).${CR}"
         fi
     elif _wgh_is_up && ! _wgh_routing_is_active; then
         echo -e "  ${YL}[!]${CR} Túnel activo pero salida residencial desactivada."
         echo -e "  ${DM}  Usa la opción 8 para activar la salida residencial.${CR}"
     else
         echo -e "  ${YL}[!]${CR} Túnel inactivo — IP residencial no disponible."
+        echo -e "  ${DM}  Activa el túnel con la opción 4.${CR}"
     fi
 
     echo ""
