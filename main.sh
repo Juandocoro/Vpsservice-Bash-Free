@@ -20,6 +20,7 @@ SEP="${YL}━━━━━━━━━━━━━━━━━━━━━━━�
 source "$DIR/modules/network.sh"
 source "$DIR/modules/users.sh"
 source "$DIR/modules/optimize.sh"
+source "$DIR/modules/installers/wg_home.sh"
 
 # =========================================================
 # CABECERA GENERAL — Banner grande con degradado azul→blanco
@@ -341,7 +342,7 @@ function uninstall_panel() {
 
     echo ""
     echo -e "  ${YL}[*]${CR} Deteniendo servicios activos..."
-    for svc in stunnel4 dropbear badvpn udp-custom ws-server slowdns squid v2ray shadowsocks openvpn wg-quick@wg0; do
+    for svc in stunnel4 dropbear badvpn udp-custom ws-server slowdns squid v2ray shadowsocks openvpn wg-quick@wg0 wg-quick@wg-home; do
         systemctl stop "$svc" 2>/dev/null
         systemctl disable "$svc" 2>/dev/null
     done
@@ -403,9 +404,10 @@ function show_menu() {
     echo -e "  ${CY}5)${CR}  ${RD}⚠  Desinstalar Panel${CR}"
     echo -e "  ${CY}6)${CR}  ${WH}Sincronizar Cortafuegos${CR}"
     echo -e "  ${CY}7)${CR}  ${WH}Optimización del Servidor${CR}"
+    echo -e "  ${CY}8)${CR}  ${WH}Gateway Residencial (WireGuard)${CR}"
     echo -e "  ${CY}0)${CR}  ${WH}Salir${CR}"
     echo -e "$SEP"
-    read -p "$(echo -e ${DM})Digita una acción [0-7]: $(echo -e ${CR})" opcion
+    read -p "$(echo -e ${DM})Digita una acción [0-8]: $(echo -e ${CR})" opcion
 
     case $opcion in
         1) users_menu ;;
@@ -415,6 +417,7 @@ function show_menu() {
         5) uninstall_panel ;;
         6) clear; print_title; sync_firewall ;;
         7) optimize_menu ;;
+        8) wghome_menu ;;
         0) clear; echo -e "${DM}Saliendo... (escribe 'menu' para volver)${CR}"; exit 0 ;;
         *) echo -e "  ${RD}[-]${CR} Opción no reconocida."; sleep 1; show_menu ;;
     esac

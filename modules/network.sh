@@ -59,6 +59,13 @@ function refresh_ports() {
         PORT_WG=$(grep 'ListenPort' /etc/wireguard/wg0.conf 2>/dev/null | awk '{print $3}')
     fi
 
+    # wg-home — Gateway Residencial (módulo wg_home.sh)
+    PORT_WGHOME=""
+    if ip link show wg-home &>/dev/null; then
+        PORT_WGHOME=$(grep 'ListenPort' /etc/wireguard/wg-home.conf 2>/dev/null | awk '{print $3}')
+        [ -z "$PORT_WGHOME" ] && PORT_WGHOME="51820"
+    fi
+
 }
 
 # =========================================================
@@ -102,6 +109,8 @@ function sync_firewall() {
     [ -n "$PORT_SS" ]           && ufw allow "$PORT_SS"/tcp           &>/dev/null
     [ -n "$PORT_OVPN" ]         && ufw allow "$PORT_OVPN"/udp         &>/dev/null
     [ -n "$PORT_WG" ]           && ufw allow "$PORT_WG"/udp           &>/dev/null
+    # wg-home — Gateway Residencial: solo abrir si está activa
+    [ -n "$PORT_WGHOME" ]       && ufw allow "$PORT_WGHOME"/udp       &>/dev/null
     
     # 6. Activar definitivamente
     echo "y" | ufw enable &>/dev/null
@@ -171,6 +180,8 @@ function show_network_status() {
     [ -n "$PORT_SS" ]         && entries+=("Shadowsocks|$PORT_SS")
     [ -n "$PORT_OVPN" ]       && entries+=("OpenVPN|$PORT_OVPN")
     [ -n "$PORT_WG" ]         && entries+=("WireGuard|$PORT_WG")
+    # wg-home — Gateway Residencial
+    [ -n "$PORT_WGHOME" ]     && entries+=("WG-Home|$PORT_WGHOME")
 
     if [ ${#entries[@]} -eq 0 ]; then
         echo -e "  ${RD}Sin protocolos activos instalados${CR}"
