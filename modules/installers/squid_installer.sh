@@ -5,30 +5,35 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
+# Lenguaje visual compartido del panel
+_INST_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+source "$_INST_DIR/../ui.sh"
+
 clear
-echo "================================================="
-echo "              SQUID HTTP PROXY                   "
-echo "================================================="
-echo "Squid es un proxy HTTP/HTTPS de alto rendimiento."
-echo "Permite a los clientes navegar a través del VPS."
+
+ui_header "FREE · INSTALADOR"
+ui_section "SQUID HTTP PROXY"
+echo -e "${UI_PAD}${DM}Squid es un proxy HTTP/HTTPS de alto rendimiento.${CR}"
+echo -e "${UI_PAD}${DM}Permite a los clientes navegar a través del VPS.${CR}"
 echo ""
 
-read -p "¿Instalar Squid? (s/n): " auth
+ui_prompt "¿Instalar Squid? (s/n)"; auth="$REPLY_UI"
 if [[ "$auth" != "s" && "$auth" != "S" ]]; then exit 0; fi
 
-read -p "Puerto para Squid (Defecto: 3128): " squid_port
+ui_prompt "Puerto para Squid (Defecto: 3128)"; squid_port="$REPLY_UI"
 if [ -z "$squid_port" ]; then squid_port=3128; fi
 
-echo "[*] Instalando Squid..."
+ui_info "Instalando Squid..."
 apt-get install -yq squid &>/dev/null
 
-echo "[*] Escribiendo configuración /etc/squid/squid.conf..."
+ui_info "Escribiendo configuración /etc/squid/squid.conf..."
 cat <<EOF > /etc/squid/squid.conf
 # vpsservice Script FREE - Squid Config
 http_port $squid_port
 
 # ACL - Permitir acceso total
-acl all src 0.0.0.0/0
+# NOTA: 'all' es una ACL predefinida desde Squid 3.1. Redefinirla provoca
+# un error fatal de parseo y el servicio no arranca, por eso solo se usa.
 http_access allow all
 
 # Respuesta de bienvenida (para inyectores HTTP)
@@ -51,9 +56,9 @@ if command -v ufw &>/dev/null; then
 fi
 
 echo ""
-echo "================================================="
-echo "[+] Squid HTTP Proxy activo."
-echo "    Puerto: $squid_port/TCP"
-echo "    Acceso: Abierto (sin auth)"
-echo "================================================="
-read -p "Presiona Enter para volver..."
+ui_solid
+ui_ok "Squid HTTP Proxy activo."
+echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Puerto" "$squid_port/TCP" 34)"
+echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Acceso" "Abierto (sin auth)" 34)"
+ui_solid
+ui_pause

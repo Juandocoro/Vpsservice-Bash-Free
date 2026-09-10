@@ -5,12 +5,13 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
+# Lenguaje visual compartido del panel
+_INST_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+source "$_INST_DIR/../ui.sh"
+
 CR="\033[0m"; GR="\033[1;32m"; RD="\033[0;31m"
 YL="\033[0;33m"; CY="\033[1;36m"; WH="\033[1;37m"; DM="\033[2;37m"
 
-_ok()   { echo -e "  ${GR}[+]${CR} $1"; }
-_info() { echo -e "  ${YL}[*]${CR} $1"; }
-_err()  { echo -e "  ${RD}[-]${CR} $1"; }
 
 clear
 echo -e "${YL}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${CR}"
@@ -22,7 +23,7 @@ echo -e "  ${DM}llamadas VoIP) a través del túnel SSH activo.${CR}"
 echo -e "  ${DM}Se usa junto con SSH — NO es un túnel directo.${CR}"
 echo ""
 
-read -p "$(echo -e ${DM})¿Instalar BadVPN UDP Gateway? (s/n): $(echo -e ${CR})" auth
+ui_prompt "$(echo -e ${DM})¿Instalar BadVPN UDP Gateway? (s/n): $(echo -e ${CR})"; auth="$REPLY_UI"
 if [[ "$auth" != "s" && "$auth" != "S" ]]; then exit 0; fi
 
 echo ""
@@ -68,7 +69,7 @@ fi
 # ── puerto ─────────────────────────────────────────────────────────────────────
 CURRENT=$(grep -o '\-\-listen-addr [^ ]*' /etc/systemd/system/badvpn.service 2>/dev/null | awk -F':' '{print $NF}')
 [ -n "$CURRENT" ] && echo -e "  ${DM}Puerto actual: ${CY}$CURRENT${CR}"
-read -p "$(echo -e ${DM})Puerto BadVPN (Defecto: 7300): $(echo -e ${CR})" bvpn_port
+ui_prompt "$(echo -e ${DM})Puerto BadVPN (Defecto: 7300): $(echo -e ${CR})"; bvpn_port="$REPLY_UI"
 [ -z "$bvpn_port" ] && bvpn_port=${CURRENT:-7300}
 [[ ! "$bvpn_port" =~ ^[0-9]+$ ]] && bvpn_port=7300
 

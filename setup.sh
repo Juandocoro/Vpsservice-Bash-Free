@@ -22,7 +22,15 @@ echo ""
 # =========================================================
 if ! command -v git &>/dev/null; then
     echo -e "\033[0;33m[*]\033[0m Instalando git..."
+    # FIX: refrescar las listas primero. En una imagen recien creada estan
+    # vacias o caducadas y el install fallaba antes de poder clonar el repo.
+    apt-get update -yq &>/dev/null
     apt-get install -yq git &>/dev/null
+fi
+
+if ! command -v git &>/dev/null; then
+    echo -e "\033[0;31m[-]\033[0m No se pudo instalar git. Abortando."
+    exit 1
 fi
 
 # =========================================================

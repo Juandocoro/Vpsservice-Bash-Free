@@ -5,14 +5,13 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-# ─── Colores ──────────────────────────────────────────────────────────────────
+# Lenguaje visual compartido del panel
+_INST_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+source "$_INST_DIR/../ui.sh"
+
 CR="\033[0m"; GR="\033[1;32m"; RD="\033[0;31m"
 YL="\033[0;33m"; CY="\033[1;36m"; WH="\033[1;37m"; DM="\033[2;37m"
-SEP="${YL}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${CR}"
 
-_ok()   { echo -e "  ${GR}[+]${CR} $1"; }
-_info() { echo -e "  ${YL}[*]${CR} $1"; }
-_err()  { echo -e "  ${RD}[-]${CR} $1"; }
 
 CONFIG_FILE="/usr/local/etc/v2ray/config.json"
 USERS_FILE="/etc/v2ray-users.conf"
@@ -124,7 +123,7 @@ while true; do
     echo -e "  ${CY}4)${CR} ${WH}Eliminar Usuario${CR}"
     echo -e "  ${CY}0)${CR} ${WH}Volver${CR}"
     echo -e "$SEP"
-    read -p "$(echo -e ${DM})Elige [0-4]: $(echo -e ${CR})" op
+    ui_prompt "$(echo -e ${DM})Elige [0-4]: $(echo -e ${CR})"; op="$REPLY_UI"
 
     case $op in
 
@@ -135,20 +134,20 @@ while true; do
         echo -e "${WH}          INSTALAR / REINSTALAR V2RAY           ${CR}"
         echo -e "$SEP"
 
-        read -p "$(echo -e ${DM})Puerto WebSocket (Defecto: 8080): $(echo -e ${CR})" v2_port
+        ui_prompt "$(echo -e ${DM})Puerto WebSocket (Defecto: 8080): $(echo -e ${CR})"; v2_port="$REPLY_UI"
         [ -z "$v2_port" ] && v2_port=8080
         if ! [[  "$v2_port" =~ ^[0-9]+$ ]] || [ "$v2_port" -lt 1 ] || [ "$v2_port" -gt 65535 ]; then
             _err "Puerto inválido. Usando 8080."; v2_port=8080
         fi
 
-        read -p "$(echo -e ${DM})Path WebSocket (Defecto: /v2ray): $(echo -e ${CR})" v2_path
+        ui_prompt "$(echo -e ${DM})Path WebSocket (Defecto: /v2ray): $(echo -e ${CR})"; v2_path="$REPLY_UI"
         [ -z "$v2_path" ] && v2_path="/v2ray"
         [[ "$v2_path" != /* ]] && v2_path="/$v2_path"
 
         echo ""
         echo -e "  ${DM}Bug Host / SNI es el dominio de camouflage del tunel${CR}"
         echo -e "  ${DM}para enmascarar la conexión. Si no usas uno, deja vacío.${CR}"
-        read -p "$(echo -e ${DM})Bug Host / SNI (Enter para omitir): $(echo -e ${CR})" v2_bughost
+        ui_prompt "$(echo -e ${DM})Bug Host / SNI (Enter para omitir): $(echo -e ${CR})"; v2_bughost="$REPLY_UI"
         echo ""
 
         _info "Instalando V2Ray..."
@@ -235,7 +234,7 @@ while true; do
             _err "V2Ray no está instalado. Instálalo primero (opción 1)."; sleep 2; continue
         fi
 
-        read -p "$(echo -e ${DM})Nombre del usuario (ej: juan): $(echo -e ${CR})" uname
+        ui_prompt "$(echo -e ${DM})Nombre del usuario (ej: juan): $(echo -e ${CR})"; uname="$REPLY_UI"
         [ -z "$uname" ] && uname="user_$(date +%s)"
         uname=$(echo "$uname" | tr -d ' ')
 
@@ -243,10 +242,10 @@ while true; do
         SAVED_BUGHOST=$(grep '^BUGHOST=' "$USERS_FILE" 2>/dev/null | cut -d= -f2)
         if [ -n "$SAVED_BUGHOST" ]; then
             echo -e "  ${DM}Bug Host guardado: ${CY}$SAVED_BUGHOST${CR}"
-            read -p "$(echo -e ${DM})Nuevo Bug Host (Enter para usar '$SAVED_BUGHOST'): $(echo -e ${CR})" new_bughost
+            ui_prompt "$(echo -e ${DM})Nuevo Bug Host (Enter para usar '$SAVED_BUGHOST'): $(echo -e ${CR})"; new_bughost="$REPLY_UI"
             [ -z "$new_bughost" ] && new_bughost="$SAVED_BUGHOST"
         else
-            read -p "$(echo -e ${DM})Bug Host / SNI (Enter para omitir): $(echo -e ${CR})" new_bughost
+            ui_prompt "$(echo -e ${DM})Bug Host / SNI (Enter para omitir): $(echo -e ${CR})"; new_bughost="$REPLY_UI"
         fi
 
         NEW_UUID=$(cat /proc/sys/kernel/random/uuid)
@@ -380,7 +379,7 @@ for i, cl in enumerate(clients, 1):
     print(f'  {i}) {cl.get(\"email\",\"user\"+str(i))}  [{cl[\"id\"][:8]}...]')
 " 2>/dev/null
         echo ""
-        read -p "$(echo -e ${DM})Nombre del usuario a eliminar: $(echo -e ${CR})" del_name
+        ui_prompt "$(echo -e ${DM})Nombre del usuario a eliminar: $(echo -e ${CR})"; del_name="$REPLY_UI"
         [ -z "$del_name" ] && continue
 
         NEW_CLIENTS=$(python3 -c "

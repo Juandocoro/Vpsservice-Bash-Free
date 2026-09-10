@@ -1,15 +1,8 @@
 #!/bin/bash
 
-# === PALETA (heredada del entorno si se llama desde main.sh) ===
-CR="\033[0m"
-CY="\033[1;36m"
-GR="\033[1;32m"
-RD="\033[0;31m"
-YL="\033[0;33m"
-WH="\033[1;37m"
-DM="\033[2;37m"
-BL="\033[1;34m"   # Azul bold — indicador bajo uso
-SEP="${YL}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${CR}"
+# La paleta y los helpers de dibujo viven en modules/ui.sh
+_NET_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+source "$_NET_DIR/ui.sh"
 
 function extract_port() {
     local service=$1
@@ -109,6 +102,12 @@ function sync_firewall() {
     [ -n "$PORT_SS" ]           && ufw allow "$PORT_SS"/tcp           &>/dev/null
     [ -n "$PORT_OVPN" ]         && ufw allow "$PORT_OVPN"/udp         &>/dev/null
     [ -n "$PORT_WG" ]           && ufw allow "$PORT_WG"/udp           &>/dev/null
+    # FIX: SlowDNS necesita su puerto UDP y el 53 (DNS). Sin estas reglas el
+    # 'ufw reset' de arriba cerraba el tunel DNS en cada sincronizacion.
+    if [ -n "$PORT_SLOWDNS" ]; then
+        ufw allow "$PORT_SLOWDNS"/udp &>/dev/null
+        ufw allow 53/udp              &>/dev/null
+    fi
     # wg-home — Gateway Residencial: solo abrir si está activa
     [ -n "$PORT_WGHOME" ]       && ufw allow "$PORT_WGHOME"/udp       &>/dev/null
     
@@ -119,92 +118,133 @@ function sync_firewall() {
 }
 
 
-# Devuelve un bombillo coloreado según % de uso
-# Azul < 50% | Verde 50-85% | Rojo > 85%
-_bombillo() {
-    local pct=${1:-0}
-    if   [ "$pct" -ge 85 ]; then echo -e "${RD}💡${CR}"
-    elif [ "$pct" -ge 50 ]; then echo -e "${GR}💡${CR}"
-    else                          echo -e "${BL}💡${CR}"
+# =========================================================
+# TABLERO PRINCIPAL — bloque de estado del servidor
+# =========================================================
+
+# La IP publica se resuelve una sola vez por sesion: consultarla en cada
+# redibujado del menu metia una latencia de red innecesaria.
+_public_ip() {
+    if [ -z "${VPS_PUBLIC_IP:-}" ]; then
+        VPS_PUBLIC_IP=$(curl -4 -s --max-time 4 ifconfig.me 2>/dev/null)
+        [ -z "$VPS_PUBLIC_IP" ] && VPS_PUBLIC_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+        [ -z "$VPS_PUBLIC_IP" ] && VPS_PUBLIC_IP="N/A"
+    fi
+    echo "$VPS_PUBLIC_IP"
+}
+
+_os_name() {
+    local n
+    n=$(grep -oP '(?<=^PRETTY_NAME=").*(?=")' /etc/os-release 2>/dev/null)
+    [ -z "$n" ] && n=$(uname -s)
+    # Recortar para que quepa en la celda
+    echo "${n:0:14}"
+}
+
+_uptime_short() {
+    local up
+    up=$(awk '{print int($1)}' /proc/uptime 2>/dev/null)
+    [ -z "$up" ] && { echo "N/A"; return; }
+    if   [ "$up" -ge 86400 ]; then echo "$((up/86400))d $((up%86400/3600))h"
+    elif [ "$up" -ge 3600 ];  then echo "$((up/3600))h $((up%3600/60))m"
+    else                           echo "$((up/60))m"
     fi
 }
 
-function show_network_status() {
-    IP_PUBLICA=$(curl -4 -s ifconfig.me 2>/dev/null)
-    [ -z "$IP_PUBLICA" ] && IP_PUBLICA="N/A"
+# Pinta una fila de puertos en tres columnas (nombre: puerto)
+_port_grid() {
+    local entries=("$@")
+    local total=${#entries[@]}
+    [ "$total" -eq 0 ] && { echo -e "${UI_PAD}${RD}Sin protocolos activos — instala uno desde la opcion [2]${CR}"; return; }
 
+    local w=$(( (UI_W - 4) / 3 ))
+    local i=0
+    while [ $i -lt $total ]; do
+        local row="${UI_PAD}"
+        for col in 0 1 2; do
+            local idx=$(( i + col ))
+            if [ $idx -ge $total ]; then
+                # Rellenar la fila incompleta para no romper la alineacion
+                row="${row}$(printf '%*s' $((w+2)) '')"
+                continue
+            fi
+            local ename eport
+            IFS='|' read -r ename eport <<< "${entries[$idx]}"
+            local sep="${DM}▸${CR} "
+            [ $col -eq 2 ] && sep=""
+            row="${row}${GR}▪${CR} $(ui_cell "$ename" "$eport" $((w-2)) "$CY")${sep}"
+        done
+        echo -e "$row"
+        (( i += 3 ))
+    done
+}
+
+function show_network_status() {
     refresh_ports
 
-    # ── Métricas de RAM ──
+    # ── Identidad de la maquina ──
+    local IP_PUBLICA OS ARCH CORES HORA UP
+    IP_PUBLICA=$(_public_ip)
+    OS=$(_os_name)
+    ARCH=$(uname -m)
+    CORES=$(nproc 2>/dev/null || echo "?")
+    HORA=$(date +%H:%M:%S)
+    UP=$(_uptime_short)
+
+    ui_row3 "OS" "$OS" "ARCH" "$ARCH" "CORES" "$CORES"
+    ui_row3 "IP" "$IP_PUBLICA" "HORA" "$HORA" "UPTIME" "$UP"
+    ui_rule
+
+    # ── Recursos ──
+    local RAM_U RAM_T RAM_PCT DISK_U DISK_T DISK_PCT CPU_PCT
     RAM_U=$(free -m | awk '/Mem:/ {print $3}')
     RAM_T=$(free -m | awk '/Mem:/ {print $2}')
     RAM_PCT=0
     [ "${RAM_T:-0}" -gt 0 ] && RAM_PCT=$(( RAM_U * 100 / RAM_T ))
 
-    # ── Métricas de Disco ──
     DISK_U=$(df -h / | awk 'NR==2 {print $3}')
     DISK_T=$(df -h / | awk 'NR==2 {print $2}')
     DISK_PCT=$(df / | awk 'NR==2 {gsub(/%/,""); print $5}' 2>/dev/null)
     DISK_PCT=${DISK_PCT:-0}
 
-    # ── Métricas de CPU ──
     CPU_PCT=$(grep -o "^cpu \+.*" /proc/stat | awk '{print int(100 - ($5 * 100 / ($2+$3+$4+$5+$6+$7+$8)))}')
     CPU_PCT=${CPU_PCT:-0}
 
-    # ── Bombillos ──
-    BOMB_RAM=$(_bombillo  "$RAM_PCT")
-    BOMB_DISK=$(_bombillo "$DISK_PCT")
-    BOMB_CPU=$(_bombillo  "$CPU_PCT")
+    printf "${UI_PAD}%b ${DM}RAM  ${CR}%b ${WH}%-15s${CR} ${DM}(%s%%)${CR}\n" \
+        "$(ui_dot "$RAM_PCT")" "$(ui_bar "$RAM_PCT")" "${RAM_U}Mi/${RAM_T}Mi" "$RAM_PCT"
+    printf "${UI_PAD}%b ${DM}DISCO${CR} %b ${WH}%-15s${CR} ${DM}(%s%%)${CR}\n" \
+        "$(ui_dot "$DISK_PCT")" "$(ui_bar "$DISK_PCT")" "${DISK_U}/${DISK_T}" "$DISK_PCT"
+    printf "${UI_PAD}%b ${DM}CPU  ${CR}%b ${WH}%-15s${CR} ${DM}(%s%%)${CR}\n" \
+        "$(ui_dot "$CPU_PCT")" "$(ui_bar "$CPU_PCT")" "${CORES} nucleo(s)" "$CPU_PCT"
+    ui_rule
 
-    echo -e "  ${WH}IP: ${GR}$IP_PUBLICA${CR}"
-    echo ""
-    echo -e "  ${YL}[ ESTADO DE MÁQUINA ]${CR}"
-    echo -e "  $BOMB_RAM ${DM}RAM  :${CR} ${WH}${RAM_U}MB / ${RAM_T}MB${CR}  ${DM}(${RAM_PCT}%)${CR}"
-    echo -e "  $BOMB_DISK ${DM}Disco:${CR} ${WH}${DISK_U} / ${DISK_T}${CR}  ${DM}(${DISK_PCT}%)${CR}"
-    echo -e "  $BOMB_CPU ${DM}CPU  :${CR} ${WH}${CPU_PCT}%${CR}"
-    echo ""
-    echo -e "  ${YL}[ PROTOCOLOS ACTIVOS ]${CR}"
-    echo ""
+    # ── Cuentas y sesiones ──
+    # contar_cuentas y contar_online los aporta modules/users.sh
+    if declare -F contar_cuentas >/dev/null 2>&1; then
+        contar_cuentas
+        echo -e "${UI_PAD}${YL}CUENTAS${CR}  ${DM}▸${CR} $(ui_cell "Activas" "${USR_ACTIVAS:-0}" 16 "$GR")${DM}▸${CR} $(ui_cell "Por vencer" "${USR_PORVENCER:-0}" 18 "$YL")${DM}▸${CR} $(ui_cell "Vencidas" "${USR_VENCIDAS:-0}" 14 "$RD")"
+    fi
+    if declare -F contar_online >/dev/null 2>&1; then
+        contar_online
+        echo -e "${UI_PAD}${YL}ONLINE${CR}   ${DM}▸${CR} $(ui_cell "SSH" "${ON_SSH:-0}" 16 "$CY")${DM}▸${CR} $(ui_cell "Dropbear" "${ON_DROPBEAR:-0}" 18 "$CY")${DM}▸${CR} $(ui_cell "OpenVPN" "${ON_OVPN:-0}" 14 "$CY")"
+    fi
+    ui_rule
 
-    # Cada entrada: "NOMBRE|PUERTO"
+    # ── Puertos activos ──
     local entries=()
     [ -n "$PORT_SSH" ]        && entries+=("SSH|$PORT_SSH")
     [ -n "$PORT_DROPBEAR" ]   && entries+=("Dropbear|$PORT_DROPBEAR")
-    [ -n "$PORT_SSL" ]        && entries+=("Stunnel SSL|$PORT_SSL")
+    [ -n "$PORT_SSL" ]        && entries+=("SSL|$PORT_SSL")
     [ -n "$PORT_WS" ]         && entries+=("WebSocket|$PORT_WS")
-    [ -n "$PORT_UDPCUSTOM" ]  && entries+=("UDP Custom|$PORT_UDPCUSTOM")
+    [ -n "$PORT_UDPCUSTOM" ]  && entries+=("UDP|$PORT_UDPCUSTOM")
     [ -n "$PORT_BADVPN" ]     && entries+=("BadVPN|$PORT_BADVPN")
     [ -n "$PORT_SLOWDNS" ]    && entries+=("SlowDNS|$PORT_SLOWDNS")
     [ -n "$PORT_SQUID" ]      && entries+=("Squid|$PORT_SQUID")
     [ -n "$PORT_V2RAY" ]      && entries+=("V2Ray|$PORT_V2RAY")
-    [ -n "$PORT_SS" ]         && entries+=("Shadowsocks|$PORT_SS")
+    [ -n "$PORT_SS" ]         && entries+=("Shadow|$PORT_SS")
     [ -n "$PORT_OVPN" ]       && entries+=("OpenVPN|$PORT_OVPN")
     [ -n "$PORT_WG" ]         && entries+=("WireGuard|$PORT_WG")
-    # wg-home — Gateway Residencial
     [ -n "$PORT_WGHOME" ]     && entries+=("WG-Home|$PORT_WGHOME")
 
-    if [ ${#entries[@]} -eq 0 ]; then
-        echo -e "  ${RD}Sin protocolos activos instalados${CR}"
-        echo ""
-    else
-        local i=0
-        while [ $i -lt ${#entries[@]} ]; do
-            local row=""
-            # Imprimir hasta 3 protocoles por fila
-            for col in 0 1 2; do
-                local idx=$(( i + col ))
-                [ $idx -ge ${#entries[@]} ] && break
-                local entry="${entries[$idx]}"
-                local ename eport
-                IFS='|' read -r ename eport <<< "$entry"
-                # Celda: ● NOMBRE [PUERTO]  — ancho fijo de 22 chars para alineación
-                local cell
-                cell=$(printf "${GR}●${CR} ${WH}%s${CR} ${DM}[${CR}${CY}%s${CR}${DM}]${CR}" "$ename" "$eport")
-                row="${row}  ${cell}"
-            done
-            echo -e "$row"
-            (( i += 3 ))
-        done
-        echo ""
-    fi
+    _port_grid "${entries[@]}"
 }

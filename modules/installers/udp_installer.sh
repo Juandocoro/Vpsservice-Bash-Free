@@ -5,9 +5,12 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
+# Lenguaje visual compartido del panel
+_INST_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+source "$_INST_DIR/../ui.sh"
+
 CR="\033[0m"; GR="\033[1;32m"; RD="\033[0;31m"
 YL="\033[0;33m"; CY="\033[1;36m"; WH="\033[1;37m"; DM="\033[2;37m"
-SEP="${YL}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${CR}"
 
 UDP_DIR="/root/udp"
 CONFIG_FILE="$UDP_DIR/config.json"
@@ -15,9 +18,6 @@ USERS_FILE="$UDP_DIR/users.conf"
 BINARY="$UDP_DIR/udp-custom"
 SERVICE_FILE="/etc/systemd/system/udp-custom.service"
 
-_ok()   { echo -e "  ${GR}[+]${CR} $1"; }
-_info() { echo -e "  ${YL}[*]${CR} $1"; }
-_err()  { echo -e "  ${RD}[-]${CR} $1"; }
 
 # ─── Reconstruir config.json con usuarios actuales ────────────────────────────
 write_config() {
@@ -86,7 +86,7 @@ while true; do
     echo -e "  ${CY}5)${CR} ${WH}Reiniciar Servicio${CR}"
     echo -e "  ${CY}0)${CR} ${WH}Volver${CR}"
     echo -e "$SEP"
-    read -p "$(echo -e ${DM})Elige [0-5]: $(echo -e ${CR})" op
+    ui_prompt "$(echo -e ${DM})Elige [0-5]: $(echo -e ${CR})"; op="$REPLY_UI"
 
     case $op in
 
@@ -104,7 +104,7 @@ while true; do
 
         echo -e "  ${DM}Puertos a ${WH}EXCLUIR${DM} del rango UDP (ej: BadVPN usa 7300):${CR}"
         echo -e "  ${DM}Default: ${CY}7300${DM} (BadVPN). Agrega más separados por coma.${CR}"
-        read -p "$(echo -e ${DM})Puertos a excluir (Enter = solo 7300): $(echo -e ${CR})" excl_input
+        ui_prompt "$(echo -e ${DM})Puertos a excluir (Enter = solo 7300): $(echo -e ${CR})"; excl_input="$REPLY_UI"
         [ -z "$excl_input" ] && excl_input="7300"
         # Asegurar que 7300 siempre esté excluido
         if ! echo "$excl_input" | grep -q "7300"; then
@@ -154,10 +154,10 @@ while true; do
 
         # Crear primer usuario
         echo ""
-        read -p "$(echo -e ${DM})Usuario inicial (Defecto: admin): $(echo -e ${CR})" first_user
+        ui_prompt "$(echo -e ${DM})Usuario inicial (Defecto: admin): $(echo -e ${CR})"; first_user="$REPLY_UI"
         [ -z "$first_user" ] && first_user="admin"
         first_user=$(echo "$first_user" | tr -d ' ')
-        read -p "$(echo -e ${DM})Contraseña: $(echo -e ${CR})" first_pass
+        ui_prompt "$(echo -e ${DM})Contraseña: $(echo -e ${CR})"; first_pass="$REPLY_UI"
         [ -z "$first_pass" ] && first_pass=$(cat /proc/sys/kernel/random/uuid | cut -c1-10)
 
         echo "${first_user}:${first_pass}" > "$USERS_FILE"
@@ -272,7 +272,7 @@ EOF
 
         UDP_PORT=$(grep '"listen"' "$CONFIG_FILE" 2>/dev/null | grep -o '[0-9]*')
 
-        read -p "$(echo -e ${DM})Nombre de usuario: $(echo -e ${CR})" new_user
+        ui_prompt "$(echo -e ${DM})Nombre de usuario: $(echo -e ${CR})"; new_user="$REPLY_UI"
         [ -z "$new_user" ] && new_user="user$(date +%s | tail -c4)"
         new_user=$(echo "$new_user" | tr -d ' ')
 
@@ -280,7 +280,7 @@ EOF
             _err "El usuario '$new_user' ya existe."; sleep 2; continue
         fi
 
-        read -p "$(echo -e ${DM})Contraseña (Enter para generar): $(echo -e ${CR})" new_pass
+        ui_prompt "$(echo -e ${DM})Contraseña (Enter para generar): $(echo -e ${CR})"; new_pass="$REPLY_UI"
         [ -z "$new_pass" ] && new_pass=$(cat /proc/sys/kernel/random/uuid | cut -c1-10)
 
         echo "${new_user}:${new_pass}" >> "$USERS_FILE"
@@ -359,7 +359,7 @@ EOF
         done < "$USERS_FILE"
         echo ""
 
-        read -p "$(echo -e ${DM})Usuario a eliminar: $(echo -e ${CR})" del_user
+        ui_prompt "$(echo -e ${DM})Usuario a eliminar: $(echo -e ${CR})"; del_user="$REPLY_UI"
         [ -z "$del_user" ] && continue
 
         if grep -q "^${del_user}:" "$USERS_FILE" 2>/dev/null; then

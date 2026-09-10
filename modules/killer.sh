@@ -21,7 +21,10 @@ awk -F':' '($3 >= 1000 && $3 != 65534 && $1 != "nobody" && $1 != "ubuntu") {prin
             awk '{print $NF}' | grep -o "pid=[0-9]*" | \
             sed 's/pid=//' | \
             xargs -I{} sh -c 'ps -p {} -o user= 2>/dev/null' | \
-            grep -c "^${u}$" 2>/dev/null || echo 0)
+            grep -c "^${u}$")
+    # FIX: no encadenar '|| echo 0'. grep -c ya imprime 0 y sale con codigo 1,
+    # asi que el fallback anadia un segundo 0 -> CONEX="0\n0" -> fallaba la
+    # validacion numerica de abajo y la rama con 'ss' nunca se usaba.
 
     # Fallback: si ss no da resultado, usar ps directamente
     if [ -z "$CONEX" ] || ! [[ "$CONEX" =~ ^[0-9]+$ ]]; then

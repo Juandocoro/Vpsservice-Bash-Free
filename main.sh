@@ -6,15 +6,8 @@ DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$DIR"
 # =========================================================
 
-# === PALETA DE COLORES ===
-CR="\033[0m"
-CY="\033[1;36m"       # Cian bold  — números de opción, labels
-GR="\033[1;32m"       # Verde bold — ON, éxito
-RD="\033[0;31m"       # Rojo       — OFF, errores
-YL="\033[0;33m"       # Amarillo   — separadores, [*] info
-WH="\033[1;37m"       # Blanco bold— textos de opciones
-DM="\033[2;37m"       # Tenue      — prompts, subtextos
-SEP="${YL}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${CR}"
+# Lenguaje visual compartido — paleta, marcos, celdas y etiquetas
+source "$DIR/modules/ui.sh"
 
 # Referencias Modulares
 source "$DIR/modules/network.sh"
@@ -22,40 +15,26 @@ source "$DIR/modules/users.sh"
 source "$DIR/modules/optimize.sh"
 source "$DIR/modules/installers/wg_home.sh"
 
-# =========================================================
-# CABECERA GENERAL — Banner grande con degradado azul→blanco
-# =========================================================
+VPS_VERSION="v1.0"
 
-# Colores para el degradado azul→blanco del banner
-_B1="\033[1;34m"   # Azul brillante
-_B2="\033[1;94m"   # Azul claro
-_B3="\033[1;96m"   # Cian brillante (intermedio)
-_B4="\033[1;37m"   # Blanco tenue
-_B5="\033[1;97m"   # Blanco puro
+# Estado persistente del panel. Antes se usaba /tmp, que el sistema vacia en
+# cada reinicio: el firewall se reseteaba solo y borraba reglas del admin.
+STATE_DIR="/var/lib/vpsservice"
+mkdir -p "$STATE_DIR" 2>/dev/null
 
+# =========================================================
+# CABECERA GENERAL
+# =========================================================
 function print_title() {
-    local VER=""
-    # Obtener versión/commit de git si está disponible
+    local VER="$VPS_VERSION"
     if git -C "$DIR" rev-parse --is-inside-work-tree &>/dev/null 2>&1; then
         local COMMIT
         COMMIT=$(git -C "$DIR" rev-parse --short HEAD 2>/dev/null)
-        local BRANCH
-        BRANCH=$(git -C "$DIR" rev-parse --abbrev-ref HEAD 2>/dev/null)
-        VER="${COMMIT}@${BRANCH}"
+        [ -n "$COMMIT" ] && VER="FREE · ${VPS_VERSION} · ${COMMIT}"
     fi
-
+    [ "$VER" = "$VPS_VERSION" ] && VER="FREE · ${VPS_VERSION}"
     echo ""
-    # Arte ASCII: "vpsservice" — estilo hueco, degradado azul a blanco (vertical)
-    echo -e "${_B1}                                     _          ${CR}"
-    echo -e "${_B1}__   ___ __  ___ ___  ___ _ ____   _(_) ___ ___ ${CR}"
-    echo -e "${_B2}\\\\ \\ / / '_ \\\\/ __/ __|/ _ \\\\ '__\\\\ \\ / / |/ __/ _ \\\\${CR}"
-    echo -e "${_B3} \\\\ V /| |_) \\\\__ \\\\__ \\\\  __/ |   \\\\ V /| | (_|  __/${CR}"
-    echo -e "${_B4}  \\\\_/ | .__/|___/___/\\___|_|    \\\\_/ |_|\\___\\___|${CR}"
-    echo -e "${_B5}      |_|                                       ${CR}"
-    echo ""
-    # Línea de versión y subtítulo
-    echo -e "  ${_B3}▸${CR} ${WH}FREE Edition${CR}   ${DM}│${CR}   ${_B2}v1.0${CR}  ${DM}│${CR}   ${DM}GitHub:${CR} ${_B4}${VER}${CR}"
-    echo -e "${YL}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${CR}"
+    ui_header "$VER"
 }
 
 # =========================================================
@@ -64,28 +43,26 @@ function print_title() {
 function toggle_autostart() {
     clear
     print_title
-    echo -e "$SEP"
-    echo -e "${WH}          ARRANQUE AUTOMÁTICO${CR}"
-    echo -e "$SEP"
+    ui_section "ARRANQUE AUTOMÁTICO" "abrir el panel al entrar por SSH"
+    ui_blank
     if grep -q "^menu$" /root/.bashrc 2>/dev/null; then
-        echo -e "  Estado actual: ${GR}[ ON  ]${CR}"
-        echo ""
-        read -p "$(echo -e ${DM})¿Desactivar? (s/n): $(echo -e ${CR})" resp
-        if [[ "$resp" == "s" || "$resp" == "S" ]]; then
+        echo -e "${UI_PAD}Estado actual:  $(ui_tag_str on)"
+        ui_blank
+        ui_prompt "¿Desactivar? (s/n)"
+        if [[ "$REPLY_UI" == "s" || "$REPLY_UI" == "S" ]]; then
             sed -i '/^menu$/d' /root/.bashrc
-            echo -e "  ${GR}[+]${CR} Arranque desactivado."
+            ui_ok "Arranque automático desactivado."
         fi
     else
-        echo -e "  Estado actual: ${RD}[ OFF ]${CR}"
-        echo ""
-        read -p "$(echo -e ${DM})¿Activar? (s/n): $(echo -e ${CR})" resp
-        if [[ "$resp" == "s" || "$resp" == "S" ]]; then
+        echo -e "${UI_PAD}Estado actual:  $(ui_tag_str off)"
+        ui_blank
+        ui_prompt "¿Activar? (s/n)"
+        if [[ "$REPLY_UI" == "s" || "$REPLY_UI" == "S" ]]; then
             echo "menu" >> /root/.bashrc
-            echo -e "  ${GR}[+]${CR} Arranque activado."
+            ui_ok "Arranque automático activado."
         fi
     fi
     sleep 2
-    show_menu
 }
 
 # =========================================================
@@ -95,21 +72,28 @@ function users_menu() {
     while true; do
         clear
         print_title
-        echo -e "$SEP"
-        echo -e "${WH}              MENÚ DE USUARIOS${CR}"
-        echo -e "$SEP"
-        echo -e "  ${CY}1)${CR}  ${WH}Crear Usuario${CR}"
-        echo -e "  ${CY}2)${CR}  ${WH}Administrar Usuarios${CR}"
-        echo -e "  ${CY}3)${CR}  ${WH}Usuarios Conectados${CR}"
-        echo -e "  ${CY}0)${CR}  ${WH}Volver${CR}"
-        echo -e "$SEP"
-        read -p "$(echo -e ${DM})Elige [0-3]: $(echo -e ${CR})" op
-        case $op in
+        ui_section "GESTIÓN DE CUENTAS" "SSH · SSL · Dropbear"
+        ui_blank
+
+        contar_cuentas
+        echo -e "${UI_PAD}$(ui_cell "Total" "${USR_TOTAL:-0}" 16)${DM}▸${CR} $(ui_cell "Activas" "${USR_ACTIVAS:-0}" 16 "$GR")${DM}▸${CR} $(ui_cell "Vencidas" "${USR_VENCIDAS:-0}" 16 "$RD")"
+        ui_rule
+        ui_blank
+
+        ui_opt "1" "CREAR CUENTA"        "usuario nuevo"
+        ui_opt "2" "ADMINISTRAR CUENTAS" "editar · borrar"
+        ui_opt "3" "USUARIOS CONECTADOS" "monitor en vivo"
+        ui_blank
+        ui_opt "0" "VOLVER"
+        ui_solid
+        ui_prompt "Elige una opción [0-3]"
+
+        case "$REPLY_UI" in
             1) crear_usuario ;;
             2) administrar_usuarios ;;
             3) monitor_conexiones ;;
             0) break ;;
-            *) echo -e "  ${RD}[-]${CR} Opción inválida."; sleep 1 ;;
+            *) ui_err "Opción inválida."; sleep 1 ;;
         esac
     done
 }
@@ -120,28 +104,31 @@ function users_menu() {
 function update_script() {
     clear
     print_title
-    echo -e "$SEP"
-    echo -e "${WH}                ACTUALIZAR${CR}"
-    echo -e "$SEP"
-    echo -e "  ${YL}[*]${CR} Buscando nuevas versiones en GitHub..."
-    echo ""
+    ui_section "ACTUALIZAR PANEL" "descarga la última versión desde GitHub"
+    ui_blank
+    ui_info "Buscando nuevas versiones..."
+    ui_blank
+
     git fetch origin main &>/dev/null
     LOCAL=$(git rev-parse --short HEAD 2>/dev/null)
     REMOTE=$(git rev-parse --short FETCH_HEAD 2>/dev/null)
     [ -z "$LOCAL" ]  && LOCAL="Desconocida"
     [ -z "$REMOTE" ] && REMOTE="Desconocida"
-    echo -e "  ${DM}Versión Instalada :${CR} ${WH}$LOCAL${CR}"
-    echo -e "  ${DM}Versión Nube      :${CR} ${WH}$REMOTE${CR}"
-    echo ""
+
+    echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Versión instalada" "$LOCAL" 34)"
+    echo -e "${UI_PAD}${CY}▪${CR} $(ui_cell "Versión en la nube" "$REMOTE" 34 "$CY")"
+    ui_blank
+
     if [ "$LOCAL" == "$REMOTE" ]; then
-        echo -e "  ${GR}[+]${CR} Tienes la última versión instalada."
-        read -p "$(echo -e ${DM})Presiona Enter para volver...$(echo -e ${CR})"
+        ui_ok "Ya tienes la última versión instalada."
+        ui_solid
+        ui_pause
     else
-        echo -e "  ${YL}[!]${CR} Nueva actualización encontrada."
-        echo -e "  ${YL}[*]${CR} Descargando y reparando permisos..."
+        ui_warn "Nueva actualización disponible."
+        ui_info "Descargando y reparando permisos..."
         git reset --hard FETCH_HEAD &>/dev/null
         chmod -R +x "$DIR" 2>/dev/null
-        echo -e "  ${GR}[+]${CR} Actualizado correctamente. Reiniciando..."
+        ui_ok "Actualizado correctamente. Reiniciando el panel..."
         sleep 2
         exec "$DIR/main.sh"
     fi
@@ -154,136 +141,131 @@ function client_data() {
     refresh_ports
     clear
     print_title
-    echo -e "$SEP"
-    echo -e "${WH}       DATOS DE CONEXIÓN — CLIENTES${CR}"
-    echo -e "$SEP"
-    SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || echo "N/A")
-    echo -e "  ${DM}Servidor  :${CR}  ${GR}$SERVER_IP${CR}"
-    echo ""
+    ui_section "DATOS DE CONEXIÓN" "para configurar la app del cliente"
+
+    SERVER_IP=$(_public_ip)
+    SSH_PORT="${PORT_SSH:-22}"
+
+    ui_blank
+    echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Servidor" "$SERVER_IP" 30 "$GR")"
+    echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Puerto SSH" "$SSH_PORT" 30 "$CY")"
+    ui_blank
 
     # ── HTTP INJECTOR — WebSocket ───────────────────────────────────────────
     if [ -n "$PORT_WS" ]; then
-        echo -e "  ${YL}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${CR}"
-        echo -e "  ${WH}HTTP INJECTOR — WebSocket (método principal)${CR}"
-        echo -e "  ${YL}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${CR}"
-        echo -e "  ${DM}SSH Host    :${CR}  ${GR}$SERVER_IP${CR}"
-        echo -e "  ${DM}SSH Port    :${CR}  ${CY}${PORT_SSH:-22}${CR}  ${DM}(o Dropbear: ${PORT_DROPBEAR:-N/A})${CR}"
-        echo ""
-        echo -e "  ${CY}── Configuración Remote Proxy ──${CR}"
-        echo -e "  ${DM}Remote Proxy:${CR}  ${WH}$SERVER_IP:$PORT_WS${CR}  ${DM}(tipo: HTTP)${CR}"
-        echo ""
-        echo -e "  ${CY}── Payload (pegar exacto en HTTP Injector) ──${CR}"
-        echo -e "  ${WH}GET / HTTP/1.1[crlf]${CR}"
-        echo -e "  ${WH}Host: $SERVER_IP[crlf]${CR}"
-        echo -e "  ${WH}Upgrade: websocket[crlf]${CR}"
-        echo -e "  ${WH}Connection: Upgrade[crlf]${CR}"
-        echo -e "  ${WH}[crlf]${CR}"
-        echo ""
-        echo -e "  ${DM}Pasos en la app:${CR}"
-        echo -e "  ${DM}  1. SSH Host → ${CR}${WH}$SERVER_IP${CR}"
-        echo -e "  ${DM}  2. SSH Port → ${CR}${CY}${PORT_SSH:-22}${CR}"
-        echo -e "  ${DM}  3. Proxy Type → ${CR}${WH}Websocket${CR}"
-        echo -e "  ${DM}  4. Server → ${CR}${WH}$SERVER_IP${CR}  ${DM}Port → ${CR}${CY}$PORT_WS${CR}"
-        echo -e "  ${DM}  5. Pegar payload de arriba${CR}"
-        echo ""
+        ui_rule
+        echo -e "${UI_PAD}${WH}${BD}HTTP INJECTOR — WebSocket${CR} ${DM}(método principal)${CR}"
+        ui_rule
+        echo -e "${UI_PAD}$(ui_cell "Remote Proxy" "$SERVER_IP:$PORT_WS" 34 "$WH")${DM}tipo: HTTP${CR}"
+        ui_blank
+        echo -e "${UI_PAD}${CY}Payload — pegar exacto en la app:${CR}"
+        echo -e "${UI_PAD}  ${WH}GET / HTTP/1.1[crlf]${CR}"
+        echo -e "${UI_PAD}  ${WH}Host: $SERVER_IP[crlf]${CR}"
+        echo -e "${UI_PAD}  ${WH}Upgrade: websocket[crlf]${CR}"
+        echo -e "${UI_PAD}  ${WH}Connection: Upgrade[crlf]${CR}"
+        echo -e "${UI_PAD}  ${WH}[crlf]${CR}"
+        ui_blank
+        echo -e "${UI_PAD}${DM}Pasos: SSH Host → $SERVER_IP  ·  SSH Port → $SSH_PORT${CR}"
+        echo -e "${UI_PAD}${DM}       Proxy Type → Websocket  ·  Server → $SERVER_IP:$PORT_WS${CR}"
+        ui_blank
     fi
 
     # ── HTTP INJECTOR — SSL/Stunnel ─────────────────────────────────────────
     if [ -n "$PORT_SSL" ]; then
-        echo -e "  ${YL}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${CR}"
-        echo -e "  ${WH}HTTP INJECTOR — SSL/Stunnel (HTTPS)${CR}"
-        echo -e "  ${YL}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${CR}"
-        echo -e "  ${DM}SSH Host    :${CR}  ${GR}$SERVER_IP${CR}"
-        echo -e "  ${DM}SSH Port    :${CR}  ${CY}${PORT_SSH:-22}${CR}"
-        echo -e "  ${DM}SSL/TLS     :${CR}  ${WH}ACTIVADO${CR}  ${DM}(certificado autofirmado — ignorar advertencia)${CR}"
-        echo ""
-        echo -e "  ${CY}── Configuración Remote Proxy ──${CR}"
-        echo -e "  ${DM}Remote Proxy:${CR}  ${WH}$SERVER_IP:$PORT_SSL${CR}  ${DM}(tipo: SSL)${CR}"
-        echo ""
-        echo -e "  ${CY}── Payload para SSL Injector ──${CR}"
-        echo -e "  ${WH}CONNECT $SERVER_IP:22 HTTP/1.0[crlf]${CR}"
-        echo -e "  ${WH}Host: $SERVER_IP[crlf]${CR}"
-        echo -e "  ${WH}[crlf]${CR}"
-        echo ""
+        ui_rule
+        echo -e "${UI_PAD}${WH}${BD}HTTP INJECTOR — SSL / Stunnel${CR} ${DM}(HTTPS)${CR}"
+        ui_rule
+        echo -e "${UI_PAD}$(ui_cell "Remote Proxy" "$SERVER_IP:$PORT_SSL" 34 "$WH")${DM}tipo: SSL${CR}"
+        echo -e "${UI_PAD}${DM}SSL/TLS: ACTIVADO — certificado autofirmado, ignorar la advertencia${CR}"
+        ui_blank
+        echo -e "${UI_PAD}${CY}Payload para SSL Injector:${CR}"
+        # El payload sigue al puerto SSH real; antes estaba fijo en 22 y fallaba
+        # en cualquier servidor con SSH en otro puerto.
+        echo -e "${UI_PAD}  ${WH}CONNECT $SERVER_IP:$SSH_PORT HTTP/1.0[crlf]${CR}"
+        echo -e "${UI_PAD}  ${WH}Host: $SERVER_IP[crlf]${CR}"
+        echo -e "${UI_PAD}  ${WH}[crlf]${CR}"
+        ui_blank
     fi
 
-    # ── SSH Directo / Dropbear ──────────────────────────────────────────────
-    echo -e "  ${YL}[ PUERTOS SSH ]${CR}"
-    [ -n "$PORT_SSH" ]      && echo -e "  ${WH}SSH OpenSSH  :${CR}  ${CY}$PORT_SSH${CR}  (TCP)"
-    [ -n "$PORT_DROPBEAR" ] && echo -e "  ${WH}Dropbear SSH :${CR}  ${CY}$PORT_DROPBEAR${CR}  (TCP)"
-    echo ""
+    # ── Puertos ─────────────────────────────────────────────────────────────
+    ui_rule
+    echo -e "${UI_PAD}${YL}PUERTOS SSH${CR}"
+    ui_rule
+    [ -n "$PORT_SSH" ]      && echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "OpenSSH " "$PORT_SSH" 24 "$CY")${DM}TCP${CR}"
+    [ -n "$PORT_DROPBEAR" ] && echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Dropbear" "$PORT_DROPBEAR" 24 "$CY")${DM}TCP${CR}"
+    ui_blank
 
-    # ── Otros protocolos ───────────────────────────────────────────────────
-    echo -e "  ${YL}[ OTROS PROTOCOLOS ]${CR}"
-    [ -n "$PORT_UDPCUSTOM" ] && echo -e "  ${WH}UDP Custom   :${CR}  ${CY}$PORT_UDPCUSTOM${CR}  ${DM}(túnel UDP directo — sin SSH)${CR}"
-    [ -n "$PORT_BADVPN" ]    && echo -e "  ${WH}BadVPN       :${CR}  ${DM}127.0.0.1:${CR}${CY}$PORT_BADVPN${CR}  ${DM}(juegos/llamadas via SSH)${CR}"
-    [ -n "$PORT_SLOWDNS" ]   && echo -e "  ${WH}SlowDNS      :${CR}  ${CY}$PORT_SLOWDNS${CR}"
-    [ -n "$PORT_SQUID" ]     && echo -e "  ${WH}Squid        :${CR}  ${CY}$PORT_SQUID${CR}"
-    [ -n "$PORT_V2RAY" ]     && echo -e "  ${WH}V2Ray VMess  :${CR}  ${CY}$PORT_V2RAY${CR}  path: ${DM}/v2ray${CR}"
-    [ -n "$PORT_SS" ]        && echo -e "  ${WH}Shadowsocks  :${CR}  ${CY}$PORT_SS${CR}  ${DM}aes-256-gcm${CR}"
-    [ -n "$PORT_OVPN" ]      && echo -e "  ${WH}OpenVPN      :${CR}  ${CY}$PORT_OVPN${CR}  (UDP)"
-    [ -n "$PORT_WG" ]        && echo -e "  ${WH}WireGuard    :${CR}  ${CY}$PORT_WG${CR}  (UDP)"
-    echo ""
+    ui_rule
+    echo -e "${UI_PAD}${YL}OTROS PROTOCOLOS${CR}"
+    ui_rule
+    [ -n "$PORT_UDPCUSTOM" ] && echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "UDP Custom " "$PORT_UDPCUSTOM" 26 "$CY")${DM}túnel UDP directo${CR}"
+    [ -n "$PORT_BADVPN" ]    && echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "BadVPN     " "127.0.0.1:$PORT_BADVPN" 26 "$CY")${DM}juegos/llamadas vía SSH${CR}"
+    [ -n "$PORT_SLOWDNS" ]   && echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "SlowDNS    " "$PORT_SLOWDNS" 26 "$CY")"
+    [ -n "$PORT_SQUID" ]     && echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Squid      " "$PORT_SQUID" 26 "$CY")"
+    [ -n "$PORT_V2RAY" ]     && echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "V2Ray VMess" "$PORT_V2RAY" 26 "$CY")${DM}path: /v2ray${CR}"
+    [ -n "$PORT_SS" ]        && echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Shadowsocks" "$PORT_SS" 26 "$CY")${DM}aes-256-gcm${CR}"
+    [ -n "$PORT_OVPN" ]      && echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "OpenVPN    " "$PORT_OVPN" 26 "$CY")${DM}UDP${CR}"
+    [ -n "$PORT_WG" ]        && echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "WireGuard  " "$PORT_WG" 26 "$CY")${DM}UDP${CR}"
+    ui_blank
 
     if [ -n "$PORT_BADVPN" ]; then
-        echo -e "  ${YL}━━━ BADVPN — Gateway UDP ━━━${CR}"
-        echo -e "  ${DM}1. Conecta primero por SSH (puerto ${CY}$PORT_SSH${DM})${CR}"
-        echo -e "  ${DM}2. Settings → UDP Custom → Enable${CR}"
-        echo -e "  ${DM}3. Host: ${CR}${WH}127.0.0.1${CR}  ${DM}Port: ${CR}${CY}$PORT_BADVPN${CR}"
-        echo ""
+        ui_rule
+        echo -e "${UI_PAD}${YL}BADVPN — Gateway UDP${CR}"
+        ui_rule
+        echo -e "${UI_PAD}${DM}1. Conecta primero por SSH (puerto ${CY}$SSH_PORT${DM})${CR}"
+        echo -e "${UI_PAD}${DM}2. Settings → UDP Custom → Enable${CR}"
+        echo -e "${UI_PAD}${DM}3. Host: ${WH}127.0.0.1${DM}   Port: ${CY}$PORT_BADVPN${CR}"
+        ui_blank
     fi
 
-    echo -e "$SEP"
-    read -p "$(echo -e ${DM})Presiona Enter para volver...$(echo -e ${CR})"
+    ui_solid
+    ui_pause
 }
-
 
 # =========================================================
 # FÁBRICA DE TÚNELES & PROXIES
 # =========================================================
 function sub_menu_installers() {
-    # Helper local: imprime tag ON/OFF según si $1 tiene contenido
-    _tag() { [ -n "$1" ] && echo -e "${GR}[ ON  ]${CR}" || echo -e "${RD}[ OFF ]${CR}"; }
-
     while true; do
         refresh_ports
         clear
         print_title
-        echo -e "$SEP"
-        echo -e "${WH}       FÁBRICA DE TÚNELES & PROXIES${CR}"
-        echo -e "$SEP"
-        echo -e "  ${YL}-- PROTOCOLOS SSH / TÚNEL --${CR}"
-        echo -e "  ${CY}1)${CR}  ${WH}Stunnel SSL${CR}         $(_tag "$PORT_SSL")"
-        echo -e "  ${CY}2)${CR}  ${WH}UDP Custom${CR}  ${DM}(túnel UDP directo)${CR}  $(_tag "$PORT_UDPCUSTOM")"
-        echo -e "  ${CY}3)${CR}  ${WH}BadVPN${CR}      ${DM}(juegos/llamadas+SSH)${CR} $(_tag "$PORT_BADVPN")"
-        echo -e "  ${CY}4)${CR}  ${WH}WebSocket${CR}           $(_tag "$PORT_WS")"
-        echo -e "  ${CY}5)${CR}  ${WH}Dropbear${CR}            $(_tag "$PORT_DROPBEAR")"
-        echo ""
-        echo -e "  ${YL}-- PROTOCOLOS PROXY --${CR}"
-        echo -e "  ${CY}6)${CR}  ${WH}SlowDNS${CR}             $(_tag "$PORT_SLOWDNS")"
-        echo -e "  ${CY}7)${CR}  ${WH}Squid Proxy${CR}         $(_tag "$PORT_SQUID")"
-        echo ""
-        echo -e "  ${YL}-- PROTOCOLOS VPN --${CR}"
-        echo -e "  ${CY}8)${CR}   ${WH}V2Ray${CR}              $(_tag "$PORT_V2RAY")"
-        echo -e "  ${CY}9)${CR}   ${WH}Shadowsocks${CR}        $(_tag "$PORT_SS")"
-        echo -e " ${CY}10)${CR}   ${WH}OpenVPN${CR}            $(_tag "$PORT_OVPN")"
-        echo -e " ${CY}11)${CR}   ${WH}WireGuard${CR}          $(_tag "$PORT_WG")"
-        echo ""
-        echo -e "  ${CY}C)${CR}  ${WH}Ver Datos de Conexión (clientes)${CR}"
-        echo -e "  ${CY}0)${CR}  ${WH}Retroceder${CR}"
-        echo -e "$SEP"
-        read -p "$(echo -e ${DM})Elige una opción [0-11 | C]: $(echo -e ${CR})" op
+        ui_section "FÁBRICA DE TÚNELES & PROXIES" "11 protocolos disponibles"
+        ui_blank
+
+        echo -e "${UI_PAD}${YL}── SSH / TÚNEL ──${CR}"
+        ui_opt "1"  "STUNNEL SSL"  "SSH sobre TLS"     "$(ui_tag "$PORT_SSL")"
+        ui_opt "2"  "UDP CUSTOM"   "túnel UDP directo" "$(ui_tag "$PORT_UDPCUSTOM")"
+        ui_opt "3"  "BADVPN"       "juegos + llamadas" "$(ui_tag "$PORT_BADVPN")"
+        ui_opt "4"  "WEBSOCKET"    "HTTP Injector"     "$(ui_tag "$PORT_WS")"
+        ui_opt "5"  "DROPBEAR"     "SSH ligero"        "$(ui_tag "$PORT_DROPBEAR")"
+        ui_blank
+        echo -e "${UI_PAD}${YL}── PROXY ──${CR}"
+        ui_opt "6"  "SLOWDNS"      "túnel por DNS"     "$(ui_tag "$PORT_SLOWDNS")"
+        ui_opt "7"  "SQUID PROXY"  "proxy HTTP"        "$(ui_tag "$PORT_SQUID")"
+        ui_blank
+        echo -e "${UI_PAD}${YL}── VPN ──${CR}"
+        ui_opt "8"  "V2RAY"        "VMess + WS"        "$(ui_tag "$PORT_V2RAY")"
+        ui_opt "9"  "SHADOWSOCKS"  "aes-256-gcm"       "$(ui_tag "$PORT_SS")"
+        ui_opt "10" "OPENVPN"      "perfil .ovpn"      "$(ui_tag "$PORT_OVPN")"
+        ui_opt "11" "WIREGUARD"    "ChaCha20 / UDP"    "$(ui_tag "$PORT_WG")"
+        ui_blank
+        ui_opt "C"  "DATOS DE CONEXIÓN" "para el cliente"
+        ui_opt "0"  "VOLVER"
+        ui_solid
+        ui_prompt "Elige una opción [0-11 | C]"
+        local op="$REPLY_UI"
 
         _run() {
             if [ -x "$DIR/modules/installers/$1" ]; then
                 sudo "$DIR/modules/installers/$1"
             else
-                echo -e "  ${RD}[-]${CR} Installer no encontrado: $1"
+                ui_err "Instalador no encontrado: $1"
             fi
             sleep 1
         }
 
-        case $op in
+        case "$op" in
             1)  _run "stunnel_installer.sh" ;;
             2)  _run "udp_installer.sh" ;;
             3)  _run "badvpn_installer.sh" ;;
@@ -297,7 +279,7 @@ function sub_menu_installers() {
             11) _run "wireguard_installer.sh" ;;
             [Cc]) client_data ;;
             0) break ;;
-            *) echo -e "  ${RD}[-]${CR} Opción no válida."; sleep 1 ;;
+            *) ui_err "Opción no válida."; sleep 1 ;;
         esac
     done
 }
@@ -308,70 +290,67 @@ function sub_menu_installers() {
 function uninstall_panel() {
     clear
     print_title
-    echo -e "$SEP"
-    echo -e "${RD}         ⚠   DESINSTALAR PANEL   ⚠${CR}"
-    echo -e "$SEP"
-    echo -e "  ${YL}[!]${CR} Esta acción eliminará permanentemente:"
-    echo ""
-    echo -e "  ${DM}  •  Directorio /opt/vpsservice-free${CR}"
-    echo -e "  ${DM}  •  Comando global 'menu' (/usr/local/bin/menu)${CR}"
-    echo -e "  ${DM}  •  Cron job del auto-killer${CR}"
-    echo -e "  ${DM}  •  Entrada de arranque automático en .bashrc${CR}"
-    echo -e "  ${DM}  •  Servicios activos (stunnel, badvpn, udp, ws...)${CR}"
-    echo ""
-    echo -e "  ${YL}[!]${CR} Los usuarios SSH creados ${WH}NO${CR} serán eliminados."
-    echo ""
-    echo -e "$SEP"
-    read -p "$(echo -e ${DM})¿Deseas continuar? (s/n): $(echo -e ${CR})" resp
-    if [[ "$resp" != "s" && "$resp" != "S" ]]; then
-        echo -e "  ${GR}[+]${CR} Operación cancelada."
+    ui_section "⚠  DESINSTALAR PANEL  ⚠" "esta acción no se puede deshacer"
+    ui_blank
+    ui_warn "Se eliminará permanentemente:"
+    ui_blank
+    echo -e "${UI_PAD}${RD}▪${CR} ${DM}Directorio /opt/vpsservice-free${CR}"
+    echo -e "${UI_PAD}${RD}▪${CR} ${DM}Comando global 'menu' (/usr/local/bin/menu)${CR}"
+    echo -e "${UI_PAD}${RD}▪${CR} ${DM}Cron del auto-killer y de la optimización${CR}"
+    echo -e "${UI_PAD}${RD}▪${CR} ${DM}Entrada de arranque automático en .bashrc${CR}"
+    echo -e "${UI_PAD}${RD}▪${CR} ${DM}Servicios activos (stunnel, badvpn, udp, ws...)${CR}"
+    ui_blank
+    ui_warn "Los usuarios SSH creados ${WH}NO${CR} serán eliminados."
+    ui_solid
+    ui_prompt "¿Deseas continuar? (s/n)"
+    if [[ "$REPLY_UI" != "s" && "$REPLY_UI" != "S" ]]; then
+        ui_ok "Operación cancelada."
         sleep 2
-        show_menu
         return
     fi
 
-    echo ""
-    echo -e "  ${RD}[!]${CR} Escribe ${WH}CONFIRMAR${CR} para proceder (distingue mayúsculas):"
-    read -p "$(echo -e ${DM})  > $(echo -e ${CR})" confirm
-    if [[ "$confirm" != "CONFIRMAR" ]]; then
-        echo -e "  ${RD}[-]${CR} Texto incorrecto. Operación cancelada."
+    ui_blank
+    ui_err "Escribe ${WH}CONFIRMAR${CR} para proceder (distingue mayúsculas):"
+    ui_prompt " "
+    if [[ "$REPLY_UI" != "CONFIRMAR" ]]; then
+        ui_err "Texto incorrecto. Operación cancelada."
         sleep 2
-        show_menu
         return
     fi
 
-    echo ""
-    echo -e "  ${YL}[*]${CR} Deteniendo servicios activos..."
-    for svc in stunnel4 dropbear badvpn udp-custom ws-server slowdns squid v2ray shadowsocks openvpn wg-quick@wg0 wg-quick@wg-home; do
+    ui_blank
+    ui_info "Deteniendo servicios activos..."
+    for svc in stunnel4 dropbear badvpn udp-custom ws-server websocket_proxy slowdns squid v2ray shadowsocks-libev openvpn@server wg-quick@wg0 wg-quick@wg-home; do
         systemctl stop "$svc" 2>/dev/null
         systemctl disable "$svc" 2>/dev/null
     done
-    pkill -f badvpn   2>/dev/null
-    pkill -f udpgw    2>/dev/null
+    pkill -f badvpn    2>/dev/null
+    pkill -f udpgw     2>/dev/null
     pkill -f ws-server 2>/dev/null
-    echo -e "  ${GR}[+]${CR} Servicios detenidos."
+    ui_ok "Servicios detenidos."
 
-    echo -e "  ${YL}[*]${CR} Eliminando cron del auto-killer y optimización..."
+    ui_info "Eliminando tareas cron..."
     crontab -l 2>/dev/null | grep -v 'killer.sh' | grep -v 'optimize.sh' | crontab - 2>/dev/null
-    echo -e "  ${GR}[+]${CR} Tareas cron eliminadas."
+    ui_ok "Tareas cron eliminadas."
 
-    echo -e "  ${YL}[*]${CR} Eliminando arranque automático de .bashrc..."
+    ui_info "Eliminando arranque automático..."
     sed -i '/^menu$/d' /root/.bashrc 2>/dev/null
-    echo -e "  ${GR}[+]${CR} Autostart eliminado."
+    ui_ok "Autostart eliminado."
 
-    echo -e "  ${YL}[*]${CR} Eliminando comando global 'menu'..."
+    ui_info "Eliminando comando global 'menu'..."
     rm -f /usr/local/bin/menu 2>/dev/null
-    echo -e "  ${GR}[+]${CR} Comando eliminado."
+    ui_ok "Comando eliminado."
 
-    echo -e "  ${YL}[*]${CR} Eliminando directorio del panel..."
+    ui_info "Eliminando estado y directorio del panel..."
+    rm -rf "$STATE_DIR" 2>/dev/null
     rm -rf /opt/vpsservice-free 2>/dev/null
-    echo -e "  ${GR}[+]${CR} Directorio eliminado."
+    ui_ok "Directorio eliminado."
 
-    echo ""
-    echo -e "$SEP"
-    echo -e "  ${GR}[+]${CR} Panel desinstalado correctamente."
-    echo -e "  ${DM}    Cierra esta sesión SSH para finalizar.${CR}"
-    echo -e "$SEP"
+    ui_blank
+    ui_solid
+    ui_ok "Panel desinstalado correctamente."
+    echo -e "${UI_PAD}${DM}Cierra esta sesión SSH para finalizar.${CR}"
+    ui_solid
     echo ""
     exit 0
 }
@@ -382,53 +361,66 @@ function uninstall_panel() {
 function show_menu() {
     clear
     print_title
-    echo -e "$SEP"
-    echo -e "${WH}              MENU PRINCIPAL${CR}"
-    echo -e "$SEP"
 
     show_network_status
 
-    echo -e "$SEP"
+    ui_solid
+    ui_blank
 
-    # Estado arranque automático
+    # Estado del arranque automático
+    local AUTO_TAG
     if grep -q "^menu$" /root/.bashrc 2>/dev/null; then
-        AUTO_TAG="${GR}[ ON  ]${CR}"
+        AUTO_TAG="$(ui_tag_str on)"
     else
-        AUTO_TAG="${RD}[ OFF ]${CR}"
+        AUTO_TAG="$(ui_tag_str off)"
     fi
 
-    echo -e "  ${CY}1)${CR}  ${WH}Usuarios (Crear/Modificar)${CR}"
-    echo -e "  ${CY}2)${CR}  ${WH}Instalación de Protocolos${CR}"
-    echo -e "  ${CY}3)${CR}  ${WH}Arranque Automático      ${CR}  $AUTO_TAG"
-    echo -e "  ${CY}4)${CR}  ${WH}Actualizar${CR}"
-    echo -e "  ${CY}5)${CR}  ${RD}⚠  Desinstalar Panel${CR}"
-    echo -e "  ${CY}6)${CR}  ${WH}Sincronizar Cortafuegos${CR}"
-    echo -e "  ${CY}7)${CR}  ${WH}Optimización del Servidor${CR}"
-    echo -e "  ${CY}8)${CR}  ${WH}Gateway Residencial (WireGuard)${CR}"
-    echo -e "  ${CY}0)${CR}  ${WH}Salir${CR}"
-    echo -e "$SEP"
-    read -p "$(echo -e ${DM})Digita una acción [0-8]: $(echo -e ${CR})" opcion
+    # Estado del gateway residencial
+    local WGH_TAG
+    if ip link show wg-home &>/dev/null; then
+        WGH_TAG="$(ui_tag_str on)"
+    else
+        WGH_TAG="$(ui_tag_str off)"
+    fi
 
-    case $opcion in
+    ui_opt "1" "ADMINISTRAR CUENTAS"  "crear · editar"
+    ui_opt "2" "FÁBRICA DE TÚNELES"   "11 protocolos"
+    ui_opt "3" "ARRANQUE AUTOMÁTICO"  ""               "$AUTO_TAG"
+    ui_opt "4" "ACTUALIZAR SCRIPT"    "desde GitHub"
+    ui_opt_danger "5" "DESINSTALAR PANEL" "borrado total"
+    ui_opt "6" "SINCRONIZAR UFW"      "cortafuegos"
+    ui_opt "7" "OPTIMIZAR SERVIDOR"   "RAM · caché"
+    ui_opt "8" "GATEWAY RESIDENCIAL"  "WireGuard"      "$WGH_TAG"
+    ui_blank
+    ui_opt "0" "SALIR"
+    ui_solid
+    ui_prompt "Digita una acción [0-8]"
+
+    case "$REPLY_UI" in
         1) users_menu ;;
         2) sub_menu_installers ;;
         3) toggle_autostart ;;
         4) update_script ;;
         5) uninstall_panel ;;
-        6) clear; print_title; sync_firewall ;;
+        6) clear; print_title; ui_section "SINCRONIZAR CORTAFUEGOS"; ui_blank; sync_firewall ;;
         7) optimize_menu ;;
         8) wghome_menu ;;
         0) clear; echo -e "${DM}Saliendo... (escribe 'menu' para volver)${CR}"; exit 0 ;;
-        *) echo -e "  ${RD}[-]${CR} Opción no reconocida."; sleep 1; show_menu ;;
+        *) ui_err "Opción no reconocida."; sleep 1 ;;
     esac
 }
 
-# Ejecución de seguridad inicial (Mejora 6)
+# =========================================================
+# ARRANQUE
+# =========================================================
 clear
 print_title
-if [ ! -f "/tmp/.firewall_synced" ]; then
+
+# El centinela vive en /var/lib para que sobreviva a los reinicios. Con /tmp,
+# el firewall se reseteaba en cada arranque y borraba las reglas manuales.
+if [ ! -f "$STATE_DIR/.firewall_synced" ]; then
     sync_firewall
-    touch "/tmp/.firewall_synced"
+    touch "$STATE_DIR/.firewall_synced"
 fi
 
 # Asegurar configuración SSH para todos los usuarios (Corrección Global)
@@ -447,7 +439,6 @@ SSHEOF
         systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null
     fi
 fi
-
 
 # Lazo de vida infinito
 while true; do

@@ -1,40 +1,103 @@
 #!/bin/bash
 # Módulo de Usuarios — vpsservice Script FREE
 
-# === PALETA (heredada del entorno si se llama desde main.sh) ===
-CR="\033[0m"
-CY="\033[1;36m"
-GR="\033[1;32m"
-RD="\033[0;31m"
-YL="\033[0;33m"
-WH="\033[1;37m"
-DM="\033[2;37m"
-SEP="${YL}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${CR}"
+# La paleta y los helpers de dibujo viven en modules/ui.sh
+_USR_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+source "$_USR_DIR/ui.sh"
 
 DB_FILE="/root/.vps_users"
 
+# =========================================================
+# LISTADO BASE DE CUENTAS DEL PANEL
+# =========================================================
+_listar_cuentas() {
+    awk -F':' '($3 >= 1000 && $3 != 65534 && $1 != "nobody" && $1 != "ubuntu") {print $1}' /etc/passwd
+}
+
+# Dias restantes de una cuenta. Devuelve un entero, o "inf" si no expira.
+_dias_restantes() {
+    local u="$1" exp_raw exp_sec
+    # LANG=C fija el formato en ingles, independiente del locale del servidor
+    exp_raw=$(LANG=C chage -l "$u" 2>/dev/null | grep "Account expires" | cut -d: -f2 | xargs)
+    if [[ "$exp_raw" == "never" || -z "$exp_raw" ]]; then echo "inf"; return; fi
+    exp_sec=$(date -d "$exp_raw" +%s 2>/dev/null)
+    [ -z "$exp_sec" ] && { echo "?"; return; }
+    echo $(( (exp_sec - $(date +%s)) / 86400 ))
+}
+
+# =========================================================
+# CONTADORES PARA EL TABLERO (los consume modules/network.sh)
+# =========================================================
+contar_cuentas() {
+    USR_ACTIVAS=0; USR_PORVENCER=0; USR_VENCIDAS=0; USR_TOTAL=0
+    local u d
+    # Sin pipe: un 'while read' al final de una tuberia corre en un subshell
+    # y los contadores se perderian al terminar.
+    while read -r u; do
+        [ -z "$u" ] && continue
+        USR_TOTAL=$(( USR_TOTAL + 1 ))
+        d=$(_dias_restantes "$u")
+        if   [ "$d" = "inf" ] || [ "$d" = "?" ]; then USR_ACTIVAS=$(( USR_ACTIVAS + 1 ))
+        elif [ "$d" -lt 0 ];  then USR_VENCIDAS=$(( USR_VENCIDAS + 1 ))
+        elif [ "$d" -le 3 ];  then USR_PORVENCER=$(( USR_PORVENCER + 1 ))
+        else                       USR_ACTIVAS=$(( USR_ACTIVAS + 1 ))
+        fi
+    done < <(_listar_cuentas)
+}
+
+contar_online() {
+    ON_SSH=0; ON_DROPBEAR=0; ON_OVPN=0
+    local u
+    while read -r u; do
+        [ -z "$u" ] && continue
+        ON_SSH=$(( ON_SSH + $(ps -u "$u" -o comm= 2>/dev/null | grep -c "^sshd$") ))
+        ON_DROPBEAR=$(( ON_DROPBEAR + $(ps -u "$u" -o comm= 2>/dev/null | grep -c "^dropbear$") ))
+    done < <(_listar_cuentas)
+
+    local status
+    status=$(_ovpn_status_file)
+    if [ -n "$status" ]; then
+        ON_OVPN=$(awk -F',' '/^CLIENT_LIST/ {c++} END {print c+0}' "$status" 2>/dev/null)
+    fi
+    ON_OVPN=${ON_OVPN:-0}
+}
+
+# La ruta del status log de OpenVPN varia segun quien instalo el servidor.
+_ovpn_status_file() {
+    local p
+    for p in /var/log/openvpn/openvpn-status.log \
+             /var/log/openvpn-status.log \
+             /etc/openvpn/openvpn-status.log; do
+        [ -f "$p" ] && { echo "$p"; return; }
+    done
+    echo ""
+}
+
 crear_usuario() {
     clear
-    echo -e "$SEP"
-    echo -e "${WH}               CREAR USUARIO${CR}"
-    echo -e "$SEP"
+    print_title 2>/dev/null || true
+    ui_section "CREAR CUENTA NUEVA" "SSH · SSL · Dropbear"
+    ui_blank
 
-    read -p "$(echo -e ${DM})NOMBRE: $(echo -e ${CR})" USERNAME
-    if [ -z "$USERNAME" ]; then echo -e "  ${RD}[-]${CR} Nombre vacío."; sleep 1; return; fi
-    if id "$USERNAME" &>/dev/null; then echo -e "  ${RD}[-]${CR} El usuario ya existe."; sleep 1; return; fi
+    ui_prompt "NOMBRE DE USUARIO"; USERNAME="$REPLY_UI"
+    if [ -z "$USERNAME" ]; then ui_err "Nombre vacío."; sleep 1; return; fi
+    if id "$USERNAME" &>/dev/null; then ui_err "El usuario ya existe."; sleep 1; return; fi
 
-    read -s -p "$(echo -e ${DM})CONTRASEÑA: $(echo -e ${CR})" PASSWORD
+    read -s -p "$(echo -e "${UI_PAD}${DM}CONTRASEÑA ${CY}»${CR} ")" PASSWORD
     echo ""
-    if [ -z "$PASSWORD" ]; then echo -e "  ${RD}[-]${CR} Contraseña vacía."; sleep 1; return; fi
+    if [ -z "$PASSWORD" ]; then ui_err "Contraseña vacía."; sleep 1; return; fi
 
-    read -p "$(echo -e ${DM})TIEMPO (Días): $(echo -e ${CR})" DAYS
-    if [[ ! "$DAYS" =~ ^[0-9]+$ ]]; then echo -e "  ${RD}[-]${CR} Formato numérico requerido."; sleep 1; return; fi
+    ui_prompt "DURACIÓN (días)"; DAYS="$REPLY_UI"
+    if [[ ! "$DAYS" =~ ^[0-9]+$ ]]; then ui_err "Formato numérico requerido."; sleep 1; return; fi
 
-    read -p "$(echo -e ${DM})LÍMITE CONEXIONES: $(echo -e ${CR})" LIMIT
-    if [[ ! "$LIMIT" =~ ^[0-9]+$ ]]; then echo -e "  ${RD}[-]${CR} Formato numérico requerido."; sleep 1; return; fi
+    ui_prompt "LÍMITE DE CONEXIONES"; LIMIT="$REPLY_UI"
+    if [[ ! "$LIMIT" =~ ^[0-9]+$ ]]; then ui_err "Formato numérico requerido."; sleep 1; return; fi
 
     EXP_DATE=$(date -d "+$DAYS days" +%Y-%m-%d 2>/dev/null)
-    SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || echo "N/A")
+    SERVER_IP=$(_public_ip 2>/dev/null || curl -4 -s ifconfig.me 2>/dev/null || echo "N/A")
+
+    ui_blank
+    ui_info "Configurando SSH y creando la cuenta..."
 
     # ================================================================
     # FIX SSH — 4 capas para garantizar auth sin depender de
@@ -113,188 +176,158 @@ SSHEOF
     sed -i "/^$USERNAME:/d" "$DB_FILE" 2>/dev/null
     echo "$USERNAME:$PASSWORD" >> "$DB_FILE"
 
-    echo ""
-    echo -e "$SEP"
-    echo -e "  ${GR}[+]${CR} ${WH}Usuario activado!${CR}"
-    echo -e "$SEP"
-    echo -e "  ${DM}Servidor :${CR}  ${GR}$SERVER_IP${CR}"
-    echo -e "  ${DM}Nombre   :${CR}  ${WH}$USERNAME${CR}"
-    echo -e "  ${DM}Password :${CR}  ${WH}$PASSWORD${CR}"
-    echo -e "  ${DM}Vence    :${CR}  ${WH}$EXP_DATE${CR} ${DM}($DAYS días)${CR}"
-    echo -e "  ${DM}Límite   :${CR}  ${WH}$LIMIT${CR} ${DM}dispositivo(s)${CR}"
-    echo -e "$SEP"
-    read -p "$(echo -e ${DM})Presiona Enter para volver...$(echo -e ${CR})"
+    clear
+    print_title 2>/dev/null || true
+    ui_section "CUENTA ACTIVADA" "$USERNAME"
+    ui_blank
+    echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Servidor" "$SERVER_IP" 30 "$GR")"
+    echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Usuario " "$USERNAME" 30)"
+    echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Password" "$PASSWORD" 30)"
+    echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Vence   " "$EXP_DATE ($DAYS días)" 30 "$YL")"
+    echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Límite  " "$LIMIT dispositivo(s)" 30 "$CY")"
+    ui_blank
+    ui_solid
+    ui_pause
 }
 
 # =========================================================
 # TABLA DE USUARIOS — reutilizable por todas las acciones
 # =========================================================
 _tabla_usuarios() {
-    local NOW_SEC
-    NOW_SEC=$(date +%s)
+    ui_blank
+    printf "${UI_PAD}${YL}%-3s %-14s %-12s %-11s %-6s %-7s %s${CR}\n" \
+        "#" "USUARIO" "CLAVE" "VENCE" "DÍAS" "CONEX" "ESTADO"
+    ui_rule
 
-    # Cabecera de tabla
-    echo -e ""
-    printf "  ${YL}%-3s  %-16s  %-12s  %-12s  %-8s  %-10s  %s${CR}\n" \
-        "#" "USUARIO" "CONTRASEÑA" "VENCE" "DÍAS" "CONEX" "ESTADO"
-    echo -e "  ${YL}$(printf '─%.0s' {1..75})${CR}"
-
-    local idx=0
-    awk -F':' '($3 >= 1000 && $3 != 65534 && $1 != "nobody" && $1 != "ubuntu") {print $1}' /etc/passwd | \
-    while read u; do
+    local idx=0 u PASS EXP_RAW DIAS ESTADO LIMITE CONEX MARCA
+    while read -r u; do
+        [ -z "$u" ] && continue
         idx=$((idx + 1))
 
-        # Contraseña del log plano
         PASS=$(grep "^$u:" "$DB_FILE" 2>/dev/null | cut -d: -f2)
-        [ -z "$PASS" ] && PASS="?(sin log)"
+        [ -z "$PASS" ] && PASS="—"
 
-        # Fecha de expiración desde chage — LANG=C garantiza formato en inglés
-        # independiente del locale del servidor (evita fallos silenciosos en date -d)
         EXP_RAW=$(LANG=C chage -l "$u" 2>/dev/null | grep "Account expires" | cut -d: -f2 | xargs)
+        [ -z "$EXP_RAW" ] && EXP_RAW="never"
 
-        # Calcular días restantes
-        if [[ "$EXP_RAW" == "never" || -z "$EXP_RAW" ]]; then
-            DIAS_REST="∞"
-            ESTADO="${GR}ACTIVO${CR}"
-        else
-            EXP_SEC=$(date -d "$EXP_RAW" +%s 2>/dev/null)
-            if [ -z "$EXP_SEC" ]; then
-                DIAS_REST="?"
-                ESTADO="${DM}UNKNOWN${CR}"
-            else
-                DIFF=$(( (EXP_SEC - NOW_SEC) / 86400 ))
-                if [ "$DIFF" -lt 0 ]; then
-                    DIAS_REST="0"
-                    ESTADO="${RD}VENCIDO${CR}"
-                elif [ "$DIFF" -le 3 ]; then
-                    DIAS_REST="${DIFF}d"
-                    ESTADO="${YL}POR VENCER${CR}"
-                else
-                    DIAS_REST="${DIFF}d"
-                    ESTADO="${GR}ACTIVO${CR}"
-                fi
-            fi
-        fi
+        DIAS=$(_dias_restantes "$u")
+        case "$DIAS" in
+            inf) DIAS="∞";  ESTADO="${GR}ACTIVO${CR}";     MARCA="${GR}▪${CR}" ;;
+            \?)  DIAS="?";  ESTADO="${DM}DESCONOCIDO${CR}"; MARCA="${DM}▪${CR}" ;;
+            *)
+                if   [ "$DIAS" -lt 0 ]; then DIAS="0";   ESTADO="${RD}VENCIDO${CR}";    MARCA="${RD}▪${CR}"
+                elif [ "$DIAS" -le 3 ]; then DIAS="${DIAS}d"; ESTADO="${YL}POR VENCER${CR}"; MARCA="${YL}▪${CR}"
+                else                         DIAS="${DIAS}d"; ESTADO="${GR}ACTIVO${CR}";     MARCA="${GR}▪${CR}"
+                fi ;;
+        esac
 
-        # Conexiones activas / límite
         LIMITE=$(getent passwd "$u" | cut -d: -f5)
         [[ ! "$LIMITE" =~ ^[0-9]+$ ]] && LIMITE="1"
-        CONEX=$(ps -u "$u" -o comm= 2>/dev/null | grep -E "^(sshd|dropbear)$" | wc -l)
+        CONEX=$(ps -u "$u" -o comm= 2>/dev/null | grep -cE "^(sshd|dropbear)$")
 
-        # Imprimir fila con índice de color alterno
-        if [ $(( idx % 2 )) -eq 0 ]; then
-            NCOLOR="${CY}"
-        else
-            NCOLOR="${WH}"
-        fi
-
-        printf "  ${NCOLOR}%-3s${CR}  ${WH}%-16s${CR}  ${DM}%-12s${CR}  ${DM}%-12s${CR}  ${CY}%-8s${CR}  ${DM}%s/%s${CR}       " \
-            "$idx" "$u" "$PASS" "${EXP_RAW:-N/A}" "$DIAS_REST" "$CONEX" "$LIMITE"
+        printf "${UI_PAD}%b${CY}%-2s${CR} ${WH}%-14s${CR} ${DM}%-12s${CR} ${DM}%-11s${CR} ${CY}%-6s${CR} ${WH}%-7s${CR}" \
+            "$MARCA" "$idx" "${u:0:14}" "${PASS:0:12}" "${EXP_RAW:0:11}" "$DIAS" "$CONEX/$LIMITE"
         echo -e "$ESTADO"
-    done
-    echo -e "  ${YL}$(printf '─%.0s' {1..75})${CR}"
-    echo ""
+    done < <(_listar_cuentas)
+
+    if [ "$idx" -eq 0 ]; then
+        echo -e "${UI_PAD}${DM}No hay cuentas creadas todavía.${CR}"
+    fi
+    ui_rule
+    ui_blank
 }
 
 administrar_usuarios() {
     while true; do
         clear
         print_title 2>/dev/null || true
-        echo -e "$SEP"
-        echo -e "${WH}           ADMINISTRAR USUARIOS${CR}"
-        echo -e "$SEP"
-        echo -e "  ${CY}1)${CR}  ${WH}Listar usuarios${CR}"
-        echo -e "  ${CY}2)${CR}  ${WH}Eliminar usuario${CR}"
-        echo -e "  ${CY}3)${CR}  ${WH}Modificar expiración${CR}"
-        echo -e "  ${CY}4)${CR}  ${WH}Cambiar contraseña${CR}"
-        echo -e "  ${CY}0)${CR}  ${WH}Volver${CR}"
-        echo -e "$SEP"
-        read -p "$(echo -e ${DM})Elige [0-4]: $(echo -e ${CR})" sub_opt
+        ui_section "ADMINISTRAR CUENTAS"
+        ui_blank
+        ui_opt "1" "LISTAR CUENTAS"      "tabla completa"
+        ui_opt "2" "ELIMINAR CUENTA"     "borrado definitivo"
+        ui_opt "3" "MODIFICAR VIGENCIA"  "cambiar días"
+        ui_opt "4" "CAMBIAR CONTRASEÑA"  "reset de clave"
+        ui_blank
+        ui_opt "0" "VOLVER"
+        ui_solid
+        ui_prompt "Elige una opción [0-4]"; sub_opt="$REPLY_UI"
 
         case $sub_opt in
             1)
                 clear
                 print_title 2>/dev/null || true
-                echo -e "$SEP"
-                echo -e "${WH}           LISTA DE USUARIOS${CR}"
-                echo -e "$SEP"
+                ui_section "LISTA DE CUENTAS"
                 _tabla_usuarios
-                read -p "$(echo -e ${DM})Enter para continuar...$(echo -e ${CR})" ;;
+                ui_pause ;;
 
             2)
                 clear
                 print_title 2>/dev/null || true
-                echo -e "$SEP"
-                echo -e "${WH}           ELIMINAR USUARIO${CR}"
-                echo -e "$SEP"
+                ui_section "ELIMINAR CUENTA"
                 _tabla_usuarios
-                read -p "$(echo -e ${DM})Nombre del usuario a ELIMINAR (0=cancelar): $(echo -e ${CR})" DEL_USER
+                ui_prompt "Usuario a ELIMINAR (0 = cancelar)"; DEL_USER="$REPLY_UI"
                 [[ "$DEL_USER" == "0" || -z "$DEL_USER" ]] && continue
                 if id "$DEL_USER" &>/dev/null; then
-                    read -p "$(echo -e ${RD})¿Confirmar eliminación de '$DEL_USER'? (s/n): $(echo -e ${CR})" CONF
+                    ui_prompt "¿Confirmar eliminación de '$DEL_USER'? (s/n)"; CONF="$REPLY_UI"
                     if [[ "$CONF" == "s" || "$CONF" == "S" ]]; then
                         # Cerrar sesiones activas antes de borrar
                         pkill -u "$DEL_USER" 2>/dev/null
                         userdel -r "$DEL_USER" 2>/dev/null
                         sed -i "/^$DEL_USER:/d" "$DB_FILE" 2>/dev/null
-                        echo -e "  ${GR}[+]${CR} Usuario ${WH}$DEL_USER${CR} eliminado correctamente."
+                        ui_ok "Cuenta ${WH}$DEL_USER${CR} eliminada correctamente."
                     else
-                        echo -e "  ${DM}[·]${CR} Operación cancelada."
+                        ui_info "Operación cancelada."
                     fi
                 else
-                    echo -e "  ${RD}[-]${CR} Usuario '$DEL_USER' no existe."
+                    ui_err "La cuenta '$DEL_USER' no existe."
                 fi
-                sleep 1 ;;
+                sleep 2 ;;
 
             3)
                 clear
                 print_title 2>/dev/null || true
-                echo -e "$SEP"
-                echo -e "${WH}           MODIFICAR EXPIRACIÓN${CR}"
-                echo -e "$SEP"
+                ui_section "MODIFICAR VIGENCIA"
                 _tabla_usuarios
-                read -p "$(echo -e ${DM})Usuario a modificar (0=cancelar): $(echo -e ${CR})" MOD_USER
+                ui_prompt "Usuario a modificar (0 = cancelar)"; MOD_USER="$REPLY_UI"
                 [[ "$MOD_USER" == "0" || -z "$MOD_USER" ]] && continue
                 if id "$MOD_USER" &>/dev/null; then
-                    read -p "$(echo -e ${DM})Nuevos días desde hoy: $(echo -e ${CR})" NEW_DAYS
+                    ui_prompt "Nuevos días desde hoy"; NEW_DAYS="$REPLY_UI"
                     if [[ "$NEW_DAYS" =~ ^[0-9]+$ ]]; then
                         NEW_EXP=$(date -d "+$NEW_DAYS days" +%Y-%m-%d)
                         usermod -e "$NEW_EXP" "$MOD_USER"
-                        echo -e "  ${GR}[+]${CR} Vencimiento de ${WH}$MOD_USER${CR} → ${CY}$NEW_EXP${CR} (${NEW_DAYS} días)."
+                        ui_ok "Vigencia de ${WH}$MOD_USER${CR} → ${CY}$NEW_EXP${CR} (${NEW_DAYS} días)."
                     else
-                        echo -e "  ${RD}[-]${CR} Valor inválido."
+                        ui_err "Valor inválido."
                     fi
                 else
-                    echo -e "  ${RD}[-]${CR} Usuario '$MOD_USER' no existe."
+                    ui_err "La cuenta '$MOD_USER' no existe."
                 fi
-                sleep 1 ;;
+                sleep 2 ;;
 
             4)
                 clear
                 print_title 2>/dev/null || true
-                echo -e "$SEP"
-                echo -e "${WH}           CAMBIAR CONTRASEÑA${CR}"
-                echo -e "$SEP"
+                ui_section "CAMBIAR CONTRASEÑA"
                 _tabla_usuarios
-                read -p "$(echo -e ${DM})Usuario (0=cancelar): $(echo -e ${CR})" PASS_USER
+                ui_prompt "Usuario (0 = cancelar)"; PASS_USER="$REPLY_UI"
                 [[ "$PASS_USER" == "0" || -z "$PASS_USER" ]] && continue
                 if id "$PASS_USER" &>/dev/null; then
-                    read -s -p "$(echo -e ${DM})Nueva clave: $(echo -e ${CR})" NEW_PASS; echo ""
+                    read -s -p "$(echo -e "${UI_PAD}${DM}Nueva clave ${CY}»${CR} ")" NEW_PASS; echo ""
                     if [ -z "$NEW_PASS" ]; then
-                        echo -e "  ${RD}[-]${CR} Contraseña vacía, operación cancelada."
+                        ui_err "Contraseña vacía, operación cancelada."
                     else
                         echo "$PASS_USER:$NEW_PASS" | chpasswd
                         sed -i "/^$PASS_USER:/d" "$DB_FILE" 2>/dev/null
                         echo "$PASS_USER:$NEW_PASS" >> "$DB_FILE"
-                        echo -e "  ${GR}[+]${CR} Contraseña de ${WH}$PASS_USER${CR} actualizada."
+                        ui_ok "Contraseña de ${WH}$PASS_USER${CR} actualizada."
                     fi
                 else
-                    echo -e "  ${RD}[-]${CR} Usuario '$PASS_USER' no existe."
+                    ui_err "La cuenta '$PASS_USER' no existe."
                 fi
-                sleep 1 ;;
+                sleep 2 ;;
 
             0) break ;;
-            *) echo -e "  ${RD}[-]${CR} Opción inválida."; sleep 1 ;;
+            *) ui_err "Opción inválida."; sleep 1 ;;
         esac
     done
 }
@@ -305,44 +338,51 @@ administrar_usuarios() {
 monitor_conexiones() {
     clear
     print_title 2>/dev/null || true
-    echo -e "$SEP"
-    echo -e "${WH}           MONITOR DE CONEXIONES${CR}"
-    echo -e "$SEP"
-    printf "  ${YL}%-15s  %-15s  %-15s${CR}\n" "USUARIO" "MÉTODO" "CONEXIONES"
-    echo -e "  ${YL}$(printf '─%.0s' {1..50})${CR}"
+    ui_section "MONITOR DE CONEXIONES" "sesiones abiertas en este momento"
+    ui_blank
+    printf "${UI_PAD}${YL}%-16s %-14s %-10s %s${CR}\n" "USUARIO" "MÉTODO" "SESIONES" "LÍMITE"
+    ui_rule
 
-    local total_conexiones=0
+    local total=0 u ssh_c db_c limite marca filas=0
 
-    # Contar SSH y Dropbear
-    for u in $(awk -F':' '($3 >= 1000 && $3 != 65534 && $1 != "nobody" && $1 != "ubuntu") {print $1}' /etc/passwd); do
-        ssh_count=$(ps -u "$u" -o comm= 2>/dev/null | grep -c "^sshd$")
-        dropbear_count=$(ps -u "$u" -o comm= 2>/dev/null | grep -c "^dropbear$")
-        
-        if [ "$ssh_count" -gt 0 ]; then
-            printf "  ${WH}%-15s${CR}  ${CY}%-15s${CR}  ${GR}%-15s${CR}\n" "$u" "SSH" "$ssh_count"
-            total_conexiones=$((total_conexiones + ssh_count))
+    while read -r u; do
+        [ -z "$u" ] && continue
+        ssh_c=$(ps -u "$u" -o comm= 2>/dev/null | grep -c "^sshd$")
+        db_c=$(ps -u "$u" -o comm= 2>/dev/null | grep -c "^dropbear$")
+
+        limite=$(getent passwd "$u" | cut -d: -f5)
+        [[ ! "$limite" =~ ^[0-9]+$ ]] && limite="1"
+
+        if [ "$ssh_c" -gt 0 ]; then
+            marca="${GR}▪${CR}"; [ "$ssh_c" -ge "$limite" ] && marca="${RD}▪${CR}"
+            printf "${UI_PAD}%b${WH}%-15s${CR} ${CY}%-14s${CR} ${GR}%-10s${CR} ${DM}%s${CR}\n" \
+                "$marca" "${u:0:15}" "SSH" "$ssh_c" "$limite"
+            total=$((total + ssh_c)); filas=$((filas + 1))
         fi
-        if [ "$dropbear_count" -gt 0 ]; then
-            printf "  ${WH}%-15s${CR}  ${CY}%-15s${CR}  ${GR}%-15s${CR}\n" "$u" "Dropbear" "$dropbear_count"
-            total_conexiones=$((total_conexiones + dropbear_count))
+        if [ "$db_c" -gt 0 ]; then
+            marca="${GR}▪${CR}"; [ "$db_c" -ge "$limite" ] && marca="${RD}▪${CR}"
+            printf "${UI_PAD}%b${WH}%-15s${CR} ${CY}%-14s${CR} ${GR}%-10s${CR} ${DM}%s${CR}\n" \
+                "$marca" "${u:0:15}" "Dropbear" "$db_c" "$limite"
+            total=$((total + db_c)); filas=$((filas + 1))
         fi
-    done
+    done < <(_listar_cuentas)
 
-    # Contar OpenVPN
-    if [ -f /var/log/openvpn/openvpn-status.log ]; then
-        while read count user; do
-            printf "  ${WH}%-15s${CR}  ${GR}%-15s${CR}  ${GR}%-15s${CR}\n" "$user" "OpenVPN" "$count"
-            total_conexiones=$((total_conexiones + count))
-        done < <(awk -F',' '/^CLIENT_LIST/ {print $2}' /var/log/openvpn/openvpn-status.log | sort | uniq -c)
-    elif [ -f /etc/openvpn/openvpn-status.log ]; then
-        while read count user; do
-            printf "  ${WH}%-15s${CR}  ${GR}%-15s${CR}  ${GR}%-15s${CR}\n" "$user" "OpenVPN" "$count"
-            total_conexiones=$((total_conexiones + count))
-        done < <(awk -F',' '/^CLIENT_LIST/ {print $2}' /etc/openvpn/openvpn-status.log | sort | uniq -c)
+    # OpenVPN — se lee del status log que haya dejado el servidor
+    local status
+    status=$(_ovpn_status_file)
+    if [ -n "$status" ]; then
+        while read -r count user; do
+            [ -z "$user" ] && continue
+            printf "${UI_PAD}${GR}▪${CR}${WH}%-15s${CR} ${CY}%-14s${CR} ${GR}%-10s${CR} ${DM}%s${CR}\n" \
+                "${user:0:15}" "OpenVPN" "$count" "—"
+            total=$((total + count)); filas=$((filas + 1))
+        done < <(awk -F',' '/^CLIENT_LIST/ {print $2}' "$status" | sort | uniq -c)
     fi
 
-    echo -e "  ${YL}$(printf '─%.0s' {1..50})${CR}"
-    echo -e "  ${WH}Total de conexiones activas:${CR} ${CY}$total_conexiones${CR}"
-    echo ""
-    read -p "$(echo -e ${DM})Presiona Enter para volver...$(echo -e ${CR})"
+    [ "$filas" -eq 0 ] && echo -e "${UI_PAD}${DM}Ninguna sesión activa en este momento.${CR}"
+
+    ui_rule
+    echo -e "${UI_PAD}${WH}TOTAL DE CONEXIONES ACTIVAS:${CR}  ${CY}${BD}$total${CR}"
+    ui_solid
+    ui_pause
 }

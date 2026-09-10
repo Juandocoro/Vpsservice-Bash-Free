@@ -5,27 +5,31 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-clear
-echo "================================================="
-echo "                 WEBSOCKET PROXY                 "
-echo "================================================="
+# Lenguaje visual compartido del panel
+_INST_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+source "$_INST_DIR/../ui.sh"
 
-read -p "¿Instalar Proxy Websocket? (s/n): " auth
+clear
+
+ui_header "FREE · INSTALADOR"
+ui_section "WEBSOCKET PROXY"
+
+ui_prompt "¿Instalar Proxy Websocket? (s/n)"; auth="$REPLY_UI"
 if [[ "$auth" != "s" && "$auth" != "S" ]]; then
     exit 0
 fi
 
-read -p "¿Puerto Local SSH o Dropbear? (Defecto: 22): " s_port
+ui_prompt "¿Puerto Local SSH o Dropbear? (Defecto: 22)"; s_port="$REPLY_UI"
 if [ -z "$s_port" ]; then
     s_port=22
 fi
 
-read -p "¿Puerto Público Web? (Defecto: 80): " p_port
+ui_prompt "¿Puerto Público Web? (Defecto: 80)"; p_port="$REPLY_UI"
 if [ -z "$p_port" ]; then
     p_port=80
 fi
 
-echo "[*] Instalando scripts..."
+ui_info "Instalando scripts..."
 
 mkdir -p /etc/websocket
 cat << 'EOF' > /etc/websocket/proxy.py
@@ -138,7 +142,5 @@ systemctl daemon-reload
 systemctl enable websocket_proxy &>/dev/null
 systemctl restart websocket_proxy &>/dev/null
 
-echo "================================================="
-echo "[+] WebSocket Montado."
-echo "================================================="
+ui_section "[+] WebSocket Montado."
 sleep 2

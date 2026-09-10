@@ -5,28 +5,32 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
+# Lenguaje visual compartido del panel
+_INST_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+source "$_INST_DIR/../ui.sh"
+
 clear
-echo "================================================="
-echo "               SHADOWSOCKS                       "
-echo "================================================="
-echo "Shadowsocks es un proxy cifrado SOCKS5 diseñado"
-echo "para evadir censura y restricciones de red."
+
+ui_header "FREE · INSTALADOR"
+ui_section "SHADOWSOCKS"
+echo -e "${UI_PAD}${DM}Shadowsocks es un proxy cifrado SOCKS5 diseñado${CR}"
+echo -e "${UI_PAD}${DM}para evadir censura y restricciones de red.${CR}"
 echo ""
 
-read -p "¿Instalar Shadowsocks? (s/n): " auth
+ui_prompt "¿Instalar Shadowsocks? (s/n)"; auth="$REPLY_UI"
 if [[ "$auth" != "s" && "$auth" != "S" ]]; then exit 0; fi
 
-read -p "Puerto para Shadowsocks (Defecto: 8388): " ss_port
+ui_prompt "Puerto para Shadowsocks (Defecto: 8388)"; ss_port="$REPLY_UI"
 if [ -z "$ss_port" ]; then ss_port=8388; fi
 
 read -s -p "Contraseña de cifrado: " ss_pass
 echo ""
 if [ -z "$ss_pass" ]; then ss_pass="vpsservice2024"; fi
 
-echo "[*] Instalando Shadowsocks-libev..."
+ui_info "Instalando Shadowsocks-libev..."
 apt-get install -yq shadowsocks-libev &>/dev/null
 
-echo "[*] Escribiendo configuración..."
+ui_info "Escribiendo configuración..."
 cat <<EOF > /etc/shadowsocks-libev/config.json
 {
     "server": "0.0.0.0",
@@ -50,12 +54,12 @@ fi
 SERVER_IP=$(curl -4 -s ifconfig.me)
 
 echo ""
-echo "================================================="
-echo "[+] Shadowsocks activo."
-echo "    Servidor : $SERVER_IP"
-echo "    Puerto   : $ss_port"
-echo "    Cifrado  : aes-256-gcm"
-echo "    Password : $ss_pass"
-echo "    Modo     : TCP + UDP"
-echo "================================================="
-read -p "Presiona Enter para volver..."
+ui_solid
+ui_ok "Shadowsocks activo."
+echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Servidor" "$SERVER_IP" 34)"
+echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Puerto" "$ss_port" 34)"
+echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Cifrado" "aes-256-gcm" 34)"
+echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Password" "$ss_pass" 34)"
+echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Modo" "TCP + UDP" 34)"
+ui_solid
+ui_pause

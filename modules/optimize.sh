@@ -22,106 +22,115 @@ fi
 # =========================================================
 # Si llegamos aquí, fue importado (source) desde main.sh
 # =========================================================
-
-# === PALETA (heredada del entorno) ===
-# CR, CY, GR, RD, YL, WH, DM, SEP, DIR ...
+_OPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+source "$_OPT_DIR/ui.sh"
 
 do_optimize() {
-    echo -e "  ${YL}[*]${CR} Limpiando caché de memoria RAM (PageCache, Dentries, Inodes)..."
+    ui_info "Limpiando caché de RAM (PageCache, Dentries, Inodes)..."
     sync; echo 3 > /proc/sys/vm/drop_caches
-    
-    echo -e "  ${YL}[*]${CR} Vaciando memoria SWAP (puede demorar unos segundos)..."
+
+    ui_info "Vaciando memoria SWAP (puede demorar unos segundos)..."
     if [ "$(swapon --show 2>/dev/null | wc -l)" -gt 0 ]; then
         swapoff -a && swapon -a
     fi
-    
-    echo -e "  ${YL}[*]${CR} Limpiando caché de APT y paquetes huérfanos..."
+
+    ui_info "Limpiando caché de APT y paquetes huérfanos..."
     apt-get clean -y >/dev/null 2>&1
     apt-get autoremove -y >/dev/null 2>&1
-    
-    echo -e "  ${YL}[*]${CR} Limpiando logs antiguos para liberar disco..."
+
+    ui_info "Limpiando logs antiguos para liberar disco..."
     find /var/log -type f -name "*.gz" -delete >/dev/null 2>&1
     find /var/log -type f -name "*.[0-9]" -delete >/dev/null 2>&1
     journalctl --vacuum-time=1d >/dev/null 2>&1
-    
-    echo -e "  ${GR}[+]${CR} ¡Servidor Optimizado con Éxito!"
+
+    ui_ok "¡Servidor optimizado con éxito!"
 }
 
 optimize_menu() {
     while true; do
         clear
         print_title 2>/dev/null || true
-        echo -e "$SEP"
-        echo -e "${WH}             OPTIMIZACIÓN DEL VPS${CR}"
-        echo -e "$SEP"
-        
-        # Verificar estado del cron
+        ui_section "OPTIMIZACIÓN DEL SERVIDOR" "RAM · swap · caché · logs"
+        ui_blank
+
+        # Estado del cron de optimización automática
+        local ESTADO_AUTO CRON_LINE H
         if crontab -l 2>/dev/null | grep -q "optimize.sh --cron"; then
             CRON_LINE=$(crontab -l 2>/dev/null | grep "optimize.sh --cron")
-            # Extraer la configuración de hora
             H=$(echo "$CRON_LINE" | awk '{print $2}')
             if [[ "$H" == "*/"* ]]; then
                 H=${H#*/}
-                ESTADO_AUTO="${GR}[ ACTIVA : Cada ${H}h ]${CR}"
+                ESTADO_AUTO="${GR}[ CADA ${H}h ]${CR}"
             elif [[ "$H" == "*" ]]; then
-                ESTADO_AUTO="${GR}[ ACTIVA : Cada 1h ]${CR}"
+                ESTADO_AUTO="${GR}[ CADA 1h ]${CR}"
             else
-                ESTADO_AUTO="${GR}[ ACTIVA ]${CR}"
+                ESTADO_AUTO="$(ui_tag_str on)"
             fi
         else
-            ESTADO_AUTO="${RD}[ OFF ]${CR}"
+            ESTADO_AUTO="$(ui_tag_str off)"
         fi
 
-        echo -e "  ${CY}1)${CR}  ${WH}Optimizar ahora (Manual)${CR}"
-        echo -e "  ${CY}2)${CR}  ${WH}Configurar Optimización Automática${CR}  $ESTADO_AUTO"
-        echo -e "  ${CY}3)${CR}  ${WH}Desactivar Optimización Automática${CR}"
-        echo -e "  ${CY}0)${CR}  ${WH}Volver${CR}"
-        echo -e "$SEP"
-        read -p "$(echo -e ${DM})Elige [0-3]: $(echo -e ${CR})" op
+        # Vista rápida de los recursos que se van a liberar
+        local RAM_U RAM_T RAM_PCT
+        RAM_U=$(free -m | awk '/Mem:/ {print $3}')
+        RAM_T=$(free -m | awk '/Mem:/ {print $2}')
+        RAM_PCT=0
+        [ "${RAM_T:-0}" -gt 0 ] && RAM_PCT=$(( RAM_U * 100 / RAM_T ))
+        printf "${UI_PAD}%b ${DM}RAM en uso${CR} %b ${WH}%sMi/%sMi${CR} ${DM}(%s%%)${CR}\n" \
+            "$(ui_dot "$RAM_PCT")" "$(ui_bar "$RAM_PCT")" "$RAM_U" "$RAM_T" "$RAM_PCT"
+        ui_rule
+        ui_blank
 
-        case $op in
+        ui_opt "1" "OPTIMIZAR AHORA"    "manual"
+        ui_opt "2" "PROGRAMAR LIMPIEZA" "automática"  "$ESTADO_AUTO"
+        ui_opt "3" "DESACTIVAR AUTO"    "quitar cron"
+        ui_blank
+        ui_opt "0" "VOLVER"
+        ui_solid
+        ui_prompt "Elige una opción [0-3]"
+
+        case "$REPLY_UI" in
             1)
                 clear
                 print_title 2>/dev/null || true
-                echo -e "$SEP"
-                echo -e "${WH}             OPTIMIZACIÓN MANUAL${CR}"
-                echo -e "$SEP"
+                ui_section "OPTIMIZACIÓN MANUAL"
+                ui_blank
                 RAM_ANTES=$(free -m | awk '/Mem:/ {print $3}')
                 do_optimize
                 RAM_DESPUES=$(free -m | awk '/Mem:/ {print $3}')
                 AHORRO=$(( RAM_ANTES - RAM_DESPUES ))
                 [ "$AHORRO" -lt 0 ] && AHORRO=0
-                echo -e "$SEP"
-                echo -e "  ${WH}RAM Liberada:${CR} ${CY}${AHORRO} MB${CR}"
-                echo ""
-                read -p "$(echo -e ${DM})Presiona Enter para continuar...$(echo -e ${CR})"
+                ui_blank
+                ui_solid
+                echo -e "${UI_PAD}${WH}RAM LIBERADA:${CR}  ${CY}${BD}${AHORRO} MB${CR}"
+                ui_solid
+                ui_pause
                 ;;
             2)
-                echo ""
-                read -p "$(echo -e ${YL})¿Cada cuántas horas deseas optimizar automáticamente? [1-24]: $(echo -e ${CR})" horas
+                ui_blank
+                ui_prompt "¿Cada cuántas horas optimizar? [1-24]"
+                horas="$REPLY_UI"
                 if [[ "$horas" =~ ^[0-9]+$ ]] && [ "$horas" -ge 1 ] && [ "$horas" -le 24 ]; then
-                    # Eliminar tarea previa
                     crontab -l 2>/dev/null | grep -v "optimize.sh --cron" | crontab - 2>/dev/null
-                    # Añadir nueva tarea
                     if [ "$horas" -eq 1 ]; then
                         (crontab -l 2>/dev/null; echo "0 * * * * bash $DIR/modules/optimize.sh --cron") | crontab -
                     else
                         (crontab -l 2>/dev/null; echo "0 */$horas * * * bash $DIR/modules/optimize.sh --cron") | crontab -
                     fi
-                    echo -e "  ${GR}[+]${CR} Optimización automática configurada cada ${WH}$horas${CR} hora(s)."
+                    ui_ok "Optimización automática cada ${WH}$horas${CR} hora(s)."
                 else
-                    echo -e "  ${RD}[-]${CR} Cantidad de horas no válida."
+                    ui_err "Cantidad de horas no válida."
                 fi
                 sleep 2
                 ;;
             3)
                 crontab -l 2>/dev/null | grep -v "optimize.sh --cron" | crontab - 2>/dev/null
-                echo ""
-                echo -e "  ${GR}[+]${CR} Optimización automática desactivada."
+                ui_blank
+                ui_ok "Optimización automática desactivada."
                 sleep 2
                 ;;
             0) break ;;
-            *) echo -e "  ${RD}[-]${CR} Opción inválida."; sleep 1 ;;
+            *) ui_err "Opción inválida."; sleep 1 ;;
         esac
     done
 }

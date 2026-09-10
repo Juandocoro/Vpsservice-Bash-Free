@@ -1,4 +1,8 @@
 #!/bin/bash
+
+# Lenguaje visual compartido del panel
+_INST_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+source "$_INST_DIR/../ui.sh"
 # =========================================================
 # MÓDULO: Gateway Residencial por WireGuard para HTTP Injector
 # Interfaz   : wg-home
@@ -41,7 +45,6 @@ RD=${RD:-"\033[0;31m"}
 YL=${YL:-"\033[0;33m"}
 WH=${WH:-"\033[1;37m"}
 DM=${DM:-"\033[2;37m"}
-SEP=${SEP:-"${YL}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${CR}"}
 
 # =========================================================
 # 0. SISTEMA DE LOGGING Y BACKUP (CAMBIOS 16, 17, 18)

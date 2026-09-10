@@ -1,0 +1,21 @@
+# Claves y secretos — NUNCA commitear
+yes
+yes.pub
+id_rsa
+id_ed25519
+id_*
+*.pem
+*.key
+*.crt
+*.ovpn
+authorized_keys
+known_hosts
+
+# Datos locales del panel
+.vps_users
+*.log
+
+# Temporales
+*.swp
+*~
+.DS_Store
