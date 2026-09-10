@@ -118,14 +118,87 @@ _wgh_detect_firewall_backend() {
 }
 
 # Obtener la IP pública normal de la Droplet
+WGH_ENDPOINT_CONF="/etc/wireguard/homevpn-endpoint.conf"
+
+_wgh_set_endpoint() {
+    mkdir -p /etc/wireguard 2>/dev/null
+    echo "ENDPOINT=$1" > "$WGH_ENDPOINT_CONF"
+    chmod 644 "$WGH_ENDPOINT_CONF"
+    _wgh_log "Endpoint publico fijado manualmente a: $1"
+}
+
+# Direccion publica de esta Droplet, la que los nodos usan como
+# Endpoint. Antes habia aqui un valor fijo de reserva —la IP de una
+# Droplet concreta— y cuando curl fallaba el panel anunciaba con
+# total seguridad una direccion ajena: los nodos apuntaban su tunel
+# a otra maquina y no volvia ni un paquete. Nunca se inventa una IP:
+# si no se puede averiguar, se devuelve vacio y se pide al usuario.
 _wgh_get_droplet_ip() {
-    local ip
-    ip=$(curl -4 -s --max-time 5 https://api.ipify.org 2>/dev/null || curl -4 -s --max-time 5 https://ifconfig.me 2>/dev/null || true)
-    if [ -z "$ip" ]; then
-        ip=$(ip route show table main | grep '^default' | awk '{print $5}' | head -1 | xargs -I {} ip -4 addr show dev {} 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1 | head -1)
+    # 1. Valor fijado a mano: manda sobre todo lo demas.
+    if [ -f "$WGH_ENDPOINT_CONF" ]; then
+        local fixed
+        fixed=$(sed -n 's/^ENDPOINT=//p' "$WGH_ENDPOINT_CONF" 2>/dev/null | head -1)
+        [ -n "$fixed" ] && { echo "$fixed"; return 0; }
     fi
-    [ -z "$ip" ] && ip="167.99.4.37"
-    echo "$ip"
+
+    local ip="" svc
+    for svc in https://api.ipify.org https://ifconfig.me https://icanhazip.com https://ipv4.icanhazip.com; do
+        ip=$(curl -4 -s --max-time 5 "$svc" 2>/dev/null | tr -d '[:space:]')
+        echo "$ip" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$' && { echo "$ip"; return 0; }
+        ip=""
+    done
+
+    # 2. Sin salida a Internet: la IP de la interfaz por defecto.
+    #    Sirve en una Droplet, donde la publica esta en la propia
+    #    interfaz; se descartan rangos privados para no anunciar una
+    #    direccion interna que ningun nodo podria alcanzar.
+    local dev
+    dev=$(ip route show default 2>/dev/null | awk '/^default/{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+    if [ -n "$dev" ]; then
+        ip=$(ip -4 addr show dev "$dev" 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 \
+             | grep -vE '^(10\.|127\.|169\.254\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)' | head -1)
+        [ -n "$ip" ] && { echo "$ip"; return 0; }
+    fi
+
+    echo ""
+    return 1
+}
+
+# =========================================================
+# CORREGIR LA DIRECCION PUBLICA A MANO
+# =========================================================
+wghome_fix_endpoint() {
+    clear
+    print_title 2>/dev/null || true
+    ui_section "DIRECCION PUBLICA DEL VPS" "la que los nodos usan como Endpoint"
+    ui_blank
+
+    local det
+    det=$(_wgh_get_droplet_ip)
+    if [ -n "$det" ]; then
+        echo -e "${UI_PAD}$(ui_cell "Detectada ahora" "$det" 40 "$GR")"
+    else
+        ui_err "No se pudo averiguar la direccion publica."
+    fi
+    if [ -f "$WGH_ENDPOINT_CONF" ]; then
+        echo -e "${UI_PAD}${DM}   (fijada a mano en ${WGH_ENDPOINT_CONF})${CR}"
+    fi
+    ui_blank
+    ui_rule
+    echo -e "${UI_PAD}${DM}Comprueba que coincide con la IP por la que te conectas${CR}"
+    echo -e "${UI_PAD}${DM}por SSH a este servidor. Si no coincide, los nodos${CR}"
+    echo -e "${UI_PAD}${DM}estan apuntando su tunel a otra maquina.${CR}"
+    ui_blank
+    echo -e "${UI_PAD}${DM}Deja vacio para no cambiar nada.${CR}"
+    ui_blank
+    read -p "$(echo -e "${UI_PAD}${DM}Nueva IP o dominio ${CY}»${CR} ")" nep
+    nep=$(echo "$nep" | tr -d '[:space:]')
+    [ -z "$nep" ] && return
+
+    _wgh_set_endpoint "$nep"
+    ui_ok "Endpoint fijado a ${nep}."
+    ui_warn "Cada nodo debe actualizar su Endpoint con esta direccion."
+    ui_pause
 }
 
 # Instalar WireGuard si no está presente
@@ -911,14 +984,36 @@ wghome_install() {
     # Paso 3: Registrar tabla de rutas
     _wgh_ensure_rt_table
 
-    # Paso 4: Generar claves Droplet
-    echo -e "  ${YL}[*]${CR} Generando par de claves para la Droplet..."
+    # Paso 4: Claves de la Droplet
+    # Regenerarlas invalida a TODOS los nodos a la vez: siguen
+    # cifrando sus saludos contra una clave publica que este
+    # servidor ya no tiene, y WireGuard los descarta sin decir nada.
+    # Antes se rehacian en cada reinstalacion, en silencio.
     mkdir -p /etc/wireguard
-    (umask 077; wg genkey > "${WGH_PRIV_KEY}")
-    wg pubkey < "${WGH_PRIV_KEY}" > "${WGH_PUB_KEY}"
+    if [ -s "${WGH_PRIV_KEY}" ]; then
+        echo ""
+        echo -e "  ${YL}[!]${CR} Esta Droplet ya tiene su par de claves."
+        echo -e "  ${DM}      Publica actual: $(cat "${WGH_PUB_KEY}" 2>/dev/null)${CR}"
+        echo -e "  ${RD}[!]${CR} Generar unas nuevas DESCONECTA todos los nodos"
+        echo -e "  ${DM}      registrados: habria que reconfigurarlos uno a uno.${CR}"
+        echo ""
+        if ui_confirm "¿Conservar las claves actuales?" "s"; then
+            [ -s "${WGH_PUB_KEY}" ] || wg pubkey < "${WGH_PRIV_KEY}" > "${WGH_PUB_KEY}"
+            echo -e "  ${GR}[+]${CR} Claves conservadas: los nodos siguen validos."
+        else
+            (umask 077; wg genkey > "${WGH_PRIV_KEY}")
+            wg pubkey < "${WGH_PRIV_KEY}" > "${WGH_PUB_KEY}"
+            _wgh_log "Claves de la Droplet REGENERADAS: nodos invalidados"
+            echo -e "  ${YL}[!]${CR} Claves nuevas. Actualiza la clave del VPS en cada nodo."
+        fi
+    else
+        echo -e "  ${YL}[*]${CR} Generando par de claves para la Droplet..."
+        (umask 077; wg genkey > "${WGH_PRIV_KEY}")
+        wg pubkey < "${WGH_PRIV_KEY}" > "${WGH_PUB_KEY}"
+        echo -e "  ${GR}[+]${CR} Claves generadas (privada protegida chmod 600)."
+    fi
     chmod 600 "${WGH_PRIV_KEY}"
     chmod 644 "${WGH_PUB_KEY}"
-    echo -e "  ${GR}[+]${CR} Claves generadas (clave privada protegida chmod 600)."
 
     # Paso 5: Crear wg-home.conf con Table = off y AllowedIPs = 0.0.0.0/0
     echo -e "  ${YL}[*]${CR} Creando ${WGH_CONF}..."
@@ -988,7 +1083,16 @@ wghome_show_pubkey() {
     ip_pub=$(_wgh_get_droplet_ip)
 
     echo ""
-    echo -e "  ${DM}IP pública Droplet :${CR} ${GR}${ip_pub}${CR}"
+    if [ -n "$ip_pub" ]; then
+        echo -e "  ${DM}IP pública Droplet :${CR} ${GR}${ip_pub}${CR}"
+        echo -e "  ${DM}   ${YL}Comprueba que es la misma por la que entras por SSH.${CR}"
+        echo -e "  ${DM}   Si no lo es, corrígela en GESTIONAR NODOS > [5].${CR}"
+    else
+        echo -e "  ${RD}IP pública Droplet : NO SE PUDO AVERIGUAR${CR}"
+        echo -e "  ${DM}   Fíjala a mano en GESTIONAR NODOS > [5]; sin ella los${CR}"
+        echo -e "  ${DM}   nodos no saben a dónde abrir el túnel.${CR}"
+        ip_pub="<PON_AQUI_LA_IP_DEL_VPS>"
+    fi
     echo -e "  ${DM}Puerto WireGuard   :${CR} ${CY}${WGH_PORT}/UDP${CR}"
     echo ""
     echo -e "  ${YL}[ Clave Pública de la Droplet ]${CR}"
@@ -1163,10 +1267,11 @@ wghome_manage_nodes() {
         ui_opt "1" "REGISTRAR NODO"    "clave publica"
         ui_opt "2" "CAMBIAR SALIDA"    "cual sale a Internet"
         ui_opt "3" "DATOS PARA EL NODO" "que poner alli"
+        ui_opt "5" "DIRECCION PUBLICA"  "endpoint del VPS"
         ui_opt_danger "4" "ELIMINAR NODO" "lo desconecta"
         ui_opt "0" "VOLVER"
         ui_solid
-        ui_prompt "Elige una opcion [0-4]"
+        ui_prompt "Elige una opcion [0-5]"
 
         case "$REPLY_UI" in
             1)  ui_blank
@@ -1208,6 +1313,7 @@ wghome_manage_nodes() {
                 ui_ok "Ahora la salida a Internet es '${sname}'."
                 ui_pause ;;
             3)  wghome_show_pubkey ;;
+            5)  wghome_fix_endpoint ;;
             4)  ui_blank
                 read -p "$(echo -e "${UI_PAD}${DM}Nombre del nodo a eliminar ${CY}»${CR} ")" dname
                 if ! _wgh_nodes_list | cut -d'|' -f1 | grep -qxF "$dname"; then
