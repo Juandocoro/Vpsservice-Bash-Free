@@ -207,6 +207,15 @@ ui_pause() {
     read -p "$(echo -e "${UI_PAD}${DM}Presiona Enter para continuar...${CR}")"
 }
 
+# Confirmacion si/no con valor por defecto. Devuelve 0 si acepta.
+# ui_confirm "¿Borrar la cuenta?" n
+ui_confirm() {
+    local q="$1" def="${2:-s}" r
+    read -p "$(echo -e "${UI_PAD}${DM}${q} (s/n) [${WH}${def}${DM}] ${CY}»${CR} ")" r
+    r="${r:-$def}"
+    [[ "$r" == "s" || "$r" == "S" ]]
+}
+
 # Alias cortos: varios instaladores ya usaban estos nombres con su propia
 # paleta local. Al apuntarlos aqui, heredan el estilo del panel sin tocar
 # el resto de su codigo.

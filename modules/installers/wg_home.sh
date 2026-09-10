@@ -936,6 +936,15 @@ wghome_install() {
     # Paso 7: Habilitar servicio systemd
     systemctl enable "wg-quick@${WGH_IFACE}" &>/dev/null
     echo -e "  ${GR}[+]${CR} Servicio wg-quick@${WGH_IFACE} habilitado."
+    # 'enable' solo programa el arranque futuro. Sin este 'start' la
+    # Droplet quedaba instalada pero sin escuchar, y los nodos
+    # enviaban handshakes contra un puerto que no atendia nadie.
+    systemctl start "wg-quick@${WGH_IFACE}" &>/dev/null
+    if _wgh_is_up; then
+        echo -e "  ${GR}[+]${CR} Túnel ${WGH_IFACE} levantado y escuchando en ${WGH_PORT}/UDP."
+    else
+        echo -e "  ${YL}[!]${CR} El túnel no arrancó todavía (normal si aún no hay nodos)."
+    fi
 
     # Inicializar fallback por defecto en ON si no existe
     [ ! -f "$WGH_FALLBACK_CONF" ] && _wgh_set_fallback "ON"
@@ -1101,6 +1110,19 @@ wghome_manage_nodes() {
         ui_section "NODOS RESIDENCIALES" "equipos que prestan su IP de casa"
         ui_blank
 
+        # Sin interfaz levantada, 'wg show' no devuelve nada y TODOS los
+        # nodos saldrian como "sin conexion", culpando a los nodos de un
+        # problema que esta aqui. Se dice antes de pintar la tabla.
+        local tunnel_up="no"
+        _wgh_is_up && tunnel_up="si"
+        if [ "$tunnel_up" != "si" ]; then
+            echo -e "  ${RD}[!] El túnel ${WGH_IFACE} NO está levantado en esta Droplet.${CR}"
+            echo -e "  ${DM}    Ningún nodo puede conectar mientras siga así, y el${CR}"
+            echo -e "  ${DM}    estado de abajo no significa nada todavía.${CR}"
+            echo -e "  ${DM}    Enciéndelo con la opción [2] del menú anterior.${CR}"
+            echo ""
+        fi
+
         local total
         total=$(_wgh_nodes_count)
         if [ "${total:-0}" -eq 0 ]; then
@@ -1112,11 +1134,20 @@ wghome_manage_nodes() {
                 [ -z "$key" ] && continue
                 if [ "$act" = "si" ]; then tag="${GR}ACTIVA${CR}"; else tag="${DM}  --  ${CR}"; fi
                 # Handshake por peer: dice cuales estan realmente vivos.
-                hs=$(wg show "${WGH_IFACE}" latest-handshakes 2>/dev/null | grep -F "$key" | awk '{print $2}')
-                if [ -n "$hs" ] && [ "$hs" != "0" ]; then
-                    hs="${GR}conectado${CR}"
+                if [ "$tunnel_up" != "si" ]; then
+                    hs="${DM}túnel apagado${CR}"
                 else
-                    hs="${RD}sin conexion${CR}"
+                    hs=$(wg show "${WGH_IFACE}" latest-handshakes 2>/dev/null | grep -F "$key" | awk '{print $2}')
+                    if [ -n "$hs" ] && [ "$hs" != "0" ]; then
+                        local age; age=$(( $(date +%s) - hs ))
+                        if [ "$age" -lt 180 ]; then
+                            hs="${GR}conectado (${age}s)${CR}"
+                        else
+                            hs="${YL}visto hace ${age}s${CR}"
+                        fi
+                    else
+                        hs="${RD}nunca conecto${CR}"
+                    fi
                 fi
                 printf "${UI_PAD}${WH}%-16s${CR} ${CY}%-16s${CR} %b   %b\n" "$name" "$ip" "$tag" "$hs"
             done < <(_wgh_nodes_list)
