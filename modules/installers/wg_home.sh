@@ -965,7 +965,7 @@ wghome_show_pubkey() {
     clear
     print_title 2>/dev/null || true
     echo -e "$SEP"
-    echo -e "${WH}     CLAVE PÚBLICA DE LA DROPLET${CR}"
+    echo -e "${WH}     DATOS PARA CONFIGURAR UN NODO${CR}"
     echo -e "$SEP"
 
     if [ ! -f "${WGH_PUB_KEY}" ]; then
@@ -982,18 +982,79 @@ wghome_show_pubkey() {
     echo -e "  ${DM}IP pública Droplet :${CR} ${GR}${ip_pub}${CR}"
     echo -e "  ${DM}Puerto WireGuard   :${CR} ${CY}${WGH_PORT}/UDP${CR}"
     echo ""
-    echo -e "  ${YL}[ Clave Pública Droplet ]${CR}"
+    echo -e "  ${YL}[ Clave Pública de la Droplet ]${CR}"
     echo -e "  ${WH}${pub}${CR}"
+    echo -e "  ${DM}Esta va en el campo PublicKey del nodo.${CR}"
     echo ""
-    echo -e "  ${DM}━━━ Configuración para el PC doméstico (CachyOS) ━━━${CR}"
-    echo -e "  ${DM}Guarda esto en /etc/wireguard/wg-home.conf en tu PC:${CR}"
+
+    _wgh_nodes_migrate
+    local total
+    total=$(_wgh_nodes_count)
+
+    if [ "${total:-0}" -eq 0 ]; then
+        echo -e "$SEP"
+        echo -e "  ${YL}[!]${CR} Todavía no hay ningún nodo registrado."
+        echo -e "  ${DM}    Regístralo primero en GESTIONAR NODOS: allí se le${CR}"
+        echo -e "  ${DM}    asigna su dirección, y sin ella esta pantalla no${CR}"
+        echo -e "  ${DM}    puede decirte qué poner en el campo Address.${CR}"
+        echo -e "$SEP"
+        read -p "$(echo -e ${DM})Presiona Enter para continuar...$(echo -e ${CR})"
+        return
+    fi
+
+    # Cada nodo tiene SU direccion. Enseñar una plantilla con la IP
+    # fija de antes hacia que el segundo nodo se configurase con la
+    # del primero, y entonces la Droplet le rechazaba los paquetes
+    # por venir de una IP fuera de su AllowedIPs.
+    echo -e "$SEP"
+    echo -e "  ${WH}Nodos registrados${CR}"
+    echo ""
+    local name key ip act n=0
+    while IFS='|' read -r name key ip act; do
+        [ -z "$key" ] && continue
+        n=$((n+1))
+        if [ "$act" = "si" ]; then
+            echo -e "  ${CY}[$n]${CR} ${WH}${name}${CR} ${DM}—${CR} ${CY}${ip}${CR} ${GR}(salida activa)${CR}"
+        else
+            echo -e "  ${CY}[$n]${CR} ${WH}${name}${CR} ${DM}—${CR} ${CY}${ip}${CR}"
+        fi
+    done < <(_wgh_nodes_list)
+
+    echo ""
+    read -p "$(echo -e ${DM})¿De qué nodo quieres la configuración? [1-${n}] (Enter = salir): $(echo -e ${CR})" pick
+    [ -z "$pick" ] && return
+
+    local line
+    line=$(_wgh_nodes_list | sed -n "${pick}p")
+    [ -z "$line" ] && { echo -e "  ${RD}[-]${CR} Opción no válida."; sleep 2; return; }
+
+    local n_name n_key n_ip
+    n_name=$(echo "$line" | cut -d'|' -f1)
+    n_key=$(echo "$line" | cut -d'|' -f2)
+    n_ip=$(echo "$line" | cut -d'|' -f3)
+
+    clear
+    print_title 2>/dev/null || true
+    echo -e "$SEP"
+    echo -e "${WH}     CONFIGURACIÓN DEL NODO: ${n_name}${CR}"
+    echo -e "$SEP"
+    echo ""
+    echo -e "  ${DM}Dirección asignada :${CR} ${CY}${n_ip}${CR}"
+    echo -e "  ${DM}Clave registrada   :${CR} ${DM}${n_key}${CR}"
+    echo ""
+    echo -e "  ${YL}━━━ Si usas el panel del nodo (node.sh) ━━━${CR}"
+    echo -e "  ${DM}En su asistente, cuando pida los datos:${CR}"
+    echo -e "  ${DM}  Host del VPS :${CR} ${WH}${ip_pub}${CR}"
+    echo -e "  ${DM}  Puerto       :${CR} ${WH}${WGH_PORT}${CR}"
+    echo -e "  ${DM}  Clave del VPS:${CR} ${WH}${pub}${CR}"
+    echo -e "  ${DM}  IP del nodo  :${CR} ${GR}${n_ip}${CR}  ${YL}<-- esta, no otra${CR}"
+    echo ""
+    echo -e "  ${YL}━━━ Si lo configuras a mano ━━━${CR}"
+    echo -e "  ${DM}En /etc/wireguard/wg-home.conf del nodo:${CR}"
     echo ""
     echo -e "  ${CY}[Interface]${CR}"
-    echo -e "  ${WH}PrivateKey          = <CLAVE_PRIVADA_DE_TU_PC>${CR}"
-    echo -e "  ${WH}Address             = ${WGH_PEER_IP}/24${CR}"
-    echo -e "  ${DM}# Comandos para compartir tu salida residencial wlan0 en Linux:${CR}"
-    echo -e "  ${DM}PostUp = iptables -A FORWARD -i ${WGH_IFACE} -j ACCEPT; iptables -t nat -A POSTROUTING -o wlan0 -j MASQUERADE${CR}"
-    echo -e "  ${DM}PostDown = iptables -D FORWARD -i ${WGH_IFACE} -j ACCEPT; iptables -t nat -D POSTROUTING -o wlan0 -j MASQUERADE${CR}"
+    echo -e "  ${WH}PrivateKey          = <LA PRIVADA DE ESE EQUIPO>${CR}"
+    echo -e "  ${WH}Address             = ${n_ip}/24${CR}"
     echo ""
     echo -e "  ${CY}[Peer]${CR}"
     echo -e "  ${WH}PublicKey           = ${pub}${CR}"
@@ -1001,7 +1062,13 @@ wghome_show_pubkey() {
     echo -e "  ${WH}AllowedIPs          = ${WGH_DROPLET_IP}/32${CR}"
     echo -e "  ${WH}PersistentKeepalive = 25${CR}"
     echo ""
-    echo -e "  ${YL}[!] La clave privada de la Droplet NUNCA se comparte ni se expone.${CR}"
+    echo -e "  ${DM}Y para compartir su salida a Internet (ajusta la interfaz):${CR}"
+    echo -e "  ${DM}PostUp   = iptables -A FORWARD -i ${WGH_IFACE} -j ACCEPT; iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE${CR}"
+    echo -e "  ${DM}PostDown = iptables -D FORWARD -i ${WGH_IFACE} -j ACCEPT; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE${CR}"
+    echo ""
+    echo -e "  ${YL}[!] La clave privada de la Droplet NUNCA se comparte.${CR}"
+    echo -e "  ${YL}[!] La privada del nodo se queda en el nodo: aquí solo${CR}"
+    echo -e "  ${DM}      se guarda su clave pública.${CR}"
     echo -e "$SEP"
     read -p "$(echo -e ${DM})Presiona Enter para continuar...$(echo -e ${CR})"
 }
