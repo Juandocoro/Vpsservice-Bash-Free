@@ -15,6 +15,29 @@ _listar_cuentas() {
     awk -F':' '($3 >= 1000 && $3 != 65534 && $1 != "nobody" && $1 != "ubuntu") {print $1}' /etc/passwd
 }
 
+# La tabla numera las cuentas, asi que lo natural es escribir el numero.
+# Acepta ambas cosas: un numero se traduce a la cuenta de esa fila; si no,
+# se toma como nombre. Devuelve el nombre en $USUARIO_RESUELTO, o vacio.
+_resolver_usuario() {
+    local entrada="$1"
+    USUARIO_RESUELTO=""
+    [ -z "$entrada" ] && return 1
+    if [[ "$entrada" =~ ^[0-9]+$ ]]; then
+        USUARIO_RESUELTO=$(_listar_cuentas | sed -n "${entrada}p")
+        if [ -z "$USUARIO_RESUELTO" ]; then
+            ui_err "No hay ninguna cuenta en la fila $entrada."
+            return 1
+        fi
+        return 0
+    fi
+    if id "$entrada" &>/dev/null && _listar_cuentas | grep -qx "$entrada"; then
+        USUARIO_RESUELTO="$entrada"
+        return 0
+    fi
+    ui_err "La cuenta '$entrada' no existe."
+    return 1
+}
+
 # Dias restantes de una cuenta. Devuelve un entero, o "inf" si no expira.
 _dias_restantes() {
     local u="$1" exp_raw exp_sec
@@ -201,10 +224,10 @@ eliminar_usuario() {
     print_title 2>/dev/null || true
     ui_section "ELIMINAR CUENTA"
     _tabla_usuarios
-    ui_prompt "Usuario a ELIMINAR (Enter = cancelar)"
-    local u="$REPLY_UI"
-    [ -z "$u" ] && return
-    if ! id "$u" &>/dev/null; then ui_err "La cuenta '$u' no existe."; sleep 2; return; fi
+    ui_prompt "Número o nombre a ELIMINAR (Enter = cancelar)"
+    [ -z "$REPLY_UI" ] && return
+    _resolver_usuario "$REPLY_UI" || { sleep 2; return; }
+    local u="$USUARIO_RESUELTO"
 
     ui_prompt "¿Confirmar la eliminación de '$u'? (s/n)"
     if [[ "$REPLY_UI" == "s" || "$REPLY_UI" == "S" ]]; then
@@ -223,19 +246,27 @@ renovar_vigencia() {
     print_title 2>/dev/null || true
     ui_section "RENOVAR VIGENCIA"
     _tabla_usuarios
-    ui_prompt "Usuario a renovar (Enter = cancelar)"
-    local u="$REPLY_UI"
-    [ -z "$u" ] && return
-    if ! id "$u" &>/dev/null; then ui_err "La cuenta '$u' no existe."; sleep 2; return; fi
+    ui_prompt "Número o nombre de la cuenta (Enter = cancelar)"
+    [ -z "$REPLY_UI" ] && return
+    _resolver_usuario "$REPLY_UI" || { sleep 2; return; }
+    local u="$USUARIO_RESUELTO"
 
     ui_prompt "Nuevos días desde hoy"
     local dias="$REPLY_UI"
     if [[ ! "$dias" =~ ^[0-9]+$ ]]; then ui_err "Valor inválido."; sleep 2; return; fi
 
-    local nueva
+    local nueva err
     nueva=$(date -d "+$dias days" +%Y-%m-%d)
-    usermod -e "$nueva" "$u"
-    ui_ok "Vigencia de ${WH}$u${CR} → ${CY}$nueva${CR} (${dias} días)."
+    # Antes se daba por hecho el exito: si usermod fallaba, el panel
+    # anunciaba la renovacion igual y la cuenta seguia vencida.
+    if err=$(usermod -e "$nueva" "$u" 2>&1); then
+        ui_ok "Vigencia de ${WH}$u${CR} → ${CY}$nueva${CR} (${dias} días)."
+        # Una cuenta vencida pudo quedar con sesiones muertas a medias;
+        # las cerramos para que la siguiente conexion entre limpia.
+        pkill -u "$u" sshd 2>/dev/null; pkill -u "$u" dropbear 2>/dev/null
+    else
+        ui_err "No se pudo renovar: ${err:-usermod devolvio error}"
+    fi
     sleep 2
 }
 
@@ -244,10 +275,10 @@ cambiar_password() {
     print_title 2>/dev/null || true
     ui_section "CAMBIAR CONTRASEÑA"
     _tabla_usuarios
-    ui_prompt "Usuario (Enter = cancelar)"
-    local u="$REPLY_UI"
-    [ -z "$u" ] && return
-    if ! id "$u" &>/dev/null; then ui_err "La cuenta '$u' no existe."; sleep 2; return; fi
+    ui_prompt "Número o nombre de la cuenta (Enter = cancelar)"
+    [ -z "$REPLY_UI" ] && return
+    _resolver_usuario "$REPLY_UI" || { sleep 2; return; }
+    local u="$USUARIO_RESUELTO"
 
     # Visible a proposito: el panel ya muestra todas las claves en la tabla,
     # y ocultarla aqui solo dificultaba dictarsela al cliente.
@@ -267,10 +298,10 @@ cambiar_limite() {
     print_title 2>/dev/null || true
     ui_section "LÍMITE DE CONEXIONES" "cuántos dispositivos simultáneos"
     _tabla_usuarios
-    ui_prompt "Usuario (Enter = cancelar)"
-    local u="$REPLY_UI"
-    [ -z "$u" ] && return
-    if ! id "$u" &>/dev/null; then ui_err "La cuenta '$u' no existe."; sleep 2; return; fi
+    ui_prompt "Número o nombre de la cuenta (Enter = cancelar)"
+    [ -z "$REPLY_UI" ] && return
+    _resolver_usuario "$REPLY_UI" || { sleep 2; return; }
+    local u="$USUARIO_RESUELTO"
 
     ui_prompt "Nuevo límite de dispositivos"
     local lim="$REPLY_UI"
