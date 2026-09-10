@@ -173,27 +173,67 @@ wghome_fix_endpoint() {
     ui_section "DIRECCION PUBLICA DEL VPS" "la que los nodos usan como Endpoint"
     ui_blank
 
+    # No se adivina: se enseña todo lo que ESTE servidor sabe de si
+    # mismo —lo que ve el exterior y lo que tiene en sus interfaces—
+    # y elige el usuario. Deducir la IP de otro sitio es justo lo que
+    # hacia que los nodos apuntasen a una maquina ajena.
     local det
     det=$(_wgh_get_droplet_ip)
-    if [ -n "$det" ]; then
-        echo -e "${UI_PAD}$(ui_cell "Detectada ahora" "$det" 40 "$GR")"
+
+    echo -e "${UI_PAD}${WH}Lo que sabe este servidor de si mismo${CR}"
+    ui_blank
+
+    local n=0
+    local -a cand=()
+
+    # 1. Como lo ve Internet
+    local seen
+    seen=$(curl -4 -s --max-time 6 https://api.ipify.org 2>/dev/null | tr -d '[:space:]')
+    if echo "$seen" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
+        n=$((n+1)); cand+=("$seen")
+        echo -e "${UI_PAD}${CY}[$n]${CR} ${GR}${seen}${CR} ${DM}— como lo ve Internet (salida)${CR}"
     else
-        ui_err "No se pudo averiguar la direccion publica."
+        echo -e "${UI_PAD}${DM}    Sin respuesta de los servicios de IP externa.${CR}"
     fi
+
+    # 2. Direcciones publicas configuradas en las interfaces
+    local a
+    while read -r a; do
+        [ -z "$a" ] && continue
+        # No repetir la que ya salio como IP de salida
+        printf '%s\n' "${cand[@]}" | grep -qxF "$a" && continue
+        n=$((n+1)); cand+=("$a")
+        echo -e "${UI_PAD}${CY}[$n]${CR} ${WH}${a}${CR} ${DM}— configurada en una interfaz${CR}"
+    done < <(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 \
+             | grep -vE '^(10\.|127\.|169\.254\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)')
+
+    ui_blank
     if [ -f "$WGH_ENDPOINT_CONF" ]; then
-        echo -e "${UI_PAD}${DM}   (fijada a mano en ${WGH_ENDPOINT_CONF})${CR}"
+        echo -e "${UI_PAD}$(ui_cell "Fijada ahora a mano" "${det}" 44 "$YL")"
+    elif [ -n "$det" ]; then
+        echo -e "${UI_PAD}$(ui_cell "En uso (detectada)" "${det}" 44 "$GR")"
+    else
+        ui_err "Ahora mismo no hay ninguna direccion utilizable."
     fi
+
     ui_blank
     ui_rule
-    echo -e "${UI_PAD}${DM}Comprueba que coincide con la IP por la que te conectas${CR}"
-    echo -e "${UI_PAD}${DM}por SSH a este servidor. Si no coincide, los nodos${CR}"
-    echo -e "${UI_PAD}${DM}estan apuntando su tunel a otra maquina.${CR}"
+    echo -e "${UI_PAD}${DM}Debe ser la direccion publica de ESTE servidor, el que${CR}"
+    echo -e "${UI_PAD}${DM}corre este panel. Si tienes varios VPS, comprueba que no${CR}"
+    echo -e "${UI_PAD}${DM}estas poniendo la de otro: los nodos abririan el tunel${CR}"
+    echo -e "${UI_PAD}${DM}contra la maquina equivocada y no volveria ni un paquete.${CR}"
     ui_blank
-    echo -e "${UI_PAD}${DM}Deja vacio para no cambiar nada.${CR}"
+    echo -e "${UI_PAD}${DM}Escribe un numero de la lista, una IP o dominio,${CR}"
+    echo -e "${UI_PAD}${DM}o deja vacio para no cambiar nada.${CR}"
     ui_blank
-    read -p "$(echo -e "${UI_PAD}${DM}Nueva IP o dominio ${CY}»${CR} ")" nep
+    read -p "$(echo -e "${UI_PAD}${DM}Direccion ${CY}»${CR} ")" nep
     nep=$(echo "$nep" | tr -d '[:space:]')
     [ -z "$nep" ] && return
+
+    # Si es un numero de la lista, se traduce a la direccion
+    if echo "$nep" | grep -qE '^[0-9]+$' && [ "$nep" -ge 1 ] && [ "$nep" -le "$n" ]; then
+        nep="${cand[$((nep-1))]}"
+    fi
 
     _wgh_set_endpoint "$nep"
     ui_ok "Endpoint fijado a ${nep}."
