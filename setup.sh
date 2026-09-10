@@ -95,31 +95,10 @@ systemctl disable stunnel4 &>/dev/null
 # Sin esto, HTTP Injector falla aunque las credenciales sean correctas.
 # =========================================================
 echo -e "\033[0;33m[*]\033[0m Configurando SSH para tunneling..."
-SSHD_CONF="/etc/ssh/sshd_config"
-_ssh_set() {
-    local file="$1" key="$2" val="$3"
-    if grep -qE "^#?\s*${key}" "$file" 2>/dev/null; then
-        sed -i -E "s|^#?\s*${key}.*|${key} ${val}|g" "$file"
-    else
-        echo "${key} ${val}" >> "$file"
-    fi
-}
-_ssh_set "$SSHD_CONF" "PasswordAuthentication"        "yes"
-_ssh_set "$SSHD_CONF" "KbdInteractiveAuthentication"  "yes"
-_ssh_set "$SSHD_CONF" "ChallengeResponseAuthentication" "yes"
-_ssh_set "$SSHD_CONF" "AllowTcpForwarding"            "yes"
-_ssh_set "$SSHD_CONF" "GatewayPorts"                 "no"
-if [ -d /etc/ssh/sshd_config.d ]; then
-    cat > /etc/ssh/sshd_config.d/10-vpsservice.conf <<'SSHEOF'
-PasswordAuthentication yes
-KbdInteractiveAuthentication yes
-ChallengeResponseAuthentication yes
-AllowTcpForwarding yes
-GatewayPorts no
-X11Forwarding no
-SSHEOF
-fi
-systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null
+# Se reutiliza la misma funcion que usa el panel, ya clonada en TARGET_DIR,
+# para que el bootstrap y el runtime no puedan divergir.
+source "$TARGET_DIR/modules/system.sh"
+ssh_apply_tunnel_config
 echo -e "\033[1;32m[+]\033[0m SSH configurado para HTTP Injector."
 
 # =========================================================

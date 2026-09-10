@@ -17,11 +17,9 @@ echo -e "${UI_PAD}${DM}OpenVPN es el protocolo VPN más maduro y portable.${CR}"
 echo -e "${UI_PAD}${DM}Genera un archivo .ovpn listo para el cliente.${CR}"
 echo ""
 
-ui_prompt "¿Instalar OpenVPN? (s/n)"; auth="$REPLY_UI"
-if [[ "$auth" != "s" && "$auth" != "S" ]]; then exit 0; fi
-
-ui_prompt "Puerto OpenVPN (Defecto: 1194)"; ovpn_port="$REPLY_UI"
-if [ -z "$ovpn_port" ]; then ovpn_port=1194; fi
+ui_prompt "Puerto OpenVPN (Enter = 1194 · 0 = cancelar)"; ovpn_port="$REPLY_UI"
+[ "$ovpn_port" = "0" ] && exit 0
+[ -z "$ovpn_port" ] && ovpn_port=1194
 
 ui_prompt "Protocolo UDP o TCP [udp/tcp] (Defecto: udp)"; ovpn_proto="$REPLY_UI"
 if [ -z "$ovpn_proto" ]; then ovpn_proto="udp"; fi

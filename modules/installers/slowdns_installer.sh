@@ -17,9 +17,6 @@ echo -e "${UI_PAD}${DM}SlowDNS permite tunelizar tráfico SSH a través${CR}"
 echo -e "${UI_PAD}${DM}del protocolo DNS, util para bypasses de red.${CR}"
 echo ""
 
-ui_prompt "¿Instalar SlowDNS? (s/n)"; auth="$REPLY_UI"
-if [[ "$auth" != "s" && "$auth" != "S" ]]; then exit 0; fi
-
 ui_prompt "Tu dominio/subdominio DNS (ej: ns1.tudominio.com)"; dns_domain="$REPLY_UI"
 if [ -z "$dns_domain" ]; then
     ui_err "Error: Se requiere un dominio NS."

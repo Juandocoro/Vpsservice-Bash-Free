@@ -3,6 +3,7 @@
 # Lenguaje visual compartido del panel
 _INST_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 source "$_INST_DIR/../ui.sh"
+source "$_INST_DIR/../system.sh"
 # Módulo Instalador Stunnel
 
 instalar_stunnel_service() {
@@ -13,8 +14,6 @@ instalar_stunnel_service() {
     echo -e "${UI_PAD}${DM}Esta fase genera el certificado SSL y monta el proxy${CR}"
     echo -e "${UI_PAD}${DM}en el puerto 443 apuntando a SSH (22).${CR}"
     echo ""
-    ui_prompt "¿Deseas configurar y levantar el túnel AHORA? (s/n)"; confirm="$REPLY_UI"
-    if [[ "$confirm" != "s" && "$confirm" != "S" ]]; then return; fi
 
     ui_info "Generando certificado SSL TLS (10 años de validez)..."
     openssl req -new -newkey rsa:2048 -days 3650 -nodes -x509 \
@@ -38,38 +37,8 @@ connect = 127.0.0.1:22
 EOF
 
     ui_info "Configurando SSH para autenticación por túnel SSL..."
-    SSHD_CONF="/etc/ssh/sshd_config"
-
-    _ssh_set() {
-        local file="$1" key="$2" val="$3"
-        if grep -qE "^#?\s*${key}" "$file" 2>/dev/null; then
-            sed -i -E "s|^#?\s*${key}.*|${key} ${val}|g" "$file"
-        else
-            echo "${key} ${val}" >> "$file"
-        fi
-    }
-
-    # CAPA 1 — sshd_config principal
-    _ssh_set "$SSHD_CONF" "UsePAM"                       "yes"
-    _ssh_set "$SSHD_CONF" "KbdInteractiveAuthentication"  "yes"
-    _ssh_set "$SSHD_CONF" "ChallengeResponseAuthentication" "yes"
-    _ssh_set "$SSHD_CONF" "PasswordAuthentication"        "yes"
-    _ssh_set "$SSHD_CONF" "PermitEmptyPasswords"          "no"
-    # FIX: necesario para HTTP Injector y tuneles SSH por Stunnel SSL
-    _ssh_set "$SSHD_CONF" "AllowTcpForwarding"            "yes"
-    _ssh_set "$SSHD_CONF" "GatewayPorts"                 "no"
-
-    # CAPA 2 — neutralizar overrides en sshd_config.d/ (Ubuntu Cloud/VPS los activa)
-    if [ -d /etc/ssh/sshd_config.d ]; then
-        for f in /etc/ssh/sshd_config.d/*.conf; do
-            [ -f "$f" ] || continue
-            sed -i -E 's|^#?\s*PasswordAuthentication.*|PasswordAuthentication yes|g' "$f"
-            sed -i -E 's|^#?\s*KbdInteractiveAuthentication.*|KbdInteractiveAuthentication yes|g' "$f"
-            sed -i -E 's|^#?\s*ChallengeResponseAuthentication.*|ChallengeResponseAuthentication yes|g' "$f"
-        done
-    fi
-
-    systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null
+    # Fuente unica en modules/system.sh (antes este bloque estaba duplicado).
+    ssh_apply_tunnel_config
 
     ui_info "Montando puertos en el sistema y arrancando el servicio..."
     sed -i 's/ENABLED=0/ENABLED=1/' /etc/default/stunnel4 2>/dev/null

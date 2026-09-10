@@ -13,6 +13,7 @@ source "$DIR/modules/ui.sh"
 source "$DIR/modules/network.sh"
 source "$DIR/modules/users.sh"
 source "$DIR/modules/optimize.sh"
+source "$DIR/modules/system.sh"
 source "$DIR/modules/installers/wg_home.sh"
 
 VPS_VERSION="v1.0"
@@ -38,31 +39,17 @@ function print_title() {
 }
 
 # =========================================================
-# ARRANQUE AUTOMÁTICO
+# ARRANQUE AUTOMÁTICO — interruptor directo
 # =========================================================
 function toggle_autostart() {
-    clear
-    print_title
-    ui_section "ARRANQUE AUTOMÁTICO" "abrir el panel al entrar por SSH"
-    ui_blank
     if grep -q "^menu$" /root/.bashrc 2>/dev/null; then
-        echo -e "${UI_PAD}Estado actual:  $(ui_tag_str on)"
-        ui_blank
-        ui_prompt "¿Desactivar? (s/n)"
-        if [[ "$REPLY_UI" == "s" || "$REPLY_UI" == "S" ]]; then
-            sed -i '/^menu$/d' /root/.bashrc
-            ui_ok "Arranque automático desactivado."
-        fi
+        sed -i '/^menu$/d' /root/.bashrc
+        ui_ok "Arranque automático ${RD}desactivado${CR}."
     else
-        echo -e "${UI_PAD}Estado actual:  $(ui_tag_str off)"
-        ui_blank
-        ui_prompt "¿Activar? (s/n)"
-        if [[ "$REPLY_UI" == "s" || "$REPLY_UI" == "S" ]]; then
-            echo "menu" >> /root/.bashrc
-            ui_ok "Arranque automático activado."
-        fi
+        echo "menu" >> /root/.bashrc
+        ui_ok "Arranque automático ${GR}activado${CR}."
     fi
-    sleep 2
+    sleep 1
 }
 
 # =========================================================
@@ -76,22 +63,33 @@ function users_menu() {
         ui_blank
 
         contar_cuentas
-        echo -e "${UI_PAD}$(ui_cell "Total" "${USR_TOTAL:-0}" 16)${DM}▸${CR} $(ui_cell "Activas" "${USR_ACTIVAS:-0}" 16 "$GR")${DM}▸${CR} $(ui_cell "Vencidas" "${USR_VENCIDAS:-0}" 16 "$RD")"
+        contar_online
+        echo -e "${UI_PAD}$(ui_cell "Total" "${USR_TOTAL:-0}" 15)${DM}▸${CR} $(ui_cell "Activas" "${USR_ACTIVAS:-0}" 15 "$GR")${DM}▸${CR} $(ui_cell "Vencidas" "${USR_VENCIDAS:-0}" 15 "$RD")"
+        echo -e "${UI_PAD}$(ui_cell "Online" "$(( ${ON_SSH:-0} + ${ON_DROPBEAR:-0} + ${ON_OVPN:-0} ))" 15 "$CY")${DM}▸${CR} $(ui_cell "Por vencer" "${USR_PORVENCER:-0}" 15 "$YL")"
         ui_rule
         ui_blank
 
         ui_opt "1" "CREAR CUENTA"        "usuario nuevo"
-        ui_opt "2" "ADMINISTRAR CUENTAS" "editar · borrar"
+        ui_opt "2" "LISTAR CUENTAS"      "tabla completa"
         ui_opt "3" "USUARIOS CONECTADOS" "monitor en vivo"
+        ui_blank
+        ui_opt "4" "RENOVAR VIGENCIA"    "más días"
+        ui_opt "5" "CAMBIAR CONTRASEÑA"  "reset de clave"
+        ui_opt "6" "LÍMITE DE CONEXIÓN"  "dispositivos"
+        ui_opt_danger "7" "ELIMINAR CUENTA" "borrado definitivo"
         ui_blank
         ui_opt "0" "VOLVER"
         ui_solid
-        ui_prompt "Elige una opción [0-3]"
+        ui_prompt "Elige una opción [0-7]"
 
         case "$REPLY_UI" in
             1) crear_usuario ;;
-            2) administrar_usuarios ;;
+            2) listar_usuarios ;;
             3) monitor_conexiones ;;
+            4) renovar_vigencia ;;
+            5) cambiar_password ;;
+            6) cambiar_limite ;;
+            7) eliminar_usuario ;;
             0) break ;;
             *) ui_err "Opción inválida."; sleep 1 ;;
         esac
@@ -302,18 +300,9 @@ function uninstall_panel() {
     ui_blank
     ui_warn "Los usuarios SSH creados ${WH}NO${CR} serán eliminados."
     ui_solid
-    ui_prompt "¿Deseas continuar? (s/n)"
-    if [[ "$REPLY_UI" != "s" && "$REPLY_UI" != "S" ]]; then
-        ui_ok "Operación cancelada."
-        sleep 2
-        return
-    fi
-
-    ui_blank
-    ui_err "Escribe ${WH}CONFIRMAR${CR} para proceder (distingue mayúsculas):"
-    ui_prompt " "
+    ui_prompt "Escribe CONFIRMAR para proceder (Enter = cancelar)"
     if [[ "$REPLY_UI" != "CONFIRMAR" ]]; then
-        ui_err "Texto incorrecto. Operación cancelada."
+        ui_info "Operación cancelada."
         sleep 2
         return
     fi
@@ -356,7 +345,71 @@ function uninstall_panel() {
 }
 
 # =========================================================
+# CONFIGURACIÓN DEL VPS
+# Agrupa todo lo que no es gestión de cuentas, en tres bloques:
+# los protocolos, el sistema operativo y el propio panel.
+# =========================================================
+function config_menu() {
+    while true; do
+        refresh_ports
+        clear
+        print_title
+        ui_section "CONFIGURACIÓN DEL VPS"
+        ui_blank
+
+        # Etiquetas de estado
+        local WGH_TAG AUTO_TAG ROOT_TAG SSH_PORT TZ_NOW
+        ip link show wg-home &>/dev/null && WGH_TAG="$(ui_tag_str on)" || WGH_TAG="$(ui_tag_str off)"
+        grep -q "^menu$" /root/.bashrc 2>/dev/null && AUTO_TAG="$(ui_tag_str on)" || AUTO_TAG="$(ui_tag_str off)"
+        _root_ssh_allowed && ROOT_TAG="$(ui_tag_str on)" || ROOT_TAG="$(ui_tag_str off)"
+        SSH_PORT="${PORT_SSH:-22}"
+        TZ_NOW=$(timedatectl show -p Timezone --value 2>/dev/null || echo "N/A")
+
+        echo -e "${UI_PAD}${YL}── PROTOCOLOS ──${CR}"
+        ui_opt "1" "FÁBRICA DE TÚNELES"  "11 protocolos"
+        ui_opt "2" "DATOS DE CONEXIÓN"   "para el cliente"
+        ui_opt "3" "GATEWAY RESIDENCIAL" "WireGuard"      "$WGH_TAG"
+        ui_blank
+        echo -e "${UI_PAD}${YL}── SISTEMA ──${CR}"
+        ui_opt "4" "ACCESO ROOT"         "clave y login"  "$ROOT_TAG"
+        ui_opt "5" "PUERTO SSH"          "actual: $SSH_PORT"
+        ui_opt "6" "CORTAFUEGOS UFW"     "sincronizar"
+        ui_opt "7" "ZONA HORARIA"        "${TZ_NOW##*/}"
+        ui_opt "8" "OPTIMIZAR SERVIDOR"  "RAM · caché"
+        ui_blank
+        echo -e "${UI_PAD}${YL}── PANEL ──${CR}"
+        ui_opt "9"  "ACTUALIZAR SCRIPT"   "desde GitHub"
+        ui_opt "10" "ARRANQUE AUTOMÁTICO" ""              "$AUTO_TAG"
+        ui_opt "11" "REINICIAR SERVIDOR"  "cierra túneles"
+        ui_opt_danger "12" "DESINSTALAR PANEL" "borrado total"
+        ui_blank
+        ui_opt "0" "VOLVER"
+        ui_solid
+        ui_prompt "Elige una opción [0-12]"
+
+        case "$REPLY_UI" in
+            1)  sub_menu_installers ;;
+            2)  client_data ;;
+            3)  wghome_menu ;;
+            4)  root_access_menu ;;
+            5)  ssh_port_config ;;
+            6)  clear; print_title; ui_section "CORTAFUEGOS UFW"; ui_blank; sync_firewall ;;
+            7)  timezone_config ;;
+            8)  optimize_menu ;;
+            9)  update_script ;;
+            10) toggle_autostart ;;
+            11) reboot_vps ;;
+            12) uninstall_panel ;;
+            0)  break ;;
+            *)  ui_err "Opción no válida."; sleep 1 ;;
+        esac
+    done
+}
+
+# =========================================================
 # MENÚ PRINCIPAL
+# Solo dos destinos: las cuentas (el uso diario) y todo lo
+# demás. El tablero de arriba ya informa del estado.
 # =========================================================
 function show_menu() {
     clear
@@ -367,44 +420,16 @@ function show_menu() {
     ui_solid
     ui_blank
 
-    # Estado del arranque automático
-    local AUTO_TAG
-    if grep -q "^menu$" /root/.bashrc 2>/dev/null; then
-        AUTO_TAG="$(ui_tag_str on)"
-    else
-        AUTO_TAG="$(ui_tag_str off)"
-    fi
-
-    # Estado del gateway residencial
-    local WGH_TAG
-    if ip link show wg-home &>/dev/null; then
-        WGH_TAG="$(ui_tag_str on)"
-    else
-        WGH_TAG="$(ui_tag_str off)"
-    fi
-
-    ui_opt "1" "ADMINISTRAR CUENTAS"  "crear · editar"
-    ui_opt "2" "FÁBRICA DE TÚNELES"   "11 protocolos"
-    ui_opt "3" "ARRANQUE AUTOMÁTICO"  ""               "$AUTO_TAG"
-    ui_opt "4" "ACTUALIZAR SCRIPT"    "desde GitHub"
-    ui_opt_danger "5" "DESINSTALAR PANEL" "borrado total"
-    ui_opt "6" "SINCRONIZAR UFW"      "cortafuegos"
-    ui_opt "7" "OPTIMIZAR SERVIDOR"   "RAM · caché"
-    ui_opt "8" "GATEWAY RESIDENCIAL"  "WireGuard"      "$WGH_TAG"
+    ui_opt "1" "ADMINISTRAR CUENTAS"   "crear · editar · monitor"
+    ui_opt "2" "CONFIGURACIÓN DEL VPS" "protocolos · sistema"
     ui_blank
     ui_opt "0" "SALIR"
     ui_solid
-    ui_prompt "Digita una acción [0-8]"
+    ui_prompt "Digita una acción [0-2]"
 
     case "$REPLY_UI" in
         1) users_menu ;;
-        2) sub_menu_installers ;;
-        3) toggle_autostart ;;
-        4) update_script ;;
-        5) uninstall_panel ;;
-        6) clear; print_title; ui_section "SINCRONIZAR CORTAFUEGOS"; ui_blank; sync_firewall ;;
-        7) optimize_menu ;;
-        8) wghome_menu ;;
+        2) config_menu ;;
         0) clear; echo -e "${DM}Saliendo... (escribe 'menu' para volver)${CR}"; exit 0 ;;
         *) ui_err "Opción no reconocida."; sleep 1 ;;
     esac
@@ -423,21 +448,10 @@ if [ ! -f "$STATE_DIR/.firewall_synced" ]; then
     touch "$STATE_DIR/.firewall_synced"
 fi
 
-# Asegurar configuración SSH para todos los usuarios (Corrección Global)
-if [ -d /etc/ssh/sshd_config.d ]; then
-    if [ ! -f /etc/ssh/sshd_config.d/10-vpsservice.conf ]; then
-        rm -f /etc/ssh/sshd_config.d/99-vpsservice.conf 2>/dev/null
-        # FIX: el drop-in incluye AllowTcpForwarding para HTTP Injector
-        cat > /etc/ssh/sshd_config.d/10-vpsservice.conf <<'SSHEOF'
-PasswordAuthentication yes
-KbdInteractiveAuthentication yes
-ChallengeResponseAuthentication yes
-AllowTcpForwarding yes
-GatewayPorts no
-X11Forwarding no
-SSHEOF
-        systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null
-    fi
+# Asegurar la configuración SSH de tunneling en cada arranque del panel.
+# Solo se reescribe si falta el drop-in, para no reiniciar sshd sin motivo.
+if [ ! -f /etc/ssh/sshd_config.d/10-vpsservice.conf ]; then
+    ssh_apply_tunnel_config
 fi
 
 # Lazo de vida infinito

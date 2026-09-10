@@ -45,18 +45,25 @@ menu
   ▪ WebSocket: 80     ▸ ▪ BadVPN: 7300      ▸ ▪ V2Ray: 8080
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  [1] ▸ ADMINISTRAR CUENTAS     │ crear · editar
-  [2] ▸ FÁBRICA DE TÚNELES      │ 11 protocolos
-  [3] ▸ ARRANQUE AUTOMÁTICO                        [ OFF ]
-  [4] ▸ ACTUALIZAR SCRIPT       │ desde GitHub
-  [5] ▸ DESINSTALAR PANEL       │ borrado total
-  [6] ▸ SINCRONIZAR UFW         │ cortafuegos
-  [7] ▸ OPTIMIZAR SERVIDOR      │ RAM · caché
-  [8] ▸ GATEWAY RESIDENCIAL     │ WireGuard       [ ON  ]
+  [1] ▸ ADMINISTRAR CUENTAS     │ crear · editar · monitor
+  [2] ▸ CONFIGURACIÓN DEL VPS   │ protocolos · sistema
 
   [0] ▸ SALIR
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Digita una acción [0-8] »
+  Digita una acción [0-2] »
+```
+
+El menú principal solo tiene dos destinos: las cuentas, que es el uso diario,
+y la configuración, que agrupa el resto en tres bloques —**protocolos**,
+**sistema** y **panel**:
+
+```
+── PROTOCOLOS ──          ── SISTEMA ──             ── PANEL ──
+ Fábrica de túneles        Acceso root               Actualizar script
+ Datos de conexión         Puerto SSH                Arranque automático
+ Gateway residencial       Cortafuegos UFW           Reiniciar servidor
+                           Zona horaria              Desinstalar panel
+                           Optimizar servidor
 ```
 
 Todo el aspecto gráfico vive en un único módulo, `modules/ui.sh`: paleta,
@@ -73,6 +80,7 @@ main.sh                     Panel principal y bucle de menús
 setup.sh                    Instalador remoto (clona y configura el VPS)
 modules/
   ui.sh                     Lenguaje visual compartido
+  system.sh                 Acceso root, puerto SSH, zona horaria y config SSH
   network.sh                Tablero de estado, puertos y cortafuegos UFW
   users.sh                  Alta, baja y monitor de cuentas
   optimize.sh               Limpieza de RAM, swap, caché y logs

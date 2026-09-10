@@ -4,6 +4,7 @@
 # La paleta y los helpers de dibujo viven en modules/ui.sh
 _USR_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 source "$_USR_DIR/ui.sh"
+source "$_USR_DIR/system.sh"
 
 DB_FILE="/root/.vps_users"
 
@@ -83,8 +84,9 @@ crear_usuario() {
     if [ -z "$USERNAME" ]; then ui_err "Nombre vacío."; sleep 1; return; fi
     if id "$USERNAME" &>/dev/null; then ui_err "El usuario ya existe."; sleep 1; return; fi
 
-    read -s -p "$(echo -e "${UI_PAD}${DM}CONTRASEÑA ${CY}»${CR} ")" PASSWORD
-    echo ""
+    # Visible a proposito: hay que dictarsela al cliente y el panel ya la
+    # muestra despues en la tabla de cuentas.
+    ui_prompt "CONTRASEÑA"; PASSWORD="$REPLY_UI"
     if [ -z "$PASSWORD" ]; then ui_err "Contraseña vacía."; sleep 1; return; fi
 
     ui_prompt "DURACIÓN (días)"; DAYS="$REPLY_UI"
@@ -99,68 +101,10 @@ crear_usuario() {
     ui_blank
     ui_info "Configurando SSH y creando la cuenta..."
 
-    # ================================================================
-    # FIX SSH — 4 capas para garantizar auth sin depender de
-    # PasswordAuthentication (Ubuntu Cloud lo deshabilita por defecto)
-    # ================================================================
-    SSHD_CONF="/etc/ssh/sshd_config"
-
-    # Helper: aplica una directiva en el archivo objetivo
-    _ssh_set() {
-        local file="$1" key="$2" val="$3"
-        if grep -qE "^#?\s*${key}" "$file" 2>/dev/null; then
-            sed -i -E "s|^#?\s*${key}.*|${key} ${val}|g" "$file"
-        else
-            echo "${key} ${val}" >> "$file"
-        fi
-    }
-
-    # CAPA 1 — Parchar sshd_config principal
-    _ssh_set "$SSHD_CONF" "UsePAM"                       "yes"
-    _ssh_set "$SSHD_CONF" "KbdInteractiveAuthentication"  "yes"  # SSH moderno (Ubuntu 22+)
-    _ssh_set "$SSHD_CONF" "ChallengeResponseAuthentication" "yes"  # SSH antiguo (Ubuntu 20)
-    _ssh_set "$SSHD_CONF" "PasswordAuthentication"       "yes"
-    _ssh_set "$SSHD_CONF" "PermitEmptyPasswords"         "no"
-    # FIX: AllowTcpForwarding es REQUERIDO para HTTP Injector y cualquier tunel SSH.
-    # Ubuntu 22+ Cloud lo deshabilita por defecto → los usuarios se autentican pero
-    # no pueden crear el tunel (conexión cae inmediatamente después del handshake).
-    _ssh_set "$SSHD_CONF" "AllowTcpForwarding"           "yes"
-    _ssh_set "$SSHD_CONF" "GatewayPorts"                "no"
-    _ssh_set "$SSHD_CONF" "X11Forwarding"               "no"
-
-    # CAPA 2 — Neutralizar overrides en sshd_config.d/ (Ubuntu Cloud los pone aquí)
-    # Cualquier archivo con PasswordAuthentication no o KbdInteractive no queda corregido
-    if [ -d /etc/ssh/sshd_config.d ]; then
-        for f in /etc/ssh/sshd_config.d/*.conf; do
-            [ -f "$f" ] || continue
-            sed -i -E 's|^#?\s*PasswordAuthentication.*|PasswordAuthentication yes|g' "$f"
-            sed -i -E 's|^#?\s*KbdInteractiveAuthentication.*|KbdInteractiveAuthentication yes|g' "$f"
-            sed -i -E 's|^#?\s*ChallengeResponseAuthentication.*|ChallengeResponseAuthentication yes|g' "$f"
-        done
-    fi
-
-    # CAPA 3 — Si sshd tiene AllowUsers, agregar el usuario nuevo a la lista
-    if grep -qE "^AllowUsers" "$SSHD_CONF" 2>/dev/null; then
-        if ! grep -qE "^AllowUsers.*\b${USERNAME}\b" "$SSHD_CONF"; then
-            sed -i -E "s|^(AllowUsers.*)$|\1 ${USERNAME}|" "$SSHD_CONF"
-        fi
-    fi
-
-    # CAPA EXTRA — Drop-in que garantiza auth por contraseña Y forwarding para HTTP Injector
-    if [ -d /etc/ssh/sshd_config.d ]; then
-        rm -f /etc/ssh/sshd_config.d/99-vpsservice.conf 2>/dev/null
-        cat > /etc/ssh/sshd_config.d/10-vpsservice.conf <<'SSHEOF'
-PasswordAuthentication yes
-KbdInteractiveAuthentication yes
-ChallengeResponseAuthentication yes
-AllowTcpForwarding yes
-GatewayPorts no
-X11Forwarding no
-SSHEOF
-    fi
-
-    # Reiniciar sshd (restart garantiza que apliquen los cambios, no corta sesiones activas)
-    systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null
+    # La configuracion SSH para tunneling vive en modules/system.sh, que es
+    # la unica fuente de verdad. Antes este bloque estaba duplicado aqui y en
+    # otros tres archivos.
+    ssh_apply_tunnel_config "$USERNAME"
 
     # Crear usuario sistema
     useradd -m -s /bin/bash -e "$EXP_DATE" -c "$LIMIT" "$USERNAME"
@@ -237,99 +181,105 @@ _tabla_usuarios() {
     ui_blank
 }
 
-administrar_usuarios() {
-    while true; do
-        clear
-        print_title 2>/dev/null || true
-        ui_section "ADMINISTRAR CUENTAS"
-        ui_blank
-        ui_opt "1" "LISTAR CUENTAS"      "tabla completa"
-        ui_opt "2" "ELIMINAR CUENTA"     "borrado definitivo"
-        ui_opt "3" "MODIFICAR VIGENCIA"  "cambiar días"
-        ui_opt "4" "CAMBIAR CONTRASEÑA"  "reset de clave"
-        ui_blank
-        ui_opt "0" "VOLVER"
-        ui_solid
-        ui_prompt "Elige una opción [0-4]"; sub_opt="$REPLY_UI"
+# =========================================================
+# ACCIONES SOBRE UNA CUENTA
+# Antes vivian dentro de un submenu 'Administrar usuarios' que
+# obligaba a bajar dos niveles. Ahora cuelgan directas del menu
+# de cuentas: una pantalla menos por cada operacion.
+# =========================================================
 
-        case $sub_opt in
-            1)
-                clear
-                print_title 2>/dev/null || true
-                ui_section "LISTA DE CUENTAS"
-                _tabla_usuarios
-                ui_pause ;;
+listar_usuarios() {
+    clear
+    print_title 2>/dev/null || true
+    ui_section "LISTA DE CUENTAS"
+    _tabla_usuarios
+    ui_pause
+}
 
-            2)
-                clear
-                print_title 2>/dev/null || true
-                ui_section "ELIMINAR CUENTA"
-                _tabla_usuarios
-                ui_prompt "Usuario a ELIMINAR (0 = cancelar)"; DEL_USER="$REPLY_UI"
-                [[ "$DEL_USER" == "0" || -z "$DEL_USER" ]] && continue
-                if id "$DEL_USER" &>/dev/null; then
-                    ui_prompt "¿Confirmar eliminación de '$DEL_USER'? (s/n)"; CONF="$REPLY_UI"
-                    if [[ "$CONF" == "s" || "$CONF" == "S" ]]; then
-                        # Cerrar sesiones activas antes de borrar
-                        pkill -u "$DEL_USER" 2>/dev/null
-                        userdel -r "$DEL_USER" 2>/dev/null
-                        sed -i "/^$DEL_USER:/d" "$DB_FILE" 2>/dev/null
-                        ui_ok "Cuenta ${WH}$DEL_USER${CR} eliminada correctamente."
-                    else
-                        ui_info "Operación cancelada."
-                    fi
-                else
-                    ui_err "La cuenta '$DEL_USER' no existe."
-                fi
-                sleep 2 ;;
+eliminar_usuario() {
+    clear
+    print_title 2>/dev/null || true
+    ui_section "ELIMINAR CUENTA"
+    _tabla_usuarios
+    ui_prompt "Usuario a ELIMINAR (Enter = cancelar)"
+    local u="$REPLY_UI"
+    [ -z "$u" ] && return
+    if ! id "$u" &>/dev/null; then ui_err "La cuenta '$u' no existe."; sleep 2; return; fi
 
-            3)
-                clear
-                print_title 2>/dev/null || true
-                ui_section "MODIFICAR VIGENCIA"
-                _tabla_usuarios
-                ui_prompt "Usuario a modificar (0 = cancelar)"; MOD_USER="$REPLY_UI"
-                [[ "$MOD_USER" == "0" || -z "$MOD_USER" ]] && continue
-                if id "$MOD_USER" &>/dev/null; then
-                    ui_prompt "Nuevos días desde hoy"; NEW_DAYS="$REPLY_UI"
-                    if [[ "$NEW_DAYS" =~ ^[0-9]+$ ]]; then
-                        NEW_EXP=$(date -d "+$NEW_DAYS days" +%Y-%m-%d)
-                        usermod -e "$NEW_EXP" "$MOD_USER"
-                        ui_ok "Vigencia de ${WH}$MOD_USER${CR} → ${CY}$NEW_EXP${CR} (${NEW_DAYS} días)."
-                    else
-                        ui_err "Valor inválido."
-                    fi
-                else
-                    ui_err "La cuenta '$MOD_USER' no existe."
-                fi
-                sleep 2 ;;
+    ui_prompt "¿Confirmar la eliminación de '$u'? (s/n)"
+    if [[ "$REPLY_UI" == "s" || "$REPLY_UI" == "S" ]]; then
+        pkill -u "$u" 2>/dev/null
+        userdel -r "$u" 2>/dev/null
+        sed -i "/^$u:/d" "$DB_FILE" 2>/dev/null
+        ui_ok "Cuenta ${WH}$u${CR} eliminada correctamente."
+    else
+        ui_info "Operación cancelada."
+    fi
+    sleep 2
+}
 
-            4)
-                clear
-                print_title 2>/dev/null || true
-                ui_section "CAMBIAR CONTRASEÑA"
-                _tabla_usuarios
-                ui_prompt "Usuario (0 = cancelar)"; PASS_USER="$REPLY_UI"
-                [[ "$PASS_USER" == "0" || -z "$PASS_USER" ]] && continue
-                if id "$PASS_USER" &>/dev/null; then
-                    read -s -p "$(echo -e "${UI_PAD}${DM}Nueva clave ${CY}»${CR} ")" NEW_PASS; echo ""
-                    if [ -z "$NEW_PASS" ]; then
-                        ui_err "Contraseña vacía, operación cancelada."
-                    else
-                        echo "$PASS_USER:$NEW_PASS" | chpasswd
-                        sed -i "/^$PASS_USER:/d" "$DB_FILE" 2>/dev/null
-                        echo "$PASS_USER:$NEW_PASS" >> "$DB_FILE"
-                        ui_ok "Contraseña de ${WH}$PASS_USER${CR} actualizada."
-                    fi
-                else
-                    ui_err "La cuenta '$PASS_USER' no existe."
-                fi
-                sleep 2 ;;
+renovar_vigencia() {
+    clear
+    print_title 2>/dev/null || true
+    ui_section "RENOVAR VIGENCIA"
+    _tabla_usuarios
+    ui_prompt "Usuario a renovar (Enter = cancelar)"
+    local u="$REPLY_UI"
+    [ -z "$u" ] && return
+    if ! id "$u" &>/dev/null; then ui_err "La cuenta '$u' no existe."; sleep 2; return; fi
 
-            0) break ;;
-            *) ui_err "Opción inválida."; sleep 1 ;;
-        esac
-    done
+    ui_prompt "Nuevos días desde hoy"
+    local dias="$REPLY_UI"
+    if [[ ! "$dias" =~ ^[0-9]+$ ]]; then ui_err "Valor inválido."; sleep 2; return; fi
+
+    local nueva
+    nueva=$(date -d "+$dias days" +%Y-%m-%d)
+    usermod -e "$nueva" "$u"
+    ui_ok "Vigencia de ${WH}$u${CR} → ${CY}$nueva${CR} (${dias} días)."
+    sleep 2
+}
+
+cambiar_password() {
+    clear
+    print_title 2>/dev/null || true
+    ui_section "CAMBIAR CONTRASEÑA"
+    _tabla_usuarios
+    ui_prompt "Usuario (Enter = cancelar)"
+    local u="$REPLY_UI"
+    [ -z "$u" ] && return
+    if ! id "$u" &>/dev/null; then ui_err "La cuenta '$u' no existe."; sleep 2; return; fi
+
+    # Visible a proposito: el panel ya muestra todas las claves en la tabla,
+    # y ocultarla aqui solo dificultaba dictarsela al cliente.
+    ui_prompt "Nueva contraseña"
+    local pass="$REPLY_UI"
+    if [ -z "$pass" ]; then ui_err "Contraseña vacía, operación cancelada."; sleep 2; return; fi
+
+    echo "$u:$pass" | chpasswd
+    sed -i "/^$u:/d" "$DB_FILE" 2>/dev/null
+    echo "$u:$pass" >> "$DB_FILE"
+    ui_ok "Contraseña de ${WH}$u${CR} → ${WH}$pass${CR}"
+    sleep 3
+}
+
+cambiar_limite() {
+    clear
+    print_title 2>/dev/null || true
+    ui_section "LÍMITE DE CONEXIONES" "cuántos dispositivos simultáneos"
+    _tabla_usuarios
+    ui_prompt "Usuario (Enter = cancelar)"
+    local u="$REPLY_UI"
+    [ -z "$u" ] && return
+    if ! id "$u" &>/dev/null; then ui_err "La cuenta '$u' no existe."; sleep 2; return; fi
+
+    ui_prompt "Nuevo límite de dispositivos"
+    local lim="$REPLY_UI"
+    if [[ ! "$lim" =~ ^[0-9]+$ ]] || [ "$lim" -lt 1 ]; then ui_err "Valor inválido."; sleep 2; return; fi
+
+    # El limite se guarda en el campo GECOS, que es de donde lo lee killer.sh
+    usermod -c "$lim" "$u"
+    ui_ok "Límite de ${WH}$u${CR} → ${CY}$lim${CR} dispositivo(s)."
+    sleep 2
 }
 
 # =========================================================

@@ -14,20 +14,13 @@ clear
 ui_header "FREE · INSTALADOR"
 ui_section "WEBSOCKET PROXY"
 
-ui_prompt "¿Instalar Proxy Websocket? (s/n)"; auth="$REPLY_UI"
-if [[ "$auth" != "s" && "$auth" != "S" ]]; then
-    exit 0
-fi
+ui_prompt "Puerto local SSH o Dropbear (Enter = 22 · 0 = cancelar)"; s_port="$REPLY_UI"
+[ "$s_port" = "0" ] && exit 0
+[ -z "$s_port" ] && s_port=22
 
-ui_prompt "¿Puerto Local SSH o Dropbear? (Defecto: 22)"; s_port="$REPLY_UI"
-if [ -z "$s_port" ]; then
-    s_port=22
-fi
-
-ui_prompt "¿Puerto Público Web? (Defecto: 80)"; p_port="$REPLY_UI"
-if [ -z "$p_port" ]; then
-    p_port=80
-fi
+ui_prompt "Puerto público web (Enter = 80 · 0 = cancelar)"; p_port="$REPLY_UI"
+[ "$p_port" = "0" ] && exit 0
+[ -z "$p_port" ] && p_port=80
 
 ui_info "Instalando scripts..."
 

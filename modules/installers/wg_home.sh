@@ -975,52 +975,6 @@ wghome_tunnel_down() {
     read -p "$(echo -e ${DM})Presiona Enter para continuar...$(echo -e ${CR})"
 }
 
-# =========================================================
-# 6. ESTADO DEL TÚNEL
-# =========================================================
-wghome_status() {
-    clear
-    print_title 2>/dev/null || true
-    echo -e "$SEP"
-    echo -e "${WH}     ESTADO DEL TÚNEL — ${WGH_IFACE}${CR}"
-    echo -e "$SEP"
-    echo ""
-
-    if ! _wgh_is_installed; then
-        echo -e "  ${RD}[-]${CR} Gateway no instalado."
-        echo ""
-        read -p "$(echo -e ${DM})Presiona Enter para continuar...$(echo -e ${CR})"; return
-    fi
-
-    local svc_status
-    svc_status=$(systemctl is-active "wg-quick@${WGH_IFACE}" 2>/dev/null || echo "inactive")
-    if [ "$svc_status" = "active" ]; then
-        echo -e "  ${DM}Servicio systemd :${CR} ${GR}ACTIVO${CR}"
-    else
-        echo -e "  ${DM}Servicio systemd :${CR} ${RD}INACTIVO${CR}"
-    fi
-
-    if _wgh_is_up; then
-        echo -e "  ${DM}Interfaz ${WGH_IFACE}:${CR} ${GR}UP${CR}"
-    else
-        echo -e "  ${DM}Interfaz ${WGH_IFACE}:${CR} ${RD}DOWN${CR}"
-    fi
-
-    echo ""
-    echo -e "  ${YL}[ wg show ${WGH_IFACE} ]${CR}"
-    if _wgh_is_up; then
-        wg show "${WGH_IFACE}" 2>/dev/null | sed 's/^/    /'
-    else
-        echo -e "  ${DM}  (túnel inactivo)${CR}"
-    fi
-
-    echo ""
-    echo -e "  ${YL}[ ip addr show ${WGH_IFACE} ]${CR}"
-    ip addr show "${WGH_IFACE}" 2>/dev/null | sed 's/^/    /' || echo -e "  ${DM}  (interfaz no existe)${CR}"
-
-    echo ""
-    read -p "$(echo -e ${DM})Presiona Enter para continuar...$(echo -e ${CR})"
-}
 
 # =========================================================
 # 7. PROBAR CONECTIVIDAD CON PC DOMÉSTICO
@@ -1338,6 +1292,13 @@ wghome_diagnose() {
 
     # 1. WIREGUARD
     echo -e "  ${YL}[ 1/5 ] ESTADO WIREGUARD${CR}"
+    local svc_status
+    svc_status=$(systemctl is-active "wg-quick@${WGH_IFACE}" 2>/dev/null || echo "inactive")
+    if [ "$svc_status" = "active" ]; then
+        echo -e "    ${GR}[OK]${CR} Servicio wg-quick@${WGH_IFACE}: ACTIVO"
+    else
+        echo -e "    ${RD}[ERROR]${CR} Servicio wg-quick@${WGH_IFACE}: INACTIVO"
+    fi
     if _wgh_is_up; then
         echo -e "    ${GR}[OK]${CR} Interfaz ${WGH_IFACE}: UP"
         local hs_sec
@@ -1365,6 +1326,11 @@ wghome_diagnose() {
     echo ""
 
     # 2. ROUTING & POLICY ROUTING
+    if _wgh_is_up; then
+        echo ""
+        echo -e "    ${DM}$(wg show "${WGH_IFACE}" 2>/dev/null | sed 's/^/    /' | head -12)${CR}"
+    fi
+    echo ""
     echo -e "  ${YL}[ 2/5 ] ENRUTAMIENTO Y POLICY ROUTING${CR}"
     local def_main
     def_main=$(ip route show table main | grep '^default' | head -1)
@@ -1526,86 +1492,65 @@ wghome_menu() {
     while true; do
         clear
         print_title 2>/dev/null || true
-        echo -e "$SEP"
-        echo -e "${WH}     GATEWAY RESIDENCIAL WIREGUARD${CR}"
-        echo -e "$SEP"
+        ui_section "GATEWAY RESIDENCIAL" "salida por WireGuard hacia tu casa"
+        ui_blank
 
-        # Tags de estado
-        local TAG_INST TAG_TUNNEL TAG_ROUTING TAG_FB
-        if _wgh_is_installed; then
-            TAG_INST="${GR}[INSTALADO]${CR}"
-        else
-            TAG_INST="${RD}[NO INSTALADO]${CR}"
-        fi
+        # Estado actual
+        local TAG_INST TAG_TUNNEL TAG_ROUTING TAG_FB u_count
+        _wgh_is_installed      && TAG_INST="${GR}[ INSTALADO ]${CR}" || TAG_INST="${RD}[ NO INSTALADO ]${CR}"
+        _wgh_is_up             && TAG_TUNNEL="$(ui_tag_str on)"      || TAG_TUNNEL="$(ui_tag_str off)"
+        _wgh_routing_is_active && TAG_ROUTING="$(ui_tag_str on)"     || TAG_ROUTING="$(ui_tag_str off)"
+        [ "$(_wgh_get_fallback)" = "ON" ] && TAG_FB="$(ui_tag_str on)" || TAG_FB="$(ui_tag_str off)"
 
-        if _wgh_is_up; then
-            TAG_TUNNEL="${GR}[ ON  ]${CR}"
-        else
-            TAG_TUNNEL="${RD}[ OFF ]${CR}"
-        fi
+        u_count=0
+        [ -f "$WGH_USERS_CONF" ] && u_count=$(_wgh_get_configured_users | wc -l)
 
-        if _wgh_routing_is_active; then
-            TAG_ROUTING="${GR}[ ON  ]${CR}"
-        else
-            TAG_ROUTING="${RD}[ OFF ]${CR}"
-        fi
+        echo -e "${UI_PAD}$(ui_cell "Instalación" "" 22)${TAG_INST}"
+        echo -e "${UI_PAD}$(ui_cell "Usuarios enrutados" "$u_count" 22 "$CY")"
+        ui_rule
+        ui_blank
 
-        local fb_status
-        fb_status=$(_wgh_get_fallback)
-        if [ "$fb_status" = "ON" ]; then
-            TAG_FB="${GR}[ ON  ]${CR}"
-        else
-            TAG_FB="${RD}[ OFF ]${CR}"
-        fi
+        echo -e "${UI_PAD}${YL}── TÚNEL ──${CR}"
+        ui_opt "1" "INSTALAR / RECONFIG"  "asistente"
+        ui_opt "2" "TÚNEL WG-HOME"        "activar/apagar"  "$TAG_TUNNEL"
+        ui_opt "3" "SALIDA RESIDENCIAL"   "activar/apagar"  "$TAG_ROUTING"
+        ui_opt "4" "FALLBACK AUTOMÁTICO"  "si cae el túnel" "$TAG_FB"
+        ui_blank
+        echo -e "${UI_PAD}${YL}── CLAVES ──${CR}"
+        ui_opt "5" "CLAVE PÚBLICA DEL VPS" "para el PC"
+        ui_opt "6" "REGISTRAR CLAVE DEL PC" "peer doméstico"
+        ui_blank
+        echo -e "${UI_PAD}${YL}── USUARIOS ──${CR}"
+        ui_opt "7" "VER ENRUTADOS"        "quién sale por casa"
+        ui_opt "8" "CONFIGURAR USUARIOS"  "asignar salida"
+        ui_blank
+        echo -e "${UI_PAD}${YL}── DIAGNÓSTICO ──${CR}"
+        ui_opt "9"  "DIAGNÓSTICO COMPLETO" "5 comprobaciones"
+        ui_opt "10" "PROBAR CONEXIÓN"      "ping al PC"
+        ui_opt "11" "VER IP DE SALIDA"     "normal vs casa"
+        ui_blank
+        ui_opt_danger "12" "ELIMINAR CONFIGURACIÓN" "borra el gateway"
+        ui_opt "0" "VOLVER"
+        ui_solid
+        ui_prompt "Elige una opción [0-12]"
 
-        local u_count=0
-        if [ -f "$WGH_USERS_CONF" ]; then
-            u_count=$(_wgh_get_configured_users | wc -l)
-        fi
-
-        echo -e "  ${DM}Instalación   :${CR}  $TAG_INST"
-        echo -e "  ${DM}Túnel wg-home :${CR}  $TAG_TUNNEL"
-        echo -e "  ${DM}Salida Resid. :${CR}  $TAG_ROUTING"
-        echo -e "  ${DM}Fallback      :${CR}  $TAG_FB"
-        echo -e "  ${DM}Usuarios HTTP :${CR}  ${CY}${u_count} configurado(s)${CR}"
-        echo -e "$SEP"
-        echo -e "  ${CY} 1)${CR}  ${WH}Instalar / Configurar Gateway${CR}"
-        echo -e "  ${CY} 2)${CR}  ${WH}Mostrar clave pública Droplet${CR}"
-        echo -e "  ${CY} 3)${CR}  ${WH}Registrar clave pública PC doméstico${CR}"
-        echo -e "  ${CY} 4)${CR}  ${WH}Activar túnel${CR}                  $TAG_TUNNEL"
-        echo -e "  ${CY} 5)${CR}  ${WH}Desactivar túnel${CR}"
-        echo -e "  ${CY} 6)${CR}  ${WH}Estado del túnel${CR}"
-        echo -e "  ${CY} 7)${CR}  ${WH}Probar conectividad con PC doméstico${CR}"
-        echo -e "  ${CY} 8)${CR}  ${WH}Activar salida residencial${CR}      $TAG_ROUTING"
-        echo -e "  ${CY} 9)${CR}  ${WH}Desactivar salida residencial${CR}"
-        echo -e "  ${CY}10)${CR}  ${WH}Ver IP de salida${CR}"
-        echo -e "  ${CY}11)${CR}  ${WH}Diagnóstico completo${CR}"
-        echo -e "  ${CY}12)${CR}  ${WH}Configurar usuarios HTTP Injector${CR}"
-        echo -e "  ${CY}13)${CR}  ${WH}Ver usuarios enrutados${CR}"
-        echo -e "  ${CY}14)${CR}  ${WH}Configurar fallback${CR}               $TAG_FB"
-        echo -e "  ${CY}15)${CR}  ${RD}⚠  Eliminar configuración${CR}"
-        echo -e "  ${CY} 0)${CR}  ${WH}Volver${CR}"
-        echo -e "$SEP"
-        read -p "$(echo -e ${DM})Elige [0-15]: $(echo -e ${CR})" op
-
-        case "$op" in
-             1) wghome_install ;;
-             2) wghome_show_pubkey ;;
-             3) wghome_register_peer ;;
-             4) wghome_tunnel_up ;;
-             5) wghome_tunnel_down ;;
-             6) wghome_status ;;
-             7) wghome_ping_peer ;;
-             8) wghome_routing_on ;;
-             9) wghome_routing_off ;;
-            10) wghome_check_ip ;;
-            11) wghome_diagnose ;;
-            12) wghome_manage_users ;;
-            13) wghome_view_users ;;
-            14) wghome_configure_fallback ;;
-            15) wghome_remove ;;
-             0) break ;;
-             *) echo -e "  ${RD}[-]${CR} Opción no válida."; sleep 1 ;;
+        case "$REPLY_UI" in
+            # Los pares activar/desactivar eran cuatro entradas de menu para dos
+            # estados: ahora cada uno es un interruptor que alterna segun el tag.
+            1)  wghome_install ;;
+            2)  if _wgh_is_up; then wghome_tunnel_down; else wghome_tunnel_up; fi ;;
+            3)  if _wgh_routing_is_active; then wghome_routing_off; else wghome_routing_on; fi ;;
+            4)  wghome_configure_fallback ;;
+            5)  wghome_show_pubkey ;;
+            6)  wghome_register_peer ;;
+            7)  wghome_view_users ;;
+            8)  wghome_manage_users ;;
+            9)  wghome_diagnose ;;
+            10) wghome_ping_peer ;;
+            11) wghome_check_ip ;;
+            12) wghome_remove ;;
+            0)  break ;;
+            *)  ui_err "Opción no válida."; sleep 1 ;;
         esac
     done
 }

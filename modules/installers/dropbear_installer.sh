@@ -17,11 +17,9 @@ echo -e "${UI_PAD}${DM}Dropbear es un servidor SSH alternativo, ligero${CR}"
 echo -e "${UI_PAD}${DM}y eficiente. Ideal para correr en puertos extra.${CR}"
 echo ""
 
-ui_prompt "¿Instalar Dropbear SSH? (s/n)"; auth="$REPLY_UI"
-if [[ "$auth" != "s" && "$auth" != "S" ]]; then exit 0; fi
-
-ui_prompt "¿Puerto para Dropbear? (Defecto: 442)"; db_port="$REPLY_UI"
-if [ -z "$db_port" ]; then db_port=442; fi
+ui_prompt "¿Puerto para Dropbear (Enter = 442 · 0 = cancelar)"; db_port="$REPLY_UI"
+[ "$db_port" = "0" ] && exit 0
+[ -z "$db_port" ] && db_port=442
 
 ui_info "Instalando Dropbear..."
 apt-get install -yq dropbear &>/dev/null

@@ -17,11 +17,9 @@ echo -e "${UI_PAD}${DM}Squid es un proxy HTTP/HTTPS de alto rendimiento.${CR}"
 echo -e "${UI_PAD}${DM}Permite a los clientes navegar a través del VPS.${CR}"
 echo ""
 
-ui_prompt "¿Instalar Squid? (s/n)"; auth="$REPLY_UI"
-if [[ "$auth" != "s" && "$auth" != "S" ]]; then exit 0; fi
-
-ui_prompt "Puerto para Squid (Defecto: 3128)"; squid_port="$REPLY_UI"
-if [ -z "$squid_port" ]; then squid_port=3128; fi
+ui_prompt "Puerto para Squid (Enter = 3128 · 0 = cancelar)"; squid_port="$REPLY_UI"
+[ "$squid_port" = "0" ] && exit 0
+[ -z "$squid_port" ] && squid_port=3128
 
 ui_info "Instalando Squid..."
 apt-get install -yq squid &>/dev/null

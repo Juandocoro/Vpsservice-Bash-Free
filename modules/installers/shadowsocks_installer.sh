@@ -17,11 +17,9 @@ echo -e "${UI_PAD}${DM}Shadowsocks es un proxy cifrado SOCKS5 diseñado${CR}"
 echo -e "${UI_PAD}${DM}para evadir censura y restricciones de red.${CR}"
 echo ""
 
-ui_prompt "¿Instalar Shadowsocks? (s/n)"; auth="$REPLY_UI"
-if [[ "$auth" != "s" && "$auth" != "S" ]]; then exit 0; fi
-
-ui_prompt "Puerto para Shadowsocks (Defecto: 8388)"; ss_port="$REPLY_UI"
-if [ -z "$ss_port" ]; then ss_port=8388; fi
+ui_prompt "Puerto para Shadowsocks (Enter = 8388 · 0 = cancelar)"; ss_port="$REPLY_UI"
+[ "$ss_port" = "0" ] && exit 0
+[ -z "$ss_port" ] && ss_port=8388
 
 read -s -p "Contraseña de cifrado: " ss_pass
 echo ""

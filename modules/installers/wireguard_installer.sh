@@ -17,11 +17,9 @@ echo -e "${UI_PAD}${DM}WireGuard es el protocolo VPN más moderno,${CR}"
 echo -e "${UI_PAD}${DM}rápido y seguro. Basado en UDP/criptografía ChaCha20.${CR}"
 echo ""
 
-ui_prompt "¿Instalar WireGuard? (s/n)"; auth="$REPLY_UI"
-if [[ "$auth" != "s" && "$auth" != "S" ]]; then exit 0; fi
-
-ui_prompt "Puerto para WireGuard (Defecto: 51820)"; wg_port="$REPLY_UI"
-if [ -z "$wg_port" ]; then wg_port=51820; fi
+ui_prompt "Puerto para WireGuard (Enter = 51820 · 0 = cancelar)"; wg_port="$REPLY_UI"
+[ "$wg_port" = "0" ] && exit 0
+[ -z "$wg_port" ] && wg_port=51820
 
 ui_info "Instalando WireGuard..."
 apt-get install -yq wireguard &>/dev/null

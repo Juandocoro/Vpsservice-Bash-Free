@@ -4,61 +4,92 @@
 _NET_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 source "$_NET_DIR/ui.sh"
 
-function extract_port() {
-    local service=$1
-    # -p incluye el nombre del proceso; funciona con la mayoría de servicios
-    ss -tlpnp 2>/dev/null | grep -i "$service" | awk '{print $4}' | awk -F':' '{print $NF}' | sort -u | head -n1
+# =========================================================
+# DETECCION DE PUERTOS
+# ---------------------------------------------------------
+# 'ss' se invoca UNA vez por familia y el resultado se cachea.
+# Antes cada protocolo lanzaba su propia tuberia con ss: mas de
+# una docena de procesos en cada redibujado del menu, algo que
+# se nota en un VPS de 1 nucleo.
+# =========================================================
+_SS_TCP=""
+_SS_UDP=""
+
+_ss_snapshot() {
+    _SS_TCP=$(ss -tlpn 2>/dev/null)
+    _SS_UDP=$(ss -ulpn 2>/dev/null)
 }
 
+# _port_of <familia: tcp|udp> <patron> [filtro_extra]
+# Devuelve el primer puerto en escucha cuyo proceso casa con el patron.
+_port_of() {
+    local fam="$1" pat="$2" extra="${3:-}"
+    local data
+    [ "$fam" = "udp" ] && data="$_SS_UDP" || data="$_SS_TCP"
+    [ -n "$extra" ] && data=$(echo "$data" | grep -F "$extra")
+    echo "$data" | grep -iE "$pat" | awk '{print $4}' | awk -F':' '{print $NF}' \
+        | grep -E '^[0-9]+$' | sort -un | head -n1
+}
+
+# Se mantiene el nombre antiguo por compatibilidad con codigo externo.
+function extract_port() { _port_of tcp "$1"; }
+
 function refresh_ports() {
-    PORT_SSH=$(extract_port "sshd")
-    PORT_SSL=$(extract_port "stunnel")
-    # UDP Custom — Hysteria2 (escucha en UDP, público, sin SSH)
-    PORT_UDPCUSTOM=$(ss -ulpnp 2>/dev/null | grep -i "hysteria" | awk '{print $4}' | awk -F':' '{print $NF}' | sort -u | head -n1)
+    _ss_snapshot
+
+    PORT_SSH=$(_port_of tcp "sshd")
+    PORT_SSL=$(_port_of tcp "stunnel")
+    PORT_DROPBEAR=$(_port_of tcp "dropbear")
+    PORT_SQUID=$(_port_of tcp "squid")
+
+    # UDP Custom — Hysteria2 (escucha en UDP, publico, sin SSH)
+    PORT_UDPCUSTOM=$(_port_of udp "hysteria")
     if [ -z "$PORT_UDPCUSTOM" ] && systemctl is-active --quiet hysteria-server 2>/dev/null; then
         PORT_UDPCUSTOM=$(grep '^listen:' /etc/hysteria/config.yaml 2>/dev/null | awk -F: '{print $NF}' | tr -d ' ')
     fi
+    # Compatibilidad: PORT_UDP apunta a UDP Custom para no romper logica existente
+    PORT_UDP="$PORT_UDPCUSTOM"
 
-    # BadVPN — escucha en 127.0.0.1 (local, requiere SSH activo)
-    PORT_BADVPN=$(ss -tlpnp 2>/dev/null | grep -i "badvpn" | grep "127.0.0.1" | awk '{print $4}' | awk -F':' '{print $NF}' | sort -u | head -n1)
+    # BadVPN — escucha solo en 127.0.0.1 (requiere un tunel SSH activo)
+    PORT_BADVPN=$(_port_of tcp "badvpn" "127.0.0.1")
     if [ -z "$PORT_BADVPN" ] && systemctl is-active --quiet badvpn 2>/dev/null; then
         PORT_BADVPN=$(grep -o '\-\-listen-addr [^ ]*' /etc/systemd/system/badvpn.service 2>/dev/null | awk -F':' '{print $NF}')
     fi
 
-    # Compatibilidad: PORT_UDP apunta a UDP Custom para no romper lógica existente
-    PORT_UDP="$PORT_UDPCUSTOM"
-    PORT_WS=$(extract_port "python3.*proxy.py")
-    if [ -z "$PORT_WS" ]; then
-        PORT_WS=$(ss -tlpn | grep "python3" | awk '{print $4}' | awk -F':' '{print $NF}' | sort -u | head -n1 2>/dev/null)
+    PORT_WS=$(_port_of tcp "proxy\.py")
+    [ -z "$PORT_WS" ] && PORT_WS=$(_port_of tcp "python3")
+
+    PORT_SLOWDNS=$(_port_of udp "slowdns")
+    if [ -z "$PORT_SLOWDNS" ] && systemctl is-active --quiet slowdns 2>/dev/null; then
+        PORT_SLOWDNS="5300"
     fi
-    PORT_DROPBEAR=$(extract_port "dropbear")
-    PORT_SLOWDNS=$(ss -ulpn | grep "slowdns" | awk '{print $4}' | awk -F':' '{print $NF}' | sort -u | head -n1 2>/dev/null)
-    if systemctl is-active --quiet slowdns 2>/dev/null && [ -z "$PORT_SLOWDNS" ]; then PORT_SLOWDNS="5300"; fi
-    PORT_SQUID=$(extract_port "squid")
-    PORT_V2RAY=$(ss -tlpn | grep "v2ray" | awk '{print $4}' | awk -F':' '{print $NF}' | sort -u | head -n1 2>/dev/null)
-    if systemctl is-active --quiet v2ray 2>/dev/null && [ -z "$PORT_V2RAY" ]; then
+
+    PORT_V2RAY=$(_port_of tcp "v2ray")
+    if [ -z "$PORT_V2RAY" ] && systemctl is-active --quiet v2ray 2>/dev/null; then
         PORT_V2RAY=$(grep '"port"' /usr/local/etc/v2ray/config.json 2>/dev/null | head -n1 | grep -o '[0-9]*')
     fi
-    PORT_SS=$(ss -tlpn | grep "ss-server\|shadowsocks" | awk '{print $4}' | awk -F':' '{print $NF}' | sort -u | head -n1 2>/dev/null)
-    if systemctl is-active --quiet shadowsocks-libev 2>/dev/null && [ -z "$PORT_SS" ]; then
+
+    PORT_SS=$(_port_of tcp "ss-server|shadowsocks")
+    if [ -z "$PORT_SS" ] && systemctl is-active --quiet shadowsocks-libev 2>/dev/null; then
         PORT_SS=$(grep '"server_port"' /etc/shadowsocks-libev/config.json 2>/dev/null | grep -o '[0-9]*')
     fi
-    PORT_OVPN=$(ss -ulpn | grep "openvpn" | awk '{print $4}' | awk -F':' '{print $NF}' | sort -u | head -n1 2>/dev/null)
-    if systemctl is-active --quiet openvpn@server 2>/dev/null && [ -z "$PORT_OVPN" ]; then
+
+    PORT_OVPN=$(_port_of udp "openvpn")
+    if [ -z "$PORT_OVPN" ] && systemctl is-active --quiet openvpn@server 2>/dev/null; then
         PORT_OVPN=$(grep '^port' /etc/openvpn/server.conf 2>/dev/null | awk '{print $2}')
     fi
+
     PORT_WG=""
     if ip link show wg0 &>/dev/null; then
         PORT_WG=$(grep 'ListenPort' /etc/wireguard/wg0.conf 2>/dev/null | awk '{print $3}')
     fi
 
-    # wg-home — Gateway Residencial (módulo wg_home.sh)
+    # wg-home — Gateway Residencial (modulo wg_home.sh)
     PORT_WGHOME=""
     if ip link show wg-home &>/dev/null; then
         PORT_WGHOME=$(grep 'ListenPort' /etc/wireguard/wg-home.conf 2>/dev/null | awk '{print $3}')
         [ -z "$PORT_WGHOME" ] && PORT_WGHOME="51820"
     fi
-
 }
 
 # =========================================================
