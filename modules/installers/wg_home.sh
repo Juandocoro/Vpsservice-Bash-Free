@@ -273,6 +273,143 @@ _wgh_set_fallback() {
 }
 
 # =========================================================
+# REGISTRO DE NODOS RESIDENCIALES
+# ---------------------------------------------------------
+# Antes solo cabia un nodo: el conf llevaba un unico [Peer] y
+# registrar una clave nueva borraba la anterior en silencio.
+# Ahora se admiten varios (PC, movil, Raspberry...), cada uno
+# con su propia IP dentro de 10.77.77.0/24.
+#
+# UNO SOLO puede ser la SALIDA a Internet en cada momento, y
+# esto no es una decision de diseño sino del protocolo: el
+# reparto de paquetes de WireGuard se hace por AllowedIPs, y
+# dos peers no pueden declarar 0.0.0.0/0 a la vez — el segundo
+# se lo quitaria al primero. Asi que el nodo activo lleva
+# 0.0.0.0/0 y el resto solo su /32: siguen conectados y
+# alcanzables, listos para relevarlo, pero no reciben el
+# trafico de Internet.
+#
+# Formato de /etc/wireguard/homevpn-nodes.conf:
+#   nombre|clave_publica|ip|activo(si/no)
+# =========================================================
+
+WGH_NODES_CONF="/etc/wireguard/homevpn-nodes.conf"
+
+# Trae al registro el peer unico de la version anterior, para que
+# actualizar el panel no desconecte el nodo que ya funcionaba.
+_wgh_nodes_migrate() {
+    [ -f "$WGH_NODES_CONF" ] && return 0
+    mkdir -p /etc/wireguard 2>/dev/null
+    : > "$WGH_NODES_CONF"
+    chmod 600 "$WGH_NODES_CONF"
+    if [ -s "${WGH_PEER_KEY}" ]; then
+        local old
+        old=$(cat "${WGH_PEER_KEY}" 2>/dev/null | tr -d '[:space:]')
+        if [ -n "$old" ]; then
+            echo "nodo-1|${old}|${WGH_PEER_IP}|si" >> "$WGH_NODES_CONF"
+            _wgh_log "Migrado el peer unico anterior al registro de nodos"
+        fi
+    fi
+}
+
+# Lineas utiles del registro, sin comentarios ni vacias.
+_wgh_nodes_list() {
+    _wgh_nodes_migrate
+    grep -vE '^\s*(#|$)' "$WGH_NODES_CONF" 2>/dev/null
+}
+
+_wgh_nodes_count() { _wgh_nodes_list | wc -l; }
+
+# Campo <n> del nodo activo. Sin activo, cae al primero: mejor
+# enrutar a un nodo que dejar la tabla 200 sin salida.
+_wgh_nodes_active_field() {
+    local n="$1" line
+    line=$(_wgh_nodes_list | awk -F'|' '$4=="si"' | head -1)
+    [ -z "$line" ] && line=$(_wgh_nodes_list | head -1)
+    [ -z "$line" ] && return 1
+    echo "$line" | cut -d'|' -f"$n"
+}
+
+_wgh_nodes_active_name() { _wgh_nodes_active_field 1; }
+_wgh_nodes_active_ip()   { local ip; ip=$(_wgh_nodes_active_field 3); echo "${ip:-$WGH_PEER_IP}"; }
+
+# Primera IP libre del rango. Se reservan .1 (Droplet) y el .255.
+_wgh_nodes_next_ip() {
+    local base="10.77.77." i used
+    for i in $(seq 2 254); do
+        used=$(_wgh_nodes_list | cut -d'|' -f3 | grep -cx "${base}${i}")
+        [ "$used" -eq 0 ] && { echo "${base}${i}"; return 0; }
+    done
+    return 1
+}
+
+_wgh_nodes_has_key() {
+    local k="$1"
+    _wgh_nodes_list | cut -d'|' -f2 | grep -qxF "$k"
+}
+
+# Alta. La IP se asigna sola; el primero en entrar queda activo.
+_wgh_nodes_add() {
+    local name="$1" key="$2" ip
+    _wgh_nodes_migrate
+    ip=$(_wgh_nodes_next_ip) || return 1
+    local act="no"
+    [ "$(_wgh_nodes_count)" -eq 0 ] && act="si"
+    echo "${name}|${key}|${ip}|${act}" >> "$WGH_NODES_CONF"
+    chmod 600 "$WGH_NODES_CONF"
+    _wgh_log "Nodo '${name}' registrado con IP ${ip} (activo=${act})"
+    echo "$ip"
+}
+
+_wgh_nodes_del() {
+    local name="$1" tmp
+    tmp=$(mktemp)
+    _wgh_nodes_list | awk -F'|' -v n="$name" '$1!=n' > "$tmp"
+    mv "$tmp" "$WGH_NODES_CONF"
+    chmod 600 "$WGH_NODES_CONF"
+    # Si se borro el activo, asciende el primero que quede: dejar
+    # el registro sin salida cortaria la navegacion de los clientes.
+    if ! _wgh_nodes_list | grep -q '|si$'; then
+        local first
+        first=$(_wgh_nodes_list | head -1 | cut -d'|' -f1)
+        [ -n "$first" ] && _wgh_nodes_set_active "$first"
+    fi
+    _wgh_log "Nodo '${name}' eliminado del registro"
+}
+
+_wgh_nodes_set_active() {
+    local name="$1" tmp
+    tmp=$(mktemp)
+    _wgh_nodes_list | awk -F'|' -v OFS='|' -v n="$name" '{ $4 = ($1==n ? "si" : "no"); print }' > "$tmp"
+    mv "$tmp" "$WGH_NODES_CONF"
+    chmod 600 "$WGH_NODES_CONF"
+    _wgh_log "Nodo activo (salida a Internet) cambiado a '${name}'"
+}
+
+# =========================================================
+# AISLAMIENTO ENTRE NODOS
+# ---------------------------------------------------------
+# Los nodos comparten la subred 10.77.77.0/24, asi que sin esto
+# el movil podria alcanzar al PC a traves de la Droplet, que hace
+# de router entre ambos. La regla corta el reenvio de wg-home
+# hacia wg-home, que es justo el trafico entre peers, y no toca
+# el de los clientes hacia Internet.
+# =========================================================
+_wgh_isolate_on() {
+    iptables -C FORWARD -i "${WGH_IFACE}" -o "${WGH_IFACE}" -m comment --comment "HOMEVPN_ISOLATE" -j DROP 2>/dev/null || \
+        iptables -I FORWARD 1 -i "${WGH_IFACE}" -o "${WGH_IFACE}" -m comment --comment "HOMEVPN_ISOLATE" -j DROP 2>/dev/null
+    _wgh_log "Aislamiento entre nodos activado"
+}
+
+_wgh_isolate_off() {
+    while iptables -D FORWARD -i "${WGH_IFACE}" -o "${WGH_IFACE}" -m comment --comment "HOMEVPN_ISOLATE" -j DROP 2>/dev/null; do :; done
+}
+
+_wgh_isolate_is_on() {
+    iptables -C FORWARD -i "${WGH_IFACE}" -o "${WGH_IFACE}" -m comment --comment "HOMEVPN_ISOLATE" -j DROP 2>/dev/null
+}
+
+# =========================================================
 # CAMBIO 1: GENERADOR DE CONFIGURACIÓN wg-home.conf
 # IMPORTANTE: Table = off en [Interface] y AllowedIPs = 0.0.0.0/0 en [Peer]
 # =========================================================
@@ -299,20 +436,51 @@ Table      = off
 
 EOF
 
-    if [ -n "$peer_pub" ]; then
-        cat <<EOF
+    # Un bloque [Peer] por nodo registrado. El activo se lleva
+    # 0.0.0.0/0 —es el que recibe el trafico de Internet— y los
+    # demas solo su /32: siguen conectados y alcanzables, pero no
+    # compiten por la ruta. Dos peers con 0.0.0.0/0 no pueden
+    # coexistir: WireGuard se lo adjudicaria al ultimo.
+    local total
+    total=$(_wgh_nodes_count)
+
+    if [ "${total:-0}" -eq 0 ]; then
+        # Compatibilidad: si aun no hay registro pero si la clave
+        # suelta de la version anterior, se usa esa.
+        if [ -n "$peer_pub" ]; then
+            cat <<EOF
 [Peer]
-# PC doméstico en Colombia (CachyOS / Linux)
+# Nodo residencial (registro heredado)
 PublicKey           = ${peer_pub}
 AllowedIPs          = 0.0.0.0/0
 PersistentKeepalive = 0
 EOF
-    else
-        cat <<EOF
-# [Peer] — Pendiente registrar clave pública del PC doméstico.
-# Usa la opción 3 del menú para registrarla.
+        else
+            cat <<EOF
+# [Peer] — Pendiente registrar algun nodo residencial.
+# Usa la opcion 6 del menu para darlo de alta.
 EOF
+        fi
+        return 0
     fi
+
+    local name key ip act allowed
+    while IFS='|' read -r name key ip act; do
+        [ -z "$key" ] && continue
+        if [ "$act" = "si" ]; then
+            allowed="0.0.0.0/0"
+        else
+            allowed="${ip}/32"
+        fi
+        cat <<EOF
+[Peer]
+# Nodo: ${name}  (${ip})$([ "$act" = "si" ] && echo "  — SALIDA ACTIVA")
+PublicKey           = ${key}
+AllowedIPs          = ${allowed}
+PersistentKeepalive = 0
+
+EOF
+    done < <(_wgh_nodes_list)
 }
 
 # Asegura que si wg-home.conf existe, contenga Table = off y AllowedIPs = 0.0.0.0/0
@@ -610,8 +778,14 @@ _wgh_apply_user_routing() {
     droplet_pub_ip=$(_wgh_get_droplet_ip)
 
     # 1. Asegurar ruta por defecto en tabla 200 apuntando al PC doméstico
-    ip route replace default via "${WGH_PEER_IP}" dev "${WGH_IFACE}" table "${WGH_RT_TABLE}" 2>/dev/null
-    _wgh_log "Ruta default instalada en tabla ${WGH_RT_TABLE} via ${WGH_PEER_IP} dev ${WGH_IFACE}"
+    local act_ip
+    act_ip=$(_wgh_nodes_active_ip)
+    ip route replace default via "${act_ip}" dev "${WGH_IFACE}" table "${WGH_RT_TABLE}" 2>/dev/null
+    _wgh_log "Ruta default instalada en tabla ${WGH_RT_TABLE} via ${act_ip} dev ${WGH_IFACE}"
+
+    # Los nodos comparten subred: sin esto se alcanzarian entre si
+    # usando la Droplet de router.
+    _wgh_isolate_on
 
     # 2. Regla base para pruebas locales desde la interfaz wg-home (10.77.77.1)
     if ! ip rule show | grep -q "from ${WGH_DROPLET_IP} lookup ${WGH_RT_NAME}"; then
@@ -766,6 +940,7 @@ wghome_install() {
     # Inicializar fallback por defecto en ON si no existe
     [ ! -f "$WGH_FALLBACK_CONF" ] && _wgh_set_fallback "ON"
 
+    _wgh_nodes_migrate
     _wgh_log "Gateway residencial instalado exitosamente"
 
     echo ""
@@ -834,57 +1009,122 @@ wghome_show_pubkey() {
 # =========================================================
 # 3. REGISTRAR CLAVE PÚBLICA DEL PC DOMÉSTICO
 # =========================================================
-wghome_register_peer() {
-    clear
-    print_title 2>/dev/null || true
-    echo -e "$SEP"
-    echo -e "${WH}     REGISTRAR PC DOMÉSTICO (Peer)${CR}"
-    echo -e "$SEP"
-
-    if ! _wgh_is_installed; then
-        echo -e "  ${RD}[-]${CR} El gateway no está instalado. Usa la opción 1 primero."
-        sleep 2; return
-    fi
-
-    echo ""
-    echo -e "  ${DM}Introduce la clave pública del PC doméstico (CachyOS).${CR}"
-    echo -e "  ${DM}(Generada en el PC con: wg pubkey < privatekey)${CR}"
-    echo ""
-    read -p "$(echo -e ${CY})PublicKey del PC: $(echo -e ${CR})" peer_pub
-
-    if [ -z "$peer_pub" ]; then
-        echo -e "  ${RD}[-]${CR} Clave vacía. Cancelado."; sleep 1; return
-    fi
-
-    if ! echo "$peer_pub" | grep -qE '^[A-Za-z0-9+/]{43}=$'; then
-        echo -e "  ${YL}[!]${CR} Formato no estándar (WireGuard base64 son 44 chars)."
-        read -p "$(echo -e ${DM})¿Continuar de todas formas? (s/n): $(echo -e ${CR})" resp
-        if [[ "$resp" != "s" && "$resp" != "S" ]]; then
-            echo -e "  ${GR}[+]${CR} Operación cancelada."; sleep 1; return
-        fi
-    fi
-
-    mkdir -p /etc/wireguard 2>/dev/null
-    echo "${peer_pub}" > "${WGH_PEER_KEY}"
-    chmod 644 "${WGH_PEER_KEY}"
-
+# Aplica el conf regenerado sobre la interfaz sin cortar el tunel.
+_wgh_nodes_sync() {
     local priv
-    priv=$(cat "${WGH_PRIV_KEY}")
-    _wgh_render_conf "$priv" "$peer_pub" > "${WGH_CONF}"
+    priv=$(cat "${WGH_PRIV_KEY}" 2>/dev/null)
+    [ -z "$priv" ] && return 1
+    _wgh_render_conf "$priv" > "${WGH_CONF}"
     chmod 600 "${WGH_CONF}"
-
-    _wgh_log "Peer registrado en Droplet con AllowedIPs = 0.0.0.0/0"
-    echo -e "  ${GR}[+]${CR} Clave del PC registrada con AllowedIPs = 0.0.0.0/0."
-
     if _wgh_is_up; then
-        echo -e "  ${YL}[*]${CR} Sincronizando WireGuard en caliente..."
-        wg syncconf "${WGH_IFACE}" <(wg-quick strip "${WGH_IFACE}" 2>/dev/null) 2>/dev/null && \
-            echo -e "  ${GR}[+]${CR} Túnel actualizado sin cortes." || \
+        wg syncconf "${WGH_IFACE}" <(wg-quick strip "${WGH_IFACE}" 2>/dev/null) 2>/dev/null || \
             systemctl restart "wg-quick@${WGH_IFACE}" 2>/dev/null
+        _wgh_isolate_on
     fi
+}
 
-    echo ""
-    read -p "$(echo -e ${DM})Presiona Enter para continuar...$(echo -e ${CR})"
+# =========================================================
+# GESTION DE NODOS RESIDENCIALES
+# =========================================================
+wghome_manage_nodes() {
+    _wgh_nodes_migrate
+    while true; do
+        clear
+        print_title 2>/dev/null || true
+        ui_section "NODOS RESIDENCIALES" "equipos que prestan su IP de casa"
+        ui_blank
+
+        local total
+        total=$(_wgh_nodes_count)
+        if [ "${total:-0}" -eq 0 ]; then
+            echo -e "${UI_PAD}${DM}No hay ningun nodo registrado todavia.${CR}"
+        else
+            printf "${UI_PAD}${DM}%-16s %-16s %-8s %s${CR}\n" "NOMBRE" "IP" "SALIDA" "CLAVE"
+            local name key ip act tag hs
+            while IFS='|' read -r name key ip act; do
+                [ -z "$key" ] && continue
+                if [ "$act" = "si" ]; then tag="${GR}ACTIVA${CR}"; else tag="${DM}  --  ${CR}"; fi
+                # Handshake por peer: dice cuales estan realmente vivos.
+                hs=$(wg show "${WGH_IFACE}" latest-handshakes 2>/dev/null | grep -F "$key" | awk '{print $2}')
+                if [ -n "$hs" ] && [ "$hs" != "0" ]; then
+                    hs="${GR}conectado${CR}"
+                else
+                    hs="${RD}sin conexion${CR}"
+                fi
+                printf "${UI_PAD}${WH}%-16s${CR} ${CY}%-16s${CR} %b   %b\n" "$name" "$ip" "$tag" "$hs"
+            done < <(_wgh_nodes_list)
+        fi
+
+        ui_blank
+        ui_rule
+        echo -e "${UI_PAD}${DM}Solo un nodo puede ser la SALIDA a Internet a la vez.${CR}"
+        echo -e "${UI_PAD}${DM}Los demas siguen conectados, listos para relevarlo.${CR}"
+        echo -e "${UI_PAD}${DM}Entre ellos no se ven: el reenvio esta cortado.${CR}"
+        ui_blank
+
+        ui_opt "1" "REGISTRAR NODO"    "clave publica"
+        ui_opt "2" "CAMBIAR SALIDA"    "cual sale a Internet"
+        ui_opt "3" "DATOS PARA EL NODO" "que poner alli"
+        ui_opt_danger "4" "ELIMINAR NODO" "lo desconecta"
+        ui_opt "0" "VOLVER"
+        ui_solid
+        ui_prompt "Elige una opcion [0-4]"
+
+        case "$REPLY_UI" in
+            1)  ui_blank
+                read -p "$(echo -e "${UI_PAD}${DM}Nombre corto (ej: pc-casa, movil) ${CY}»${CR} ")" nname
+                nname=$(echo "$nname" | tr -cd 'A-Za-z0-9_-' | cut -c1-16)
+                [ -z "$nname" ] && { ui_err "Nombre vacio."; sleep 1; continue; }
+                if _wgh_nodes_list | cut -d'|' -f1 | grep -qxF "$nname"; then
+                    ui_err "Ya existe un nodo con ese nombre."; sleep 2; continue
+                fi
+                read -p "$(echo -e "${UI_PAD}${DM}Clave publica del nodo ${CY}»${CR} ")" nkey
+                nkey=$(echo "$nkey" | tr -d '[:space:]')
+                if ! echo "$nkey" | grep -qE '^[A-Za-z0-9+/]{43}=$'; then
+                    ui_err "Esa clave no tiene formato WireGuard (44 car. base64)."; sleep 2; continue
+                fi
+                if _wgh_nodes_has_key "$nkey"; then
+                    ui_err "Esa clave ya esta registrada."; sleep 2; continue
+                fi
+                local newip
+                newip=$(_wgh_nodes_add "$nname" "$nkey")
+                if [ -z "$newip" ]; then ui_err "No quedan IPs libres."; sleep 2; continue; fi
+                _wgh_nodes_sync
+                ui_blank
+                ui_ok "Nodo '${nname}' registrado."
+                echo -e "${UI_PAD}${DM}   Su direccion en el tunel es ${WH}${newip}${CR}"
+                echo -e "${UI_PAD}${DM}   Configura ESA ip en el nodo, no otra.${CR}"
+                ui_pause ;;
+            2)  ui_blank
+                read -p "$(echo -e "${UI_PAD}${DM}Nombre del nodo que sera la salida ${CY}»${CR} ")" sname
+                if ! _wgh_nodes_list | cut -d'|' -f1 | grep -qxF "$sname"; then
+                    ui_err "No existe ese nodo."; sleep 2; continue
+                fi
+                _wgh_nodes_set_active "$sname"
+                _wgh_nodes_sync
+                # La tabla 200 apuntaba al anterior: hay que reapuntarla.
+                if _wgh_routing_is_active; then
+                    ip route replace default via "$(_wgh_nodes_active_ip)" dev "${WGH_IFACE}" table "${WGH_RT_TABLE}" 2>/dev/null
+                    ui_ok "Ruta de salida reapuntada a ${sname}."
+                fi
+                ui_ok "Ahora la salida a Internet es '${sname}'."
+                ui_pause ;;
+            3)  wghome_show_pubkey ;;
+            4)  ui_blank
+                read -p "$(echo -e "${UI_PAD}${DM}Nombre del nodo a eliminar ${CY}»${CR} ")" dname
+                if ! _wgh_nodes_list | cut -d'|' -f1 | grep -qxF "$dname"; then
+                    ui_err "No existe ese nodo."; sleep 2; continue
+                fi
+                if ui_confirm "¿Eliminar '${dname}'? Dejara de conectar" "n"; then
+                    _wgh_nodes_del "$dname"
+                    _wgh_nodes_sync
+                    ui_ok "Nodo eliminado."
+                fi
+                ui_pause ;;
+            0)  break ;;
+            *)  ui_err "Opcion no valida."; sleep 1 ;;
+        esac
+    done
 }
 
 # =========================================================
@@ -993,9 +1233,10 @@ wghome_ping_peer() {
         sleep 2; return
     fi
 
-    echo -e "  ${YL}[*]${CR} Haciendo ping a ${WGH_PEER_IP} (PC doméstico en Colombia)..."
+    local _pip; _pip=$(_wgh_nodes_active_ip)
+    echo -e "  ${YL}[*]${CR} Haciendo ping a ${_pip} (nodo activo: $(_wgh_nodes_active_name))..."
     echo ""
-    if ping -c 4 -W 2 "${WGH_PEER_IP}" 2>/dev/null; then
+    if ping -c 4 -W 2 "${_pip}" 2>/dev/null; then
         echo ""
         echo -e "  ${GR}[+] PC doméstico alcanzable vía WireGuard.${CR}"
         local hs_sec
@@ -1090,8 +1331,9 @@ wghome_routing_on() {
     fi
 
     # VALIDACIÓN 6: Conectividad ICMP a 10.77.77.2
-    echo -e "  ${YL}[*]${CR} Verificando ping a ${WGH_PEER_IP}..."
-    if ! ping -c 2 -W 2 "${WGH_PEER_IP}" &>/dev/null; then
+    local _aip; _aip=$(_wgh_nodes_active_ip)
+    echo -e "  ${YL}[*]${CR} Verificando ping a ${_aip}..."
+    if ! ping -c 2 -W 2 "${_aip}" &>/dev/null; then
         echo -e "  ${YL}[!] El PC doméstico no respondió al ping en 10.77.77.2.${CR}"
         read -p "$(echo -e ${DM})¿Continuar aplicando configuración? (s/n) [s]: $(echo -e ${CR})" resp_ping
         resp_ping=${resp_ping:-s}
@@ -1146,7 +1388,7 @@ wghome_routing_on() {
         echo -e "  ${GR}[✓] ¡SALIDA RESIDENCIAL ACTIVADA CON ÉXITO!${CR}"
         echo -e "  ${GR}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${CR}"
         echo -e "  ${DM}• Usuarios HTTP Injector enrutados : ${WH}${#conf_users[@]}${CR}"
-        echo -e "  ${DM}• Salida hacia PC doméstico        : ${WH}${WGH_PEER_IP}${CR}"
+        echo -e "  ${DM}• Salida hacia nodo activo         : ${WH}$(_wgh_nodes_active_name) ($(_wgh_nodes_active_ip))${CR}"
         echo -e "  ${DM}• SSH Administrativo / root        : ${GR}Protegido (IP VPS)${CR}"
         echo -e "  ${DM}• Comprueba la IP residencial con la opción 10 del menú.${CR}"
     else
@@ -1232,7 +1474,7 @@ wghome_check_ip() {
         # Asegurar regla temporal para prueba si la salida residencial no está activa globalmente
         local temp_rule=false
         if ! _wgh_routing_is_active; then
-            ip route replace default via "${WGH_PEER_IP}" dev "${WGH_IFACE}" table "${WGH_RT_TABLE}" 2>/dev/null || true
+            ip route replace default via "$(_wgh_nodes_active_ip)" dev "${WGH_IFACE}" table "${WGH_RT_TABLE}" 2>/dev/null || true
             ip rule add from "${WGH_DROPLET_IP}" table "${WGH_RT_TABLE}" priority 1000 2>/dev/null || true
             temp_rule=true
         fi
@@ -1459,7 +1701,8 @@ wghome_remove() {
     rm -f "${WGH_CONF}"
     rm -f "${WGH_PRIV_KEY}"
     rm -f "${WGH_PUB_KEY}"
-    rm -f "${WGH_PEER_KEY}"
+    _wgh_isolate_off
+    rm -f "${WGH_PEER_KEY}" "${WGH_NODES_CONF}"
     rm -f "${WGH_RT_BACKUP}"
     rm -f "${WGH_USERS_CONF}"
     rm -f "${WGH_FALLBACK_CONF}"
@@ -1507,6 +1750,11 @@ wghome_menu() {
 
         echo -e "${UI_PAD}$(ui_cell "Instalación" "" 22)${TAG_INST}"
         echo -e "${UI_PAD}$(ui_cell "Usuarios enrutados" "$u_count" 22 "$CY")"
+        local n_count n_act
+        n_count=$(_wgh_nodes_count 2>/dev/null || echo 0)
+        n_act=$(_wgh_nodes_active_name 2>/dev/null)
+        echo -e "${UI_PAD}$(ui_cell "Nodos registrados" "${n_count:-0}" 22 "$CY")"
+        echo -e "${UI_PAD}$(ui_cell "Salida por" "${n_act:-ninguno}" 22 "$WH")"
         ui_rule
         ui_blank
 
@@ -1518,7 +1766,7 @@ wghome_menu() {
         ui_blank
         echo -e "${UI_PAD}${YL}── CLAVES ──${CR}"
         ui_opt "5" "CLAVE PÚBLICA DEL VPS" "para el PC"
-        ui_opt "6" "REGISTRAR CLAVE DEL PC" "peer doméstico"
+        ui_opt "6" "GESTIONAR NODOS"      "alta y salida"
         ui_blank
         echo -e "${UI_PAD}${YL}── USUARIOS ──${CR}"
         ui_opt "7" "VER ENRUTADOS"        "quién sale por casa"
@@ -1542,7 +1790,7 @@ wghome_menu() {
             3)  if _wgh_routing_is_active; then wghome_routing_off; else wghome_routing_on; fi ;;
             4)  wghome_configure_fallback ;;
             5)  wghome_show_pubkey ;;
-            6)  wghome_register_peer ;;
+            6)  wghome_manage_nodes ;;
             7)  wghome_view_users ;;
             8)  wghome_manage_users ;;
             9)  wghome_diagnose ;;
