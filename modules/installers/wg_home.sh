@@ -697,20 +697,35 @@ SSHEOF
     systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null
 }
 
-# Crea (o reutiliza) el usuario de sistema del movil y le pone clave.
-# Se hace de sistema (uid<1000) a proposito: asi no aparece en la tabla
-# de cuentas del panel, que filtra por uid>=1000.
+# Crea (o reutiliza) el usuario de sistema del movil y autoriza SU LLAVE.
+# Igual que un nodo WireGuard se registra por su clave publica, el nodo
+# movil se autentica con la llave SSH que genera el propio nodo: sin
+# contrasena. La cuenta es de sistema (uid<1000) para no aparecer en la
+# tabla de cuentas del panel, que filtra por uid>=1000.
 _socks_user_ensure() {
-    local idx="$1" pass="$2" user home
+    local idx="$1" pubkey="$2" user home akfile
     user=$(_wgn_socksuser "$idx")
     home="/var/lib/vpsservice/$user"
     if ! id "$user" &>/dev/null; then
         mkdir -p /var/lib/vpsservice 2>/dev/null
         useradd -r -m -d "$home" -s /usr/sbin/nologin "$user" 2>/dev/null
     fi
-    echo "${user}:${pass}" | chpasswd
-    passwd -u "$user" &>/dev/null
-    usermod -U "$user" &>/dev/null
+    # Sin contrasena: la cuenta solo entra con la llave del nodo.
+    passwd -l "$user" &>/dev/null
+
+    # authorized_keys, restringida a solo reenvio de puertos. El drop-in
+    # de sshd ya limita a reenvio REMOTO; aqui se cierra todo lo demas.
+    akfile="$home/.ssh/authorized_keys"
+    mkdir -p "$home/.ssh" 2>/dev/null
+    if [ -n "$pubkey" ]; then
+        local opts="restrict,port-forwarding"
+        # Evita duplicar la misma llave si se reconfigura el nodo.
+        touch "$akfile"
+        grep -qF "$pubkey" "$akfile" 2>/dev/null || echo "${opts} ${pubkey}" >> "$akfile"
+    fi
+    chmod 700 "$home/.ssh"; chmod 600 "$akfile" 2>/dev/null
+    chown -R "$user":"$user" "$home/.ssh" 2>/dev/null
+
     # Si el sshd tiene lista blanca, el usuario de nodo tambien entra.
     if grep -qE "^AllowUsers" /etc/ssh/sshd_config 2>/dev/null; then
         grep -qE "^AllowUsers.*\b${user}\b" /etc/ssh/sshd_config || \
@@ -805,47 +820,59 @@ _socks_ssh_port() {
     echo "${p:-22}"
 }
 
-# Pantalla con el comando exacto que el movil debe ejecutar en Termux.
+# Pantalla con los datos del nodo. La conexion es POR LLAVE: el nodo
+# (proyecto Vpsservice-Node-Gateway) genera su par SSH; aqui solo se
+# muestra que debe configurar y como comprobar el estado.
 _socks_show_instructions() {
-    local idx="$1" name="$2" user host port sport
+    local idx="$1" name="$2" user host port sport haskey
     user=$(_wgn_socksuser "$idx")
     host=$(_wgh_get_droplet_ip); [ -z "$host" ] && host="<IP_DEL_VPS>"
     port=$(_socks_ssh_port)
     sport=$(_wgn_socksport "$idx")
+    # ¿ya tiene una llave autorizada?
+    [ -s "/var/lib/vpsservice/${user}/.ssh/authorized_keys" ] && haskey="si" || haskey="no"
 
     clear
     print_title 2>/dev/null || true
-    ui_section "NODO MOVIL: ${name}" "conectar el celular por Termux"
+    ui_section "NODO MOVIL: ${name}" "conexion por llave SSH"
     ui_blank
-    echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Usuario del nodo" "$user" 30 "$WH")"
-    echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Host del VPS    " "$host" 30 "$GR")"
-    echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Puerto SSH      " "$port" 30 "$CY")"
-    ui_blank
+    echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Host del VPS " "$host" 30 "$GR")"
+    echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Puerto SSH   " "$port" 30 "$CY")"
+    echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Usuario      " "$user" 30 "$WH")"
+    echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Puerto SOCKS " "$sport" 30 "$CY")"
+    if [ "$haskey" = "si" ]; then
+        echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Llave        " "autorizada" 30 "$GR")"
+    else
+        echo -e "${UI_PAD}${RD}▪${CR} $(ui_cell "Llave        " "pendiente de pegar" 30 "$RD")"
+    fi
     ui_rule
     echo -e "${UI_PAD}${WH}En el celular (Android, SIN root):${CR}"
-    echo -e "${UI_PAD}${DM}1. Instala ${WH}Termux${DM} (F-Droid) y abrelo.${CR}"
-    echo -e "${UI_PAD}${DM}2. Una sola vez:${CR} ${WH}pkg install openssh${CR}"
-    echo -e "${UI_PAD}${DM}3. Levanta el tunel inverso (deja la app abierta):${CR}"
-    ui_blank
-    echo -e "${UI_PAD}${CY}ssh -N -R ${sport} ${user}@${host} -p ${port}${CR}"
-    ui_blank
-    echo -e "${UI_PAD}${DM}Te pedira la contrasena del nodo. Al conectar, el VPS${CR}"
-    echo -e "${UI_PAD}${DM}deja un SOCKS5 que sale por la conexion del telefono.${CR}"
+    echo -e "${UI_PAD}${DM}1. Instala ${WH}Termux${DM} y el nodo:${CR}"
+    echo -e "${UI_PAD}   ${CY}Vpsservice-Node-Gateway${CR} ${DM}(setup.sh), luego el comando ${WH}nodo${CR}"
+    echo -e "${UI_PAD}${DM}2. En el nodo, opcion [1]: mete los datos de arriba.${CR}"
+    echo -e "${UI_PAD}${DM}   El nodo GENERA su llave y muestra su clave publica.${CR}"
+    echo -e "${UI_PAD}${DM}3. Pega esa clave aqui (opcion REGISTRAR NODO MOVIL con${CR}"
+    echo -e "${UI_PAD}${DM}   el mismo nombre) y el nodo [2] para conectar.${CR}"
     ui_rule
-    echo -e "${UI_PAD}${DM}Para que reconecte solo si se cae, usa en Termux:${CR}"
-    echo -e "${UI_PAD}${DM}  ${WH}while true; do ssh -N -R ${sport} ${user}@${host} -p ${port}; sleep 5; done${CR}"
+    echo -e "${UI_PAD}${DM}Comando equivalente a mano (con la llave del nodo):${CR}"
+    echo -e "${UI_PAD}${WH}ssh -N -R 127.0.0.1:${sport} -i <llave> ${user}@${host} -p ${port}${CR}"
+    ui_blank
+    echo -e "${UI_PAD}${DM}Comprobar en el VPS que el movil esta conectado:${CR}"
+    echo -e "${UI_PAD}${WH}ss -tlnp | grep ${sport}${CR}"
     ui_blank
     echo -e "${UI_PAD}${YL}[!] Asigna usuarios a este nodo en ASIGNAR USUARIOS${CR}"
     echo -e "${UI_PAD}${YL}    y enciende la salida residencial para que surta efecto.${CR}"
     ui_solid
     ui_pause
 }
-
-# Alta de un nodo movil (SOCKS inverso).
+# Alta de un nodo movil (SOCKS inverso), por LLAVE — igual que un nodo
+# WireGuard se registra pegando su clave publica. El nodo (proyecto
+# Vpsservice-Node-Gateway) genera su par SSH y muestra su clave; aqui
+# se pega y se autoriza. Sin contrasenas.
 wghome_register_socks() {
     clear
     print_title 2>/dev/null || true
-    ui_section "REGISTRAR NODO MOVIL" "celular Android sin root"
+    ui_section "REGISTRAR NODO MOVIL" "celular Android sin root — por llave"
     ui_blank
 
     ui_info "Preparando dependencias (redsocks)..."
@@ -862,41 +889,74 @@ wghome_register_socks() {
     read -p "$(echo -e "${UI_PAD}${DM}Nombre corto (ej: movil, pixel) ${CY}»${CR} ")" nname
     nname=$(echo "$nname" | tr -cd 'A-Za-z0-9_-' | cut -c1-13)
     [ -z "$nname" ] && { ui_err "Nombre vacio."; sleep 1; return; }
-    _wgh_node_exists "$nname" && { ui_err "Ya existe un nodo con ese nombre."; sleep 2; return; }
 
-    # Contrasena: por defecto una aleatoria, o la que escriba el usuario.
-    local pass
-    read -p "$(echo -e "${UI_PAD}${DM}Contrasena del nodo (Enter = generar una) ${CY}»${CR} ")" pass
-    if [ -z "$pass" ]; then
-        pass=$(tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c 14)
-        [ -z "$pass" ] && pass="node$(date +%s | tail -c 6)"
+    # Si el nombre ya existe y es socks, esto re-autoriza su llave; si es
+    # wg, se rechaza para no mezclar dos nodos con el mismo nombre.
+    local nidx reauth=""
+    if _wgh_node_exists "$nname"; then
+        if _wgh_node_is_socks "$nname"; then
+            nidx=$(_wgh_node_idx_of "$nname"); reauth="si"
+            ui_info "Ese nodo movil ya existe: se actualizara su llave."
+        else
+            ui_err "Ya existe un nodo (WireGuard) con ese nombre."; sleep 2; return
+        fi
+    else
+        nidx=$(_wgh_nodes_add "$nname" "pendiente" "socks")
+        [ -z "$nidx" ] && { ui_err "No quedan indices libres (maximo 16 nodos)."; sleep 2; return; }
     fi
 
-    local nidx
-    nidx=$(_wgh_nodes_add "$nname" "$(_wgn_socksuser 0)" "socks")
-    [ -z "$nidx" ] && { ui_err "No quedan indices libres (maximo 16 nodos)."; sleep 2; return; }
-
-    # El usuario real depende del indice ya asignado; se corrige el
-    # registro para que refleje el usuario definitivo del nodo.
-    local realuser tmp
-    realuser=$(_wgn_socksuser "$nidx")
-    tmp=$(mktemp)
-    _wgh_nodes_list | awk -F'|' -v n="$nname" -v u="$realuser" 'BEGIN{OFS="|"} $1==n{$2=u} {print}' > "$tmp"
-    mv "$tmp" "$WGH_NODES_CONF"; chmod 600 "$WGH_NODES_CONF"
+    local user port host sshp
+    user=$(_wgn_socksuser "$nidx"); port=$(_wgn_socksport "$nidx")
+    host=$(_wgh_get_droplet_ip); [ -z "$host" ] && host="<IP_DEL_VPS>"
+    sshp=$(_socks_ssh_port)
 
     ui_blank
-    ui_info "Creando el usuario del nodo y su servicio local..."
-    _socks_user_ensure "$nidx" "$pass"
+    ui_rule
+    echo -e "${UI_PAD}${WH}Configura estos datos EN EL NODO${CR} ${DM}(app/script del nodo):${CR}"
+    echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Host del VPS " "$host" 30 "$GR")"
+    echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Puerto SSH   " "$sshp" 30 "$CY")"
+    echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Usuario      " "$user" 30 "$WH")"
+    echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Puerto SOCKS " "$port" 30 "$CY")"
+    ui_rule
+    echo -e "${UI_PAD}${DM}El nodo generara su llave y te mostrara su clave publica.${CR}"
+    ui_blank
+    read -p "$(echo -e "${UI_PAD}${DM}Pega la clave publica del nodo (Enter = luego) ${CY}»${CR} ")" pubkey
+    pubkey=$(echo "$pubkey" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+
+    if [ -n "$pubkey" ]; then
+        if ! echo "$pubkey" | grep -qE '^(ssh-(ed25519|rsa|dss)|ecdsa-sha2-[a-z0-9-]+|sk-ssh-ed25519@openssh.com|sk-ecdsa-sha2-[a-z0-9-]+) [A-Za-z0-9+/]+=*'; then
+            ui_err "Eso no parece una clave publica SSH valida."
+            [ -z "$reauth" ] && _wgh_nodes_del "$nname"
+            sleep 2; return
+        fi
+        # Guardar la llave en el registro (campo 2), como el nodo wg guarda
+        # su clave publica. Se evita registrar la misma llave dos veces.
+        if [ -z "$reauth" ] && _wgh_nodes_has_key "$pubkey"; then
+            ui_err "Esa clave ya esta registrada en otro nodo."
+            _wgh_nodes_del "$nname"; sleep 2; return
+        fi
+        local tmp
+        tmp=$(mktemp)
+        _wgh_nodes_list | awk -F'|' -v n="$nname" -v k="$pubkey" 'BEGIN{OFS="|"} $1==n{$2=k} {print}' > "$tmp"
+        mv "$tmp" "$WGH_NODES_CONF"; chmod 600 "$WGH_NODES_CONF"
+    fi
+
+    ui_blank
+    ui_info "Creando el usuario del nodo y autorizando su llave..."
+    _socks_user_ensure "$nidx" "$pubkey"
     _socks_up "$nidx" >/dev/null 2>&1 || true
 
     # Si la salida residencial ya estaba activa, entra en caliente.
     _wgh_routing_is_active && _wgh_apply_user_routing >/dev/null 2>&1
 
-    ui_ok "Nodo movil '${nname}' registrado."
     ui_blank
-    echo -e "${UI_PAD}${WH}Contrasena del nodo:${CR} ${GR}${pass}${CR}"
-    echo -e "${UI_PAD}${DM}(apuntala: se usa al conectar desde el celular)${CR}"
-    ui_blank
+    if [ -n "$pubkey" ]; then
+        ui_ok "Nodo movil '${nname}' registrado y llave autorizada."
+    else
+        ui_ok "Nodo movil '${nname}' reservado."
+        ui_warn "Aun sin llave: vuelve a esta opcion con el mismo nombre y"
+        ui_warn "pega la clave publica que genere el nodo para activarlo."
+    fi
     ui_pause
     _socks_show_instructions "$nidx" "$nname"
 }

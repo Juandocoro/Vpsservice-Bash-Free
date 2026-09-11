@@ -128,18 +128,24 @@ Usuario SSH ─(marca por UID)─▶ redsocks ─▶ SOCKS5 local ─┐
 
 Pasos:
 
-1. En el panel: **Gateway residencial → Gestionar nodos → Registrar nodo móvil**.
-   Anota la contraseña que genera y sigue las instrucciones en pantalla.
-2. En el celular (Android, sin root): instala **Termux**, luego
-   `pkg install openssh` y ejecuta el comando `ssh -N -R …` que muestra el panel
-   (déjalo abierto).
-3. Asigna usuarios a ese nodo en **Asignar usuarios** y enciende la salida
-   residencial.
+La autenticación es **por llave**, igual que un nodo WireGuard se registra
+pegando su clave pública. El nodo (proyecto
+[`Vpsservice-Node-Gateway`](../Vpsservice-Node-Gateway), modo SOCKS) genera su
+par SSH y muestra su clave; el panel la autoriza.
 
-El usuario del nodo es una cuenta de sistema (uid&lt;1000) restringida a solo
-reenvío inverso, así que no aparece en la lista de cuentas ni puede abrir una
-shell. El DNS (UDP) sigue resolviéndose en el VPS; las conexiones TCP salen por
-el celular.
+1. En el panel: **Gateway residencial → Gestionar nodos → Registrar nodo móvil**.
+   Reserva el nodo y te muestra los datos a configurar en el celular (host,
+   puerto SSH, usuario `snodeN` y puerto SOCKS).
+2. En el celular (Android, sin root): instala **Termux** y el nodo, ejecuta
+   `nodo`, opción `[1]`, e introduce esos datos. El nodo genera su llave y
+   muestra su **clave pública**.
+3. Vuelve al panel a **Registrar nodo móvil** con el mismo nombre y **pega esa
+   clave pública**. Luego asigna usuarios y enciende la salida residencial.
+
+El usuario del nodo es una cuenta de sistema (uid&lt;1000) **sin contraseña**
+(solo entra con su llave), restringida a solo reenvío remoto, así que no aparece
+en la lista de cuentas ni puede abrir una shell. El DNS (UDP) sigue
+resolviéndose en el VPS; las conexiones TCP salen por el celular.
 
 ---
 
