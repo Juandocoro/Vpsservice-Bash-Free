@@ -101,6 +101,48 @@ modules/
 
 ---
 
+## Nodos de salida residencial
+
+Bajo **Configuración del VPS → Gateway residencial** puedes hacer que ciertos
+usuarios SSH salgan a Internet por la conexión de otro equipo tuyo (un nodo),
+no por la IP del VPS. Cada usuario sale por el nodo que le asignes, y varios
+nodos pueden dar salida a la vez. Hay dos tipos:
+
+| Tipo | Equipo | Cómo se conecta | Tráfico |
+|---|---|---|---|
+| **PC (WireGuard)** | PC de escritorio/Linux | Túnel WireGuard, el nodo hace NAT | Todo (TCP y UDP) |
+| **Móvil (SOCKS)** | Celular Android **sin root** | Túnel inverso `ssh -R` desde Termux | Solo TCP |
+
+### Nodo móvil (celular sin root)
+
+Un teléfono no puede actuar como salida WireGuard sin root, así que se usa un
+**SOCKS inverso**: el móvil abre una conexión *saliente* al VPS (funciona tras
+CGNAT, sin root) que deja un SOCKS5 en el VPS. El tráfico de los usuarios
+asignados se redirige a ese SOCKS con `redsocks`.
+
+```
+Usuario SSH ─(marca por UID)─▶ redsocks ─▶ SOCKS5 local ─┐
+                                                          │ ssh -R
+                        Internet ◀── Celular (Termux) ◀───┘
+```
+
+Pasos:
+
+1. En el panel: **Gateway residencial → Gestionar nodos → Registrar nodo móvil**.
+   Anota la contraseña que genera y sigue las instrucciones en pantalla.
+2. En el celular (Android, sin root): instala **Termux**, luego
+   `pkg install openssh` y ejecuta el comando `ssh -N -R …` que muestra el panel
+   (déjalo abierto).
+3. Asigna usuarios a ese nodo en **Asignar usuarios** y enciende la salida
+   residencial.
+
+El usuario del nodo es una cuenta de sistema (uid&lt;1000) restringida a solo
+reenvío inverso, así que no aparece en la lista de cuentas ni puede abrir una
+shell. El DNS (UDP) sigue resolviéndose en el VPS; las conexiones TCP salen por
+el celular.
+
+---
+
 ## Requisitos
 
 - Ubuntu 20.04 / 22.04 x86_64

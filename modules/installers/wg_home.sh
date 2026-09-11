@@ -357,6 +357,20 @@ _wgh_is_installed() {
     [ -f "${WGH_CONF}" ] && [ -f "${WGH_PRIV_KEY}" ]
 }
 
+# Genera el par de claves de la Droplet y un wg-home.conf base si no
+# existen, sin arrancar ninguna interfaz. Permite usar nodos socks sin
+# tener que pasar antes por el asistente de instalacion (opcion 1).
+_wgh_ensure_keys() {
+    _wgh_ensure_installed || return 1
+    mkdir -p /etc/wireguard 2>/dev/null
+    if [ ! -s "${WGH_PRIV_KEY}" ]; then
+        (umask 077; wg genkey > "${WGH_PRIV_KEY}")
+        wg pubkey < "${WGH_PRIV_KEY}" > "${WGH_PUB_KEY}"
+        chmod 600 "${WGH_PRIV_KEY}"; chmod 644 "${WGH_PUB_KEY}"
+    fi
+    [ -f "${WGH_CONF}" ] || { _wgh_render_conf "$(cat "${WGH_PRIV_KEY}")" "" > "${WGH_CONF}"; chmod 600 "${WGH_CONF}"; }
+}
+
 # Verificar si el túnel está activo a nivel de interfaz de red
 _wgh_is_up() {
     ip link show "${WGH_IFACE}" &>/dev/null 2>&1
@@ -364,7 +378,13 @@ _wgh_is_up() {
 
 # Verificar si la salida residencial está activa en policy routing
 _wgh_routing_is_active() {
-    ip rule show | grep -qE "lookup (${WGH_RT_NAME}|${WGH_RT_TABLE})"
+    # WireGuard deja una regla 'ip rule'; un nodo socks no, porque
+    # redirige con iptables. Se considera activa si hay cualquiera de
+    # las dos huellas, o marcas de usuario ya aplicadas.
+    ip rule show | grep -qE "lookup (${WGH_RT_NAME}|${WGH_RT_TABLE})" && return 0
+    iptables -t nat -S 2>/dev/null | grep -q "HOMEVPN_SOCKS" && return 0
+    iptables -t mangle -S 2>/dev/null | grep -q "HOMEVPN_MARK" && return 0
+    return 1
 }
 
 # Obtener o fijar estado de Fallback (por defecto ON)
@@ -440,6 +460,27 @@ _wgn_table()  { [ "$1" = "1" ] && echo "200"               || echo $(( 200 + $1 
 _wgn_mark()   { [ "$1" = "1" ] && echo "0x77"              || echo "0x77$1"; }
 _wgn_conf()   { echo "/etc/wireguard/$(_wgn_iface "$1").conf"; }
 
+# --- Parametros derivados de los nodos SOCKS (movil sin root) ---
+# Un nodo SOCKS no tiene interfaz WireGuard: el movil abre un tunel
+# inverso (ssh -R) que deja un SOCKS5 escuchando en localhost, y el
+# trafico de sus usuarios se redirige a ese SOCKS con redsocks. Los
+# rangos no pisan los del modelo WireGuard (que usa 51820+, 10.77.x).
+_wgn_socksport() { echo $(( 11080 + $1 )); }   # SOCKS inverso (ssh -R), en localhost
+_wgn_redport()   { echo $(( 12300 + $1 )); }   # escucha local de redsocks
+_wgn_socksuser() { echo "snode$1"; }           # usuario de sistema del movil (uid<1000)
+_socks_redconf() { echo "/etc/redsocks/node$1.conf"; }
+_socks_redunit() { echo "redsocks-node$1"; }
+
+# Tipo de un nodo: 'wg' (WireGuard, por defecto) o 'socks' (movil).
+# El registro heredado no trae 4o campo, asi que la ausencia = wg.
+_wgh_node_type() {
+    local t
+    t=$(_wgh_nodes_list | awk -F'|' -v n="$1" '$1==n {print $4}' | head -1)
+    [ -z "$t" ] && t="wg"
+    echo "$t"
+}
+_wgh_node_is_socks() { [ "$(_wgh_node_type "$1")" = "socks" ]; }
+
 # --- Registro: nombre|clave_publica|indice ---
 
 _wgh_nodes_migrate() {
@@ -478,12 +519,16 @@ _wgh_nodes_has_key(){ _wgh_nodes_list | cut -d'|' -f2 | grep -qxF "$1"; }
 _wgh_node_exists()  { _wgh_nodes_names | grep -qxF "$1"; }
 
 _wgh_nodes_add() {
-    local name="$1" key="$2" idx
+    # name | clave/usuario | indice | tipo(wg|socks)
+    # En un nodo wg el 2o campo es la clave publica; en uno socks es
+    # el usuario de sistema del movil. El tipo va al final para no
+    # romper el registro heredado de 3 campos (que se lee como wg).
+    local name="$1" key="$2" type="${3:-wg}" idx
     _wgh_nodes_migrate
     idx=$(_wgh_nodes_next_idx) || return 1
-    echo "${name}|${key}|${idx}" >> "$WGH_NODES_CONF"
+    echo "${name}|${key}|${idx}|${type}" >> "$WGH_NODES_CONF"
     chmod 600 "$WGH_NODES_CONF"
-    _wgh_log "Nodo '${name}' registrado con indice ${idx} ($(_wgn_iface "$idx"), puerto $(_wgn_port "$idx"))"
+    _wgh_log "Nodo '${name}' (${type}) registrado con indice ${idx}"
     echo "$idx"
 }
 
@@ -492,11 +537,15 @@ _wgh_nodes_del() {
     idx=$(_wgh_node_idx_of "$name")
     [ -z "$idx" ] && return 1
 
-    # Bajar y borrar su interfaz antes de soltar el registro: si no,
-    # quedaria un wg-homeN vivo que nadie sabe de donde salio.
-    _wgh_node_down "$idx"
-    rm -f "$(_wgn_conf "$idx")" 2>/dev/null
-    ip route flush table "$(_wgn_table "$idx")" 2>/dev/null
+    # Segun el tipo, se desmonta la interfaz wg o el stack socks
+    # (redsocks + usuario del movil) antes de soltar el registro.
+    if _wgh_node_is_socks "$name"; then
+        _socks_node_del "$idx"
+    else
+        _wgh_node_down "$idx"
+        rm -f "$(_wgn_conf "$idx")" 2>/dev/null
+        ip route flush table "$(_wgn_table "$idx")" 2>/dev/null
+    fi
 
     tmp=$(mktemp)
     _wgh_nodes_list | awk -F'|' -v n="$name" '$1!=n' > "$tmp"
@@ -586,10 +635,14 @@ _wgh_node_down() {
 
 # Levanta todas las interfaces registradas.
 _wgh_nodes_up_all() {
-    local name idx key
-    while IFS='|' read -r name key idx; do
+    local name idx key type
+    while IFS='|' read -r name key idx type; do
         [ -z "$idx" ] && continue
-        _wgh_node_up "$idx"
+        if [ "${type:-wg}" = "socks" ]; then
+            _socks_up "$idx"
+        else
+            _wgh_node_up "$idx"
+        fi
     done < <(_wgh_nodes_list)
 }
 
@@ -599,6 +652,253 @@ _wgh_node_hs() {
     ts=$(wg show "$(_wgn_iface "$idx")" latest-handshakes 2>/dev/null | awk '{print $2}' | head -1)
     [ -z "$ts" ] || [ "$ts" = "0" ] && { echo "-1"; return; }
     echo $(( $(date +%s) - ts ))
+}
+
+# =========================================================
+# NODOS SOCKS — movil sin root por tunel inverso (ssh -R)
+# ---------------------------------------------------------
+# El movil abre 'ssh -N -R <socksport> snodeN@vps'. Eso deja un
+# SOCKS5 escuchando en 127.0.0.1:<socksport> del VPS que sale por
+# la conexion del telefono. redsocks toma el trafico ya marcado de
+# los usuarios asignados y lo mete por ese SOCKS. Solo TCP: el DNS
+# (UDP) sigue resolviendo en el VPS.
+# =========================================================
+_SOCKS_SSHD_DROPIN="/etc/ssh/sshd_config.d/20-vpsservice-nodes.conf"
+
+_socks_deps_ready() { command -v redsocks &>/dev/null; }
+
+_socks_install_deps() {
+    _socks_deps_ready && return 0
+    _wgh_log "Instalando redsocks..."
+    apt-get update -yq &>/dev/null
+    DEBIAN_FRONTEND=noninteractive apt-get install -yq redsocks &>/dev/null
+    # El paquete arranca un redsocks con su config de ejemplo, que no
+    # usamos: cada nodo corre su propia instancia. Se apaga el de serie.
+    systemctl disable --now redsocks &>/dev/null
+    _socks_deps_ready
+}
+
+# sshd: los usuarios de nodo solo pueden abrir el reenvio inverso, nada
+# mas. Sin esto un snodeN con contrasena seria un proxy abierto hacia el
+# localhost del VPS.
+_socks_harden_sshd() {
+    [ -f "$_SOCKS_SSHD_DROPIN" ] && return 0
+    [ -d /etc/ssh/sshd_config.d ] || return 0
+    cat > "$_SOCKS_SSHD_DROPIN" <<'SSHEOF'
+# Usuarios de nodo movil (SOCKS inverso). Solo reenvio remoto.
+Match User snode*
+    AllowTcpForwarding remote
+    PermitTunnel no
+    X11Forwarding no
+    AllowAgentForwarding no
+    PermitTTY no
+    ForceCommand echo "Nodo conectado. Manten esta sesion abierta."
+SSHEOF
+    systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null
+}
+
+# Crea (o reutiliza) el usuario de sistema del movil y le pone clave.
+# Se hace de sistema (uid<1000) a proposito: asi no aparece en la tabla
+# de cuentas del panel, que filtra por uid>=1000.
+_socks_user_ensure() {
+    local idx="$1" pass="$2" user home
+    user=$(_wgn_socksuser "$idx")
+    home="/var/lib/vpsservice/$user"
+    if ! id "$user" &>/dev/null; then
+        mkdir -p /var/lib/vpsservice 2>/dev/null
+        useradd -r -m -d "$home" -s /usr/sbin/nologin "$user" 2>/dev/null
+    fi
+    echo "${user}:${pass}" | chpasswd
+    passwd -u "$user" &>/dev/null
+    usermod -U "$user" &>/dev/null
+    # Si el sshd tiene lista blanca, el usuario de nodo tambien entra.
+    if grep -qE "^AllowUsers" /etc/ssh/sshd_config 2>/dev/null; then
+        grep -qE "^AllowUsers.*\b${user}\b" /etc/ssh/sshd_config || \
+            sed -i -E "s|^(AllowUsers.*)$|\1 ${user}|" /etc/ssh/sshd_config
+    fi
+    _socks_harden_sshd
+}
+
+_socks_redsocks_write() {
+    local idx="$1" redport socksport
+    redport=$(_wgn_redport "$idx"); socksport=$(_wgn_socksport "$idx")
+    mkdir -p /etc/redsocks 2>/dev/null
+    cat > "$(_socks_redconf "$idx")" <<EOF
+// Nodo SOCKS ${idx} — generado por vpsservice. No editar a mano.
+base {
+    log_debug = off;
+    log_info = off;
+    log = "syslog:daemon";
+    daemon = off;
+    redirector = iptables;
+}
+redsocks {
+    local_ip = 127.0.0.1;
+    local_port = ${redport};
+    // SOCKS5 que deja el movil con 'ssh -R ${socksport}'
+    ip = 127.0.0.1;
+    port = ${socksport};
+    type = socks5;
+}
+EOF
+    chmod 600 "$(_socks_redconf "$idx")"
+
+    local rbin
+    rbin=$(command -v redsocks 2>/dev/null); [ -z "$rbin" ] && rbin=/usr/sbin/redsocks
+    cat > "/etc/systemd/system/$(_socks_redunit "$idx").service" <<EOF
+[Unit]
+Description=redsocks para nodo movil ${idx} (vpsservice)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=${rbin} -c $(_socks_redconf "$idx")
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload &>/dev/null
+}
+
+# El SOCKS inverso esta arriba si el movil mantiene su ssh -R: el
+# puerto local queda en escucha.
+_socks_reverse_up() {
+    local idx="$1" port
+    port=$(_wgn_socksport "$idx")
+    ss -tlnH 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${port}\$"
+}
+
+_socks_redsocks_up() { systemctl is-active --quiet "$(_socks_redunit "$1")" 2>/dev/null; }
+
+_socks_up() {
+    local idx="$1"
+    _socks_redsocks_write "$idx"
+    systemctl enable --now "$(_socks_redunit "$idx")" &>/dev/null
+    _socks_redsocks_up "$idx"
+}
+
+_socks_down() {
+    local idx="$1"
+    systemctl disable --now "$(_socks_redunit "$idx")" &>/dev/null
+}
+
+_socks_node_del() {
+    local idx="$1" user
+    _socks_down "$idx"
+    rm -f "$(_socks_redconf "$idx")" "/etc/systemd/system/$(_socks_redunit "$idx").service" 2>/dev/null
+    systemctl daemon-reload &>/dev/null
+    user=$(_wgn_socksuser "$idx")
+    if id "$user" &>/dev/null; then
+        pkill -u "$user" 2>/dev/null
+        userdel -r "$user" 2>/dev/null
+    fi
+    _wgh_log "Nodo socks ${idx} (${user}) eliminado"
+}
+
+# Puerto por el que entra OpenSSH (el movil se conecta ahi).
+_socks_ssh_port() {
+    local p
+    p=$(sshd -T 2>/dev/null | awk '/^port /{print $2; exit}')
+    [ -z "$p" ] && p=$(grep -E '^\s*Port\s+[0-9]+' /etc/ssh/sshd_config 2>/dev/null | awk '{print $2; exit}')
+    echo "${p:-22}"
+}
+
+# Pantalla con el comando exacto que el movil debe ejecutar en Termux.
+_socks_show_instructions() {
+    local idx="$1" name="$2" user host port sport
+    user=$(_wgn_socksuser "$idx")
+    host=$(_wgh_get_droplet_ip); [ -z "$host" ] && host="<IP_DEL_VPS>"
+    port=$(_socks_ssh_port)
+    sport=$(_wgn_socksport "$idx")
+
+    clear
+    print_title 2>/dev/null || true
+    ui_section "NODO MOVIL: ${name}" "conectar el celular por Termux"
+    ui_blank
+    echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Usuario del nodo" "$user" 30 "$WH")"
+    echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Host del VPS    " "$host" 30 "$GR")"
+    echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Puerto SSH      " "$port" 30 "$CY")"
+    ui_blank
+    ui_rule
+    echo -e "${UI_PAD}${WH}En el celular (Android, SIN root):${CR}"
+    echo -e "${UI_PAD}${DM}1. Instala ${WH}Termux${DM} (F-Droid) y abrelo.${CR}"
+    echo -e "${UI_PAD}${DM}2. Una sola vez:${CR} ${WH}pkg install openssh${CR}"
+    echo -e "${UI_PAD}${DM}3. Levanta el tunel inverso (deja la app abierta):${CR}"
+    ui_blank
+    echo -e "${UI_PAD}${CY}ssh -N -R ${sport} ${user}@${host} -p ${port}${CR}"
+    ui_blank
+    echo -e "${UI_PAD}${DM}Te pedira la contrasena del nodo. Al conectar, el VPS${CR}"
+    echo -e "${UI_PAD}${DM}deja un SOCKS5 que sale por la conexion del telefono.${CR}"
+    ui_rule
+    echo -e "${UI_PAD}${DM}Para que reconecte solo si se cae, usa en Termux:${CR}"
+    echo -e "${UI_PAD}${DM}  ${WH}while true; do ssh -N -R ${sport} ${user}@${host} -p ${port}; sleep 5; done${CR}"
+    ui_blank
+    echo -e "${UI_PAD}${YL}[!] Asigna usuarios a este nodo en ASIGNAR USUARIOS${CR}"
+    echo -e "${UI_PAD}${YL}    y enciende la salida residencial para que surta efecto.${CR}"
+    ui_solid
+    ui_pause
+}
+
+# Alta de un nodo movil (SOCKS inverso).
+wghome_register_socks() {
+    clear
+    print_title 2>/dev/null || true
+    ui_section "REGISTRAR NODO MOVIL" "celular Android sin root"
+    ui_blank
+
+    ui_info "Preparando dependencias (redsocks)..."
+    if ! _socks_install_deps; then
+        ui_err "No se pudo instalar redsocks. Revisa la conexion del VPS."
+        ui_pause; return
+    fi
+    # Un nodo socks no necesita el asistente wg, pero el motor de salida
+    # comprueba que el gateway este "instalado". Se generan las claves
+    # base (sin arrancar interfaz) para no obligar a la opcion 1.
+    _wgh_ensure_keys >/dev/null 2>&1 || true
+
+    ui_blank
+    read -p "$(echo -e "${UI_PAD}${DM}Nombre corto (ej: movil, pixel) ${CY}»${CR} ")" nname
+    nname=$(echo "$nname" | tr -cd 'A-Za-z0-9_-' | cut -c1-13)
+    [ -z "$nname" ] && { ui_err "Nombre vacio."; sleep 1; return; }
+    _wgh_node_exists "$nname" && { ui_err "Ya existe un nodo con ese nombre."; sleep 2; return; }
+
+    # Contrasena: por defecto una aleatoria, o la que escriba el usuario.
+    local pass
+    read -p "$(echo -e "${UI_PAD}${DM}Contrasena del nodo (Enter = generar una) ${CY}»${CR} ")" pass
+    if [ -z "$pass" ]; then
+        pass=$(tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c 14)
+        [ -z "$pass" ] && pass="node$(date +%s | tail -c 6)"
+    fi
+
+    local nidx
+    nidx=$(_wgh_nodes_add "$nname" "$(_wgn_socksuser 0)" "socks")
+    [ -z "$nidx" ] && { ui_err "No quedan indices libres (maximo 16 nodos)."; sleep 2; return; }
+
+    # El usuario real depende del indice ya asignado; se corrige el
+    # registro para que refleje el usuario definitivo del nodo.
+    local realuser tmp
+    realuser=$(_wgn_socksuser "$nidx")
+    tmp=$(mktemp)
+    _wgh_nodes_list | awk -F'|' -v n="$nname" -v u="$realuser" 'BEGIN{OFS="|"} $1==n{$2=u} {print}' > "$tmp"
+    mv "$tmp" "$WGH_NODES_CONF"; chmod 600 "$WGH_NODES_CONF"
+
+    ui_blank
+    ui_info "Creando el usuario del nodo y su servicio local..."
+    _socks_user_ensure "$nidx" "$pass"
+    _socks_up "$nidx" >/dev/null 2>&1 || true
+
+    # Si la salida residencial ya estaba activa, entra en caliente.
+    _wgh_routing_is_active && _wgh_apply_user_routing >/dev/null 2>&1
+
+    ui_ok "Nodo movil '${nname}' registrado."
+    ui_blank
+    echo -e "${UI_PAD}${WH}Contrasena del nodo:${CR} ${GR}${pass}${CR}"
+    echo -e "${UI_PAD}${DM}(apuntala: se usa al conectar desde el celular)${CR}"
+    ui_blank
+    ui_pause
+    _socks_show_instructions "$nidx" "$nname"
 }
 
 # =========================================================
@@ -662,10 +962,12 @@ _wgh_isolate_on() {
     # Cada nodo vive en su propia interfaz y su propia subred, asi que
     # solo podrian verse si la Droplet les hiciera de router. Se corta
     # el reenvio entre cualquier par de interfaces wg-home*.
-    local a b ia ib
-    for a in $(_wgh_nodes_list | cut -d'|' -f3); do
+    # Solo interfaces WireGuard reales: los nodos socks no tienen una.
+    local a b ia ib wg_idx
+    wg_idx=$(_wgh_nodes_list | awk -F'|' '($4=="" || $4=="wg"){print $3}')
+    for a in $wg_idx; do
         ia=$(_wgn_iface "$a")
-        for b in $(_wgh_nodes_list | cut -d'|' -f3); do
+        for b in $wg_idx; do
             ib=$(_wgn_iface "$b")
             iptables -C FORWARD -i "$ia" -o "$ib" -m comment --comment "HOMEVPN_ISOLATE" -j DROP 2>/dev/null || \
                 iptables -I FORWARD 1 -i "$ia" -o "$ib" -m comment --comment "HOMEVPN_ISOLATE" -j DROP 2>/dev/null
@@ -743,19 +1045,17 @@ EOF
         return 0
     fi
 
-    local name key ip act allowed
-    while IFS='|' read -r name key ip act; do
+    local name key idx type
+    while IFS='|' read -r name key idx type; do
         [ -z "$key" ] && continue
-        if [ "$act" = "si" ]; then
-            allowed="0.0.0.0/0"
-        else
-            allowed="${ip}/32"
-        fi
+        # Un nodo movil (socks) no tiene clave ni peer WireGuard: se
+        # omite para no escribir un [Peer] invalido en wg-home.conf.
+        [ "${type:-wg}" = "socks" ] && continue
         cat <<EOF
 [Peer]
-# Nodo: ${name}  (${ip})$([ "$act" = "si" ] && echo "  — SALIDA ACTIVA")
+# Nodo: ${name}  ($(_wgn_nodeip "$idx"))
 PublicKey           = ${key}
-AllowedIPs          = ${allowed}
+AllowedIPs          = $(_wgn_nodeip "$idx")/32
 PersistentKeepalive = 0
 
 EOF
@@ -1086,24 +1386,35 @@ _wgh_apply_user_routing() {
     # nodo tiene su propia default en su propia tabla, y a cada
     # usuario se le pone la marca del nodo que le toca. Dos usuarios
     # pueden salir por sitios distintos al mismo tiempo.
-    local name key idx ifc mark tbl nodeip total_users=0
-    while IFS='|' read -r name key idx; do
+    local name key idx type ifc mark tbl nodeip redport total_users=0
+    while IFS='|' read -r name key idx type; do
         [ -z "$idx" ] && continue
-        ifc=$(_wgn_iface "$idx"); mark=$(_wgn_mark "$idx")
-        tbl=$(_wgn_table "$idx"); nodeip=$(_wgn_nodeip "$idx")
+        mark=$(_wgn_mark "$idx")
 
-        ip route replace default via "${nodeip}" dev "${ifc}" table "${tbl}" 2>/dev/null
+        if [ "${type:-wg}" = "socks" ]; then
+            # Nodo movil: sin ruta ni interfaz. redsocks toma el trafico
+            # marcado y lo entrega al SOCKS inverso del telefono.
+            redport=$(_wgn_redport "$idx")
+            _socks_up "$idx" >/dev/null 2>&1 || true
+            # Solo TCP: el SOCKS no transporta UDP. El DNS resuelve en el VPS.
+            iptables -t nat -C OUTPUT -p tcp -m mark --mark "${mark}" -m comment --comment "HOMEVPN_SOCKS" -j REDIRECT --to-ports "${redport}" 2>/dev/null || \
+                iptables -t nat -A OUTPUT -p tcp -m mark --mark "${mark}" -m comment --comment "HOMEVPN_SOCKS" -j REDIRECT --to-ports "${redport}" 2>/dev/null || true
+        else
+            ifc=$(_wgn_iface "$idx"); tbl=$(_wgn_table "$idx"); nodeip=$(_wgn_nodeip "$idx")
 
-        ip rule show | grep -q "fwmark ${mark} lookup ${tbl}" || \
-            ip rule add fwmark "${mark}" table "${tbl}" priority $(( 1000 + idx )) 2>/dev/null || true
+            ip route replace default via "${nodeip}" dev "${ifc}" table "${tbl}" 2>/dev/null
 
-        # NAT y reenvio de esta interfaz
-        iptables -t nat -C POSTROUTING -o "${ifc}" -m comment --comment "HOMEVPN_NAT" -j MASQUERADE 2>/dev/null || \
-            iptables -t nat -A POSTROUTING -o "${ifc}" -m comment --comment "HOMEVPN_NAT" -j MASQUERADE 2>/dev/null || true
-        iptables -C FORWARD -o "${ifc}" -m comment --comment "HOMEVPN_FORWARD" -j ACCEPT 2>/dev/null || \
-            iptables -A FORWARD -o "${ifc}" -m comment --comment "HOMEVPN_FORWARD" -j ACCEPT 2>/dev/null || true
-        iptables -C FORWARD -i "${ifc}" -m state --state RELATED,ESTABLISHED -m comment --comment "HOMEVPN_FORWARD" -j ACCEPT 2>/dev/null || \
-            iptables -A FORWARD -i "${ifc}" -m state --state RELATED,ESTABLISHED -m comment --comment "HOMEVPN_FORWARD" -j ACCEPT 2>/dev/null || true
+            ip rule show | grep -q "fwmark ${mark} lookup ${tbl}" || \
+                ip rule add fwmark "${mark}" table "${tbl}" priority $(( 1000 + idx )) 2>/dev/null || true
+
+            # NAT y reenvio de esta interfaz
+            iptables -t nat -C POSTROUTING -o "${ifc}" -m comment --comment "HOMEVPN_NAT" -j MASQUERADE 2>/dev/null || \
+                iptables -t nat -A POSTROUTING -o "${ifc}" -m comment --comment "HOMEVPN_NAT" -j MASQUERADE 2>/dev/null || true
+            iptables -C FORWARD -o "${ifc}" -m comment --comment "HOMEVPN_FORWARD" -j ACCEPT 2>/dev/null || \
+                iptables -A FORWARD -o "${ifc}" -m comment --comment "HOMEVPN_FORWARD" -j ACCEPT 2>/dev/null || true
+            iptables -C FORWARD -i "${ifc}" -m state --state RELATED,ESTABLISHED -m comment --comment "HOMEVPN_FORWARD" -j ACCEPT 2>/dev/null || \
+                iptables -A FORWARD -i "${ifc}" -m state --state RELATED,ESTABLISHED -m comment --comment "HOMEVPN_FORWARD" -j ACCEPT 2>/dev/null || true
+        fi
 
         # Marcar por UID a los usuarios asignados a ESTE nodo
         local u uid n=0
@@ -1155,12 +1466,20 @@ _wgh_routing_off_internal() {
             iptables -t mangle $rule 2>/dev/null || break
         done
     done
-    while iptables -S -t nat 2>/dev/null | grep -q "HOMEVPN_NAT"; do
-        rule=$(iptables -S -t nat 2>/dev/null | grep "HOMEVPN_NAT" | head -1 | sed 's/^-A /-D /')
-        [ -z "$rule" ] && break
-        # shellcheck disable=SC2086
-        iptables -t nat $rule 2>/dev/null || break
+    for tag in HOMEVPN_NAT HOMEVPN_SOCKS; do
+        while iptables -S -t nat 2>/dev/null | grep -q "$tag"; do
+            rule=$(iptables -S -t nat 2>/dev/null | grep "$tag" | head -1 | sed 's/^-A /-D /')
+            [ -z "$rule" ] && break
+            # shellcheck disable=SC2086
+            iptables -t nat $rule 2>/dev/null || break
+        done
     done
+    # Apagar los redsocks de los nodos socks: sin usuarios enrutados no
+    # tienen nada que hacer, y asi no dejan un servicio suelto corriendo.
+    local sidx styp sname skey
+    while IFS='|' read -r sname skey sidx styp; do
+        [ "${styp:-wg}" = "socks" ] && _socks_down "$sidx"
+    done < <(_wgh_nodes_list)
     while iptables -S FORWARD 2>/dev/null | grep -q "HOMEVPN_FORWARD"; do
         rule=$(iptables -S FORWARD 2>/dev/null | grep "HOMEVPN_FORWARD" | head -1 | sed 's/^-A /-D /')
         [ -z "$rule" ] && break
@@ -1345,15 +1664,16 @@ wghome_show_pubkey() {
     echo -e "$SEP"
     echo -e "  ${WH}Nodos registrados${CR}"
     echo ""
-    local name key ip act n=0
-    while IFS='|' read -r name key ip act; do
-        [ -z "$key" ] && continue
+    local name key idx type n=0 etiq
+    while IFS='|' read -r name key idx type; do
+        [ -z "$idx" ] && continue
         n=$((n+1))
-        if [ "$act" = "si" ]; then
-            echo -e "  ${CY}[$n]${CR} ${WH}${name}${CR} ${DM}—${CR} ${CY}${ip}${CR} ${GR}(salida activa)${CR}"
+        if [ "${type:-wg}" = "socks" ]; then
+            etiq="${DM}movil (SOCKS)${CR}"
         else
-            echo -e "  ${CY}[$n]${CR} ${WH}${name}${CR} ${DM}—${CR} ${CY}${ip}${CR}"
+            etiq="${CY}$(_wgn_nodeip "$idx")${CR}"
         fi
+        echo -e "  ${CY}[$n]${CR} ${WH}${name}${CR} ${DM}—${CR} ${etiq}"
     done < <(_wgh_nodes_list)
 
     echo ""
@@ -1364,10 +1684,20 @@ wghome_show_pubkey() {
     line=$(_wgh_nodes_list | sed -n "${pick}p")
     [ -z "$line" ] && { echo -e "  ${RD}[-]${CR} Opción no válida."; sleep 2; return; }
 
-    local n_name n_key n_ip
+    local n_name n_key n_idx n_type
     n_name=$(echo "$line" | cut -d'|' -f1)
     n_key=$(echo "$line" | cut -d'|' -f2)
-    n_ip=$(echo "$line" | cut -d'|' -f3)
+    n_idx=$(echo "$line" | cut -d'|' -f3)
+    n_type=$(echo "$line" | cut -d'|' -f4); [ -z "$n_type" ] && n_type="wg"
+
+    # Un nodo movil no lleva config WireGuard: se le enseñan los pasos
+    # de Termux, que es lo unico que necesita para conectarse.
+    if [ "$n_type" = "socks" ]; then
+        _socks_show_instructions "$n_idx" "$n_name"
+        return
+    fi
+    local n_ip
+    n_ip=$(_wgn_nodeip "$n_idx")
 
     clear
     print_title 2>/dev/null || true
@@ -1442,25 +1772,38 @@ wghome_manage_nodes() {
         if [ "${total:-0}" -eq 0 ]; then
             echo -e "${UI_PAD}${DM}No hay ningun nodo registrado todavia.${CR}"
         else
-            printf "${UI_PAD}${DM}%-14s %-11s %-8s %-7s %s${CR}\n" "NOMBRE" "IP TUNEL" "PUERTO" "USUAR." "ESTADO"
-            local name key idx hs est nu
-            while IFS='|' read -r name key idx; do
+            printf "${UI_PAD}${DM}%-13s %-6s %-10s %-7s %s${CR}\n" "NOMBRE" "TIPO" "PUERTO" "USUAR." "ESTADO"
+            local name key idx type hs est nu tipo puerto
+            while IFS='|' read -r name key idx type; do
                 [ -z "$idx" ] && continue
+                type="${type:-wg}"
                 nu=$(_wgh_node_users "$name" | wc -l)
-                if ! _wgh_node_is_up "$idx"; then
-                    est="${RD}apagado${CR}"
-                else
-                    hs=$(_wgh_node_hs "$idx")
-                    if [ "$hs" -ge 0 ] 2>/dev/null && [ "$hs" -lt 180 ]; then
-                        est="${GR}conectado (${hs}s)${CR}"
-                    elif [ "$hs" -ge 0 ] 2>/dev/null; then
-                        est="${YL}visto hace ${hs}s${CR}"
+                if [ "$type" = "socks" ]; then
+                    tipo="movil"; puerto=$(_wgn_socksport "$idx")
+                    if _socks_reverse_up "$idx"; then
+                        est="${GR}conectado${CR}"
+                    elif _socks_redsocks_up "$idx"; then
+                        est="${YL}esperando movil${CR}"
                     else
-                        est="${YL}sin handshake${CR}"
+                        est="${RD}apagado${CR}"
+                    fi
+                else
+                    tipo="wg"; puerto=$(_wgn_port "$idx")
+                    if ! _wgh_node_is_up "$idx"; then
+                        est="${RD}apagado${CR}"
+                    else
+                        hs=$(_wgh_node_hs "$idx")
+                        if [ "$hs" -ge 0 ] 2>/dev/null && [ "$hs" -lt 180 ]; then
+                            est="${GR}conectado (${hs}s)${CR}"
+                        elif [ "$hs" -ge 0 ] 2>/dev/null; then
+                            est="${YL}visto hace ${hs}s${CR}"
+                        else
+                            est="${YL}sin handshake${CR}"
+                        fi
                     fi
                 fi
-                printf "${UI_PAD}${WH}%-14s${CR} ${CY}%-11s${CR} ${DM}%-8s${CR} ${WH}%-7s${CR} %b\n" \
-                    "$name" "$(_wgn_nodeip "$idx")" "$(_wgn_port "$idx")" "$nu" "$est"
+                printf "${UI_PAD}${WH}%-13s${CR} ${DM}%-6s${CR} ${CY}%-10s${CR} ${WH}%-7s${CR} %b\n" \
+                    "$name" "$tipo" "$puerto" "$nu" "$est"
             done < <(_wgh_nodes_list)
         fi
 
@@ -1470,14 +1813,15 @@ wghome_manage_nodes() {
         echo -e "${UI_PAD}${DM}sale por el nodo que le asignes. Entre ellos no se ven.${CR}"
         ui_blank
 
-        ui_opt "1" "REGISTRAR NODO"    "clave publica"
+        ui_opt "1" "REGISTRAR NODO PC"  "WireGuard"
+        ui_opt "6" "REGISTRAR NODO MOVIL" "celular sin root"
         ui_opt "2" "ASIGNAR USUARIOS"  "quien sale por donde"
         ui_opt "3" "DATOS PARA EL NODO" "que poner alli"
         ui_opt "5" "DIRECCION PUBLICA"  "endpoint del VPS"
         ui_opt_danger "4" "ELIMINAR NODO" "lo desconecta"
         ui_opt "0" "VOLVER"
         ui_solid
-        ui_prompt "Elige una opcion [0-5]"
+        ui_prompt "Elige una opcion [0-6]"
 
         case "$REPLY_UI" in
             1)  ui_blank
@@ -1506,6 +1850,7 @@ wghome_manage_nodes() {
                 echo -e "${UI_PAD}${DM}     IP del VPS     :${CR} ${WH}$(_wgn_vpsip "$nidx")${CR}"
                 echo -e "${UI_PAD}${DM}   (opcion 3 te los repite cuando quieras)${CR}"
                 ui_pause ;;
+            6)  wghome_register_socks ;;
             2)  wghome_assign_users ;;
             3)  wghome_show_pubkey ;;
             5)  wghome_fix_endpoint ;;
@@ -1745,8 +2090,14 @@ wghome_routing_on() {
     # Asegurar corrección de AllowedIPs y Table = off
     _wgh_repair_conf_if_needed
 
-    # VALIDACIÓN 2: Túnel UP
-    if ! _wgh_is_up; then
+    # Cuantos nodos de cada tipo hay: las comprobaciones de tunel,
+    # handshake y ping solo tienen sentido si hay algun nodo WireGuard.
+    local wg_count socks_count
+    wg_count=$(_wgh_nodes_list | awk -F"|" '($4==""||$4=="wg"){c++}END{print c+0}')
+    socks_count=$(_wgh_nodes_list | awk -F"|" '$4=="socks"{c++}END{print c+0}')
+
+    # VALIDACIÓN 2: Túnel UP (solo si hay nodos WireGuard)
+    if [ "$wg_count" -gt 0 ] && ! _wgh_is_up; then
         echo -e "  ${YL}[!]${CR} El túnel ${WGH_IFACE} no está activo."
         read -p "$(echo -e ${DM})¿Deseas levantar el túnel ahora? (s/n) [s]: $(echo -e ${CR})" autoup
         autoup=${autoup:-s}
@@ -1784,8 +2135,8 @@ wghome_routing_on() {
         sleep 3; return
     }
 
-    # VALIDACIÓN 5: Handshake WireGuard
-    if ! _wgh_has_handshake; then
+    # VALIDACIÓN 5: Handshake WireGuard (solo si hay nodos WireGuard)
+    if [ "$wg_count" -gt 0 ] && ! _wgh_has_handshake; then
         echo -e "  ${YL}[!] ADVERTENCIA: No se detecta handshake reciente en WireGuard.${CR}"
         echo -e "  ${YL}[!] El PC doméstico puede no haber iniciado sesión aún.${CR}"
         echo ""
@@ -1796,18 +2147,20 @@ wghome_routing_on() {
         fi
     fi
 
-    # VALIDACIÓN 6: Conectividad ICMP a 10.77.77.2
-    local _aip; _aip=$(_wgh_nodes_first_ip)
-    echo -e "  ${YL}[*]${CR} Verificando ping a ${_aip}..."
-    if ! ping -c 2 -W 2 "${_aip}" &>/dev/null; then
-        echo -e "  ${YL}[!] El PC doméstico no respondió al ping en 10.77.77.2.${CR}"
-        read -p "$(echo -e ${DM})¿Continuar aplicando configuración? (s/n) [s]: $(echo -e ${CR})" resp_ping
-        resp_ping=${resp_ping:-s}
-        if [[ "$resp_ping" != "s" && "$resp_ping" != "S" ]]; then
-            echo -e "  ${GR}[+]${CR} Operación cancelada."; sleep 1; return
+    # VALIDACIÓN 6: Conectividad ICMP al PC (solo con nodos WireGuard)
+    if [ "$wg_count" -gt 0 ]; then
+        local _aip; _aip=$(_wgh_nodes_first_ip)
+        echo -e "  ${YL}[*]${CR} Verificando ping a ${_aip}..."
+        if ! ping -c 2 -W 2 "${_aip}" &>/dev/null; then
+            echo -e "  ${YL}[!] El PC doméstico no respondió al ping.${CR}"
+            read -p "$(echo -e ${DM})¿Continuar aplicando configuración? (s/n) [s]: $(echo -e ${CR})" resp_ping
+            resp_ping=${resp_ping:-s}
+            if [[ "$resp_ping" != "s" && "$resp_ping" != "S" ]]; then
+                echo -e "  ${GR}[+]${CR} Operación cancelada."; sleep 1; return
+            fi
+        else
+            echo -e "  ${GR}[+]${CR} Conectividad con el nodo verificada [OK]."
         fi
-    else
-        echo -e "  ${GR}[+]${CR} Conectividad con 10.77.77.2 verificada [OK]."
     fi
 
     # VALIDACIÓN 7: Usuarios HTTP Injector configurados
@@ -1854,7 +2207,7 @@ wghome_routing_on() {
         echo -e "  ${GR}[✓] ¡SALIDA RESIDENCIAL ACTIVADA CON ÉXITO!${CR}"
         echo -e "  ${GR}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${CR}"
         echo -e "  ${DM}• Usuarios HTTP Injector enrutados : ${WH}${#conf_users[@]}${CR}"
-        echo -e "  ${DM}• Salida hacia nodo activo         : ${WH}$(_wgh_nodes_first_name) ($(_wgh_nodes_first_ip))${CR}"
+        echo -e "  ${DM}• Nodos activos                    : ${WH}${wg_count} wg + ${socks_count} movil${CR}"
         echo -e "  ${DM}• SSH Administrativo / root        : ${GR}Protegido (IP VPS)${CR}"
         echo -e "  ${DM}• Comprueba la IP residencial con la opción 10 del menú.${CR}"
     else
