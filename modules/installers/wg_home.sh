@@ -787,6 +787,23 @@ _socks_reverse_up() {
 
 _socks_redsocks_up() { systemctl is-active --quiet "$(_socks_redunit "$1")" 2>/dev/null; }
 
+# ¿Existe la regla nat que desvia la marca de este nodo a su redsocks?
+_socks_redirect_present() {
+    local idx="$1" mark redport
+    mark=$(_wgn_mark "$idx"); redport=$(_wgn_redport "$idx")
+    iptables -t nat -C OUTPUT -p tcp -m mark --mark "${mark}" -m comment --comment "HOMEVPN_SOCKS" -j REDIRECT --to-ports "${redport}" 2>/dev/null
+}
+
+# Prueba en vivo: sale a Internet POR EL MOVIL (a traves del SOCKS inverso).
+# Devuelve la IP publica vista, o vacio si el camino esta roto.
+_socks_probe_ip() {
+    local idx="$1" sport
+    sport=$(_wgn_socksport "$idx")
+    command -v curl >/dev/null 2>&1 || return 1
+    curl -s -m 10 --socks5-hostname "127.0.0.1:${sport}" https://api.ipify.org 2>/dev/null \
+        || curl -s -m 10 --socks5-hostname "127.0.0.1:${sport}" http://ifconfig.me 2>/dev/null
+}
+
 _socks_up() {
     local idx="$1"
     _socks_redsocks_write "$idx"
@@ -2404,135 +2421,141 @@ wghome_check_ip() {
 wghome_diagnose() {
     clear
     print_title 2>/dev/null || true
-    echo -e "$SEP"
-    echo -e "${WH}     DIAGNÓSTICO COMPLETO — Gateway Residencial${CR}"
-    echo -e "$SEP"
-    echo ""
+    ui_section "DIAGNOSTICO DEL GATEWAY" "solo prueba lo que tienes montado"
+    ui_blank
 
     _wgh_repair_conf_if_needed
 
-    # 1. WIREGUARD
-    echo -e "  ${YL}[ 1/5 ] ESTADO WIREGUARD${CR}"
-    local svc_status
-    svc_status=$(systemctl is-active "wg-quick@${WGH_IFACE}" 2>/dev/null || echo "inactive")
-    if [ "$svc_status" = "active" ]; then
-        echo -e "    ${GR}[OK]${CR} Servicio wg-quick@${WGH_IFACE}: ACTIVO"
-    else
-        echo -e "    ${RD}[ERROR]${CR} Servicio wg-quick@${WGH_IFACE}: INACTIVO"
-    fi
-    if _wgh_is_up; then
-        echo -e "    ${GR}[OK]${CR} Interfaz ${WGH_IFACE}: UP"
-        local hs_sec
-        hs_sec=$(_wgh_handshake_seconds)
-        if [ "$hs_sec" != "never" ] && [ "$hs_sec" -lt 180 ]; then
-            echo -e "    ${GR}[OK]${CR} Handshake reciente: ${hs_sec}s atrás"
-        else
-            echo -e "    ${YL}[WARN]${CR} Handshake no reciente (${hs_sec}s)"
-        fi
-        local allowed
-        allowed=$(grep -E '^\s*AllowedIPs\s*=' "${WGH_CONF}" 2>/dev/null | awk -F'=' '{print $2}' | xargs)
-        if [ "$allowed" = "0.0.0.0/0" ]; then
-            echo -e "    ${GR}[OK]${CR} AllowedIPs en Droplet: 0.0.0.0/0 (Internet Gateway habilitado)"
-        else
-            echo -e "    ${RD}[ERROR]${CR} AllowedIPs en Droplet: ${allowed:-desconocido} (Debe ser 0.0.0.0/0)"
-        fi
-        if grep -q "Table[[:space:]]*=[[:space:]]*off" "${WGH_CONF}" 2>/dev/null; then
-            echo -e "    ${GR}[OK]${CR} Table = off configurado (tabla main protegida)"
-        else
-            echo -e "    ${YL}[WARN]${CR} Table = off no detectado en ${WGH_CONF}"
-        fi
-    else
-        echo -e "    ${RD}[ERROR]${CR} Interfaz ${WGH_IFACE}: DOWN (túnel detenido)"
-    fi
-    echo ""
+    local wg_count socks_count
+    wg_count=$(_wgh_nodes_list | awk -F'|' '($4==""||$4=="wg"){c++}END{print c+0}')
+    socks_count=$(_wgh_nodes_list | awk -F'|' '$4=="socks"{c++}END{print c+0}')
 
-    # 2. ROUTING & POLICY ROUTING
-    if _wgh_is_up; then
-        echo ""
-        echo -e "    ${DM}$(wg show "${WGH_IFACE}" 2>/dev/null | sed 's/^/    /' | head -12)${CR}"
+    if [ "$((wg_count+socks_count))" -eq 0 ]; then
+        ui_warn "No hay ningun nodo registrado. Registra uno en GESTIONAR NODOS."
+        ui_solid; ui_pause; return
     fi
-    echo ""
-    echo -e "  ${YL}[ 2/5 ] ENRUTAMIENTO Y POLICY ROUTING${CR}"
+
+    echo -e "${UI_PAD}${DM}Nodos: ${WH}${wg_count}${DM} WireGuard  +  ${WH}${socks_count}${DM} movil (SOCKS)${CR}"
+    ui_rule
+
+    # ---- COMUN: seguridad de la ruta SSH (vale para ambos metodos) ----
+    echo -e "${UI_PAD}${YL}[ COMUN ] Proteccion de la ruta SSH${CR}"
     local def_main
-    def_main=$(ip route show table main | grep '^default' | head -1)
-    if echo "$def_main" | grep -qv "wg-home"; then
-        echo -e "    ${GR}[OK]${CR} Tabla main default: ${def_main}"
+    def_main=$(ip route show table main 2>/dev/null | grep '^default' | head -1)
+    if echo "$def_main" | grep -q "wg-home"; then
+        echo -e "${UI_PAD}  ${RD}[ERROR]${CR} La ruta por defecto usa wg-home (SSH en riesgo): ${def_main}"
     else
-        echo -e "    ${RD}[ERROR]${CR} Tabla main usa wg-home (SSH en riesgo!): ${def_main}"
+        echo -e "${UI_PAD}  ${GR}[OK]${CR} Ruta por defecto intacta (SSH sale por la IP del VPS)"
     fi
-
-    local rt200
-    rt200=$(ip route show table "${WGH_RT_TABLE}" 2>/dev/null)
-    if [ -n "$rt200" ]; then
-        echo -e "    ${GR}[OK]${CR} Tabla 200 (${WGH_RT_NAME}): ${rt200}"
-    else
-        echo -e "    ${DM}[INFO]${CR} Tabla 200 vacía (salida residencial inactiva)"
-    fi
-
-    local rules
-    rules=$(ip rule show | grep -E "homevpn|${WGH_RT_TABLE}" | head -5)
-    if [ -n "$rules" ]; then
-        echo -e "    ${GR}[OK]${CR} Reglas ip rule activas:"
-        echo "$rules" | sed 's/^/         /'
-    else
-        echo -e "    ${DM}[INFO]${CR} Sin reglas ip rule activas hacia tabla 200"
-    fi
+    _wgh_routing_is_active && echo -e "${UI_PAD}  ${GR}[OK]${CR} Salida residencial: ACTIVA" \
+                           || echo -e "${UI_PAD}  ${YL}[!]${CR} Salida residencial: APAGADA (enciendela para enrutar)"
     echo ""
 
-    # 3. HTTP INJECTOR STACK
-    echo -e "  ${YL}[ 3/5 ] STACK HTTP INJECTOR${CR}"
-    local hi_info
-    hi_info=$(_wgh_detect_http_injector)
-    local ssl_p ssl_prc int_p final_s
-    ssl_p=$(echo "$hi_info" | awk -F'|' '{print $1}' | cut -d= -f2)
-    ssl_prc=$(echo "$hi_info" | awk -F'|' '{print $2}' | cut -d= -f2)
-    int_p=$(echo "$hi_info" | awk -F'|' '{print $3}' | cut -d= -f2)
-    final_s=$(echo "$hi_info" | awk -F'|' '{print $5}' | cut -d= -f2)
+    # ================= WIREGUARD (solo si hay nodos wg) =================
+    if [ "$wg_count" -gt 0 ]; then
+        echo -e "${UI_PAD}${YL}[ WIREGUARD ] Tuneles y salida${CR}"
+        local name key idx type hs allowed
+        while IFS='|' read -r name key idx type; do
+            [ -z "$idx" ] && continue
+            [ "${type:-wg}" = "socks" ] && continue
+            if _wgh_node_is_up "$idx"; then
+                hs=$(_wgh_node_hs "$idx")
+                if [ "$hs" -ge 0 ] 2>/dev/null && [ "$hs" -lt 180 ]; then
+                    echo -e "${UI_PAD}  ${GR}[OK]${CR} ${WH}${name}${CR} ($(_wgn_iface "$idx")): UP, handshake ${hs}s"
+                else
+                    echo -e "${UI_PAD}  ${YL}[!]${CR} ${WH}${name}${CR} ($(_wgn_iface "$idx")): UP, sin handshake reciente"
+                fi
+                ip -o link show "$(_wgn_iface "$idx")" &>/dev/null && \
+                    ping -c1 -W2 "$(_wgn_nodeip "$idx")" &>/dev/null && \
+                    echo -e "${UI_PAD}     ${GR}[OK]${CR} Ping al nodo $(_wgn_nodeip "$idx"): responde" || \
+                    echo -e "${UI_PAD}     ${YL}[!]${CR} Ping al nodo $(_wgn_nodeip "$idx"): sin respuesta"
+            else
+                echo -e "${UI_PAD}  ${RD}[ERROR]${CR} ${WH}${name}${CR} ($(_wgn_iface "$idx")): DOWN"
+            fi
+        done < <(_wgh_nodes_list)
+        allowed=$(grep -E '^\s*AllowedIPs\s*=' "${WGH_CONF}" 2>/dev/null | head -1 | awk -F'=' '{print $2}' | xargs)
+        [ "$allowed" = "0.0.0.0/0" ] && echo -e "${UI_PAD}  ${GR}[OK]${CR} AllowedIPs 0.0.0.0/0 (gateway de Internet)" \
+                                     || echo -e "${UI_PAD}  ${YL}[!]${CR} AllowedIPs = ${allowed:-?} (deberia ser 0.0.0.0/0)"
+        echo ""
+    fi
 
-    echo -e "    Puerto SSL / TLS       : ${WH}${ssl_p}${CR} (${ssl_prc})"
-    echo -e "    Destino Interno        : ${WH}${int_p}${CR}"
-    echo -e "    Servicio SSH Final     : ${WH}${final_s}${CR}"
+    # =================== SOCKS (solo si hay nodos movil) ===================
+    if [ "$socks_count" -gt 0 ]; then
+        echo -e "${UI_PAD}${YL}[ SOCKS / MOVIL ] Tunel inverso y salida${CR}"
+        local sname skey sidx stype
+        while IFS='|' read -r sname skey sidx stype; do
+            [ "${stype:-wg}" = "socks" ] || continue
+            local sport redport user hay_llave
+            sport=$(_wgn_socksport "$sidx"); redport=$(_wgn_redport "$sidx"); user=$(_wgn_socksuser "$sidx")
+            echo -e "${UI_PAD}  ${WH}${sname}${CR} ${DM}(usuario ${user}, SOCKS ${sport})${CR}"
 
+            # a) llave autorizada
+            [ -s "/var/lib/vpsservice/${user}/.ssh/authorized_keys" ] && hay_llave=si || hay_llave=no
+            [ "$hay_llave" = si ] && echo -e "${UI_PAD}     ${GR}[OK]${CR} Llave del nodo autorizada" \
+                                  || echo -e "${UI_PAD}     ${RD}[ERROR]${CR} Sin llave autorizada (registra la clave del nodo)"
+
+            # b) movil conectado (puerto inverso escuchando)
+            if _socks_reverse_up "$sidx"; then
+                echo -e "${UI_PAD}     ${GR}[OK]${CR} Movil conectado (SOCKS escuchando en 127.0.0.1:${sport})"
+            else
+                echo -e "${UI_PAD}     ${RD}[ERROR]${CR} Movil NO conectado (nadie escucha en ${sport})"
+                echo -e "${UI_PAD}        ${DM}En el celular: abre el nodo y conecta (ssh -R).${CR}"
+            fi
+
+            # c) redsocks vivo
+            if _socks_redsocks_up "$sidx"; then
+                echo -e "${UI_PAD}     ${GR}[OK]${CR} redsocks activo ($(_socks_redunit "$sidx"), escucha ${redport})"
+            else
+                echo -e "${UI_PAD}     ${RD}[ERROR]${CR} redsocks caido ($(_socks_redunit "$sidx"))"
+                local jerr
+                jerr=$(journalctl -u "$(_socks_redunit "$sidx")" -n 2 --no-pager 2>/dev/null | tail -1)
+                [ -n "$jerr" ] && echo -e "${UI_PAD}        ${DM}${jerr}${CR}"
+            fi
+
+            # d) regla de redireccion de la marca
+            if _socks_redirect_present "$sidx"; then
+                echo -e "${UI_PAD}     ${GR}[OK]${CR} Redireccion de la marca $(_wgn_mark "$sidx") -> redsocks activa"
+            else
+                echo -e "${UI_PAD}     ${YL}[!]${CR} Sin regla REDIRECT (enciende la salida residencial)"
+            fi
+
+            # e) usuarios asignados a este nodo
+            local nu
+            nu=$(_wgh_node_users "$sname" | tr '\n' ' ')
+            [ -n "$nu" ] && echo -e "${UI_PAD}     ${GR}[OK]${CR} Usuarios: ${WH}${nu}${CR}" \
+                         || echo -e "${UI_PAD}     ${YL}[!]${CR} Ningun usuario asignado a este nodo"
+
+            # f) PRUEBA EN VIVO: salir a Internet por el movil
+            if _socks_reverse_up "$sidx"; then
+                echo -e "${UI_PAD}     ${DM}Probando salida real por el movil...${CR}"
+                local exitip vpsip
+                exitip=$(_socks_probe_ip "$sidx"); vpsip=$(_wgh_get_droplet_ip)
+                if [ -z "$exitip" ]; then
+                    echo -e "${UI_PAD}     ${RD}[ERROR]${CR} El SOCKS del movil no dio salida a Internet."
+                    echo -e "${UI_PAD}        ${DM}El movil esta conectado pero su SOCKS no navega:${CR}"
+                    echo -e "${UI_PAD}        ${DM}revisa que el telefono tenga datos y que el nodo${CR}"
+                    echo -e "${UI_PAD}        ${DM}use reenvio dinamico (ssh -R sin destino).${CR}"
+                elif [ "$exitip" = "$vpsip" ]; then
+                    echo -e "${UI_PAD}     ${RD}[ERROR]${CR} La salida da la IP del VPS (${exitip}), no la del movil."
+                else
+                    echo -e "${UI_PAD}     ${GR}[OK]${CR} Salida por el movil: IP ${WH}${exitip}${CR} ${DM}(residencial)${CR}"
+                fi
+            fi
+            echo ""
+        done < <(_wgh_nodes_list)
+        echo -e "${UI_PAD}${DM}Nota: el SOCKS transporta solo TCP. El DNS (UDP) resuelve${CR}"
+        echo -e "${UI_PAD}${DM}en el VPS; las conexiones TCP salen por el movil.${CR}"
+        echo ""
+    fi
+
+    # ---- COMUN: usuarios configurados ----
     local -a cusers=()
     while IFS= read -r cu; do [ -n "$cu" ] && cusers+=("$cu"); done < <(_wgh_get_configured_users)
-    if [ ${#cusers[@]} -gt 0 ]; then
-        echo -e "    ${GR}[OK]${CR} Usuarios enrutados por este módulo: ${WH}${cusers[*]}${CR}"
-    else
-        echo -e "    ${YL}[WARN]${CR} Ningún usuario configurado en ${WGH_USERS_CONF} (usa opción 12)"
-    fi
-    echo ""
+    [ ${#cusers[@]} -gt 0 ] && echo -e "${UI_PAD}${GR}[OK]${CR} Usuarios enrutados en total: ${WH}${#cusers[@]}${CR}" \
+                            || echo -e "${UI_PAD}${YL}[!]${CR} Ningun usuario asignado a salir por un nodo"
 
-    # 4. FIREWALL (IPTABLES / MANGLE)
-    echo -e "  ${YL}[ 4/5 ] FIREWALL Y MARCAS (MANGLE/NAT)${CR}"
-    local backend
-    backend=$(_wgh_detect_firewall_backend)
-    echo -e "    Backend detectado      : ${WH}${backend}${CR}"
-    local mark_rules nat_rules
-    mark_rules=$(iptables -t mangle -S OUTPUT 2>/dev/null | grep "HOMEVPN" | wc -l)
-    nat_rules=$(iptables -t nat -S POSTROUTING 2>/dev/null | grep "HOMEVPN_NAT" | wc -l)
-    echo -e "    Reglas mangle (marcado): ${WH}${mark_rules} regla(s) activas${CR}"
-    echo -e "    Reglas NAT (masquerade): ${WH}${nat_rules} regla(s) activas${CR}"
-    echo ""
-
-    # 5. CONECTIVIDAD
-    echo -e "  ${YL}[ 5/5 ] PRUEBAS DE CONECTIVIDAD${CR}"
-    if _wgh_is_up; then
-        if ping -c 2 -W 2 "${WGH_PEER_IP}" &>/dev/null; then
-            echo -e "    ${GR}[OK]${CR} Ping a PC doméstico (${WGH_PEER_IP}): ÉXITO"
-        else
-            echo -e "    ${RD}[ERROR]${CR} Ping a PC doméstico (${WGH_PEER_IP}): FALLÓ"
-        fi
-    else
-        echo -e "    ${DM}[INFO]${CR} Túnel inactivo, omitiendo ping a ${WGH_PEER_IP}"
-    fi
-
-    local ip_norm
-    ip_norm=$(_wgh_get_droplet_ip)
-    echo -e "    ${GR}[OK]${CR} Salida normal Droplet : ${ip_norm}"
-
-    echo ""
-    echo -e "$SEP"
-    read -p "$(echo -e ${DM})Presiona Enter para continuar...$(echo -e ${CR})"
+    ui_solid
+    ui_pause
 }
 
 # =========================================================
