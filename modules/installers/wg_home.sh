@@ -286,6 +286,50 @@ _wgh_ensure_rt_table() {
 }
 
 # Activar IP forwarding de forma persistente
+# =========================================================
+# FILTRO DE RUTA INVERSA
+# ---------------------------------------------------------
+# Con rp_filter en 1 (estricto, el valor por defecto en muchos
+# sistemas) el kernel descarta un paquete si la mejor ruta hacia
+# su origen no sale por la interfaz por la que entro.
+#
+# Eso mata este montaje sin dejar rastro: las respuestas de
+# Internet vuelven por wg-home con origen una IP publica, y la
+# ruta hacia esa IP va por eth0, no por wg-home. Se descartan
+# todas. El tunel se ve perfecto, el handshake entra, los
+# contadores suben... y no hay Internet.
+#
+# Se pasa a 2 (laxo): basta con que el origen sea alcanzable por
+# alguna interfaz. Es lo correcto en una maquina que enruta por
+# politicas, y sigue descartando origenes imposibles.
+# =========================================================
+_wgh_fix_rp_filter() {
+    # El valor efectivo de una interfaz es el maximo entre 'all' y
+    # el suyo, asi que no basta con tocar uno de los dos.
+    sysctl -w net.ipv4.conf.all.rp_filter=2 &>/dev/null
+    sysctl -w net.ipv4.conf.default.rp_filter=2 &>/dev/null
+    local i ifc dev
+    for i in $(_wgh_nodes_list 2>/dev/null | cut -d'|' -f3); do
+        ifc=$(_wgn_iface "$i")
+        sysctl -w "net.ipv4.conf.${ifc}.rp_filter=2" &>/dev/null
+    done
+    dev=$(ip route show default 2>/dev/null | awk '/^default/{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+    [ -n "$dev" ] && sysctl -w "net.ipv4.conf.${dev}.rp_filter=2" &>/dev/null
+
+    # Persistente: si no, se pierde en el proximo reinicio y el
+    # gateway deja de dar Internet sin que nadie toque nada.
+    mkdir -p /etc/sysctl.d 2>/dev/null
+    cat > /etc/sysctl.d/99-homevpn.conf <<EOF
+# Gateway residencial: el policy routing necesita rp_filter laxo.
+# Con el valor estricto (1) se descartan las respuestas que vuelven
+# por el tunel y no hay salida a Internet.
+net.ipv4.ip_forward=1
+net.ipv4.conf.all.rp_filter=2
+net.ipv4.conf.default.rp_filter=2
+EOF
+    _wgh_log "rp_filter ajustado a 2 (laxo) y hecho persistente"
+}
+
 _wgh_enable_forwarding() {
     sysctl -w net.ipv4.ip_forward=1 &>/dev/null
     if ! grep -q "^net.ipv4.ip_forward" /etc/sysctl.conf 2>/dev/null; then
@@ -611,7 +655,15 @@ _wgh_node_up() {
     _wgh_node_write_conf "$idx" || return 1
 
     if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
+        # El puerto por el que el nodo llama.
         ufw allow "$(_wgn_port "$idx")/udp" &>/dev/null
+        # Y la entrada POR EL TUNEL. El panel deja UFW en "deny
+        # incoming", y aunque las respuestas suelen entrar por la
+        # regla de conexiones establecidas, cualquier trafico que
+        # inicie el nodo —un ping de prueba, por ejemplo— se
+        # descartaria sin dejar rastro. El nodo es un equipo propio,
+        # y esto solo abre su interfaz, no Internet.
+        ufw allow in on "$ifc" &>/dev/null
     fi
 
     if _wgh_node_is_up; then
@@ -1429,6 +1481,7 @@ wghome_configure_fallback() {
 _wgh_apply_user_routing() {
     _wgh_ensure_rt_table
     _wgh_enable_forwarding
+    _wgh_fix_rp_filter
 
     local droplet_pub_ip
     droplet_pub_ip=$(_wgh_get_droplet_ip)
@@ -1484,6 +1537,19 @@ _wgh_apply_user_routing() {
             ip rule show | grep -q "fwmark ${mark} lookup ${tbl}" || \
                 ip rule add fwmark "${mark}" table "${tbl}" priority $(( 1000 + idx )) 2>/dev/null || true
 
+            # Regla por origen: lo que salga con la IP de esta interfaz usa
+            # su tabla. Sin esto, un 'curl --interface wg-homeN' se va por
+            # eth0 con un origen que no le corresponde, y la comprobacion
+            # de IP de salida da un resultado enganoso.
+            ip rule show | grep -q "from $(_wgn_vpsip "$idx") lookup ${tbl}" || \
+                ip rule add from "$(_wgn_vpsip "$idx")" table "${tbl}" priority $(( 900 + idx )) 2>/dev/null || true
+
+            # El tunel recorta el MTU. Sin ajustar el MSS el handshake TCP
+            # pasa y luego las paginas grandes se quedan a medias: el fallo
+            # tipico de "conecta pero no carga".
+            iptables -t mangle -C POSTROUTING -o "${ifc}" -p tcp --tcp-flags SYN,RST SYN -m comment --comment "HOMEVPN_MSS" -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || \
+                iptables -t mangle -A POSTROUTING -o "${ifc}" -p tcp --tcp-flags SYN,RST SYN -m comment --comment "HOMEVPN_MSS" -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || true
+
             # NAT y reenvio de esta interfaz
             iptables -t nat -C POSTROUTING -o "${ifc}" -m comment --comment "HOMEVPN_NAT" -j MASQUERADE 2>/dev/null || \
                 iptables -t nat -A POSTROUTING -o "${ifc}" -m comment --comment "HOMEVPN_NAT" -j MASQUERADE 2>/dev/null || true
@@ -1535,7 +1601,7 @@ _wgh_routing_off_internal() {
     # las nuestras: el cortafuegos que ya tuviera el VPS no se toca.
     while iptables -t mangle -D OUTPUT -m comment --comment "HOMEVPN_MARK" 2>/dev/null; do :; done
     local rule
-    for tag in HOMEVPN_MARK HOMEVPN_HTTP_INJECTOR HOMEVPN_EXCLUDE; do
+    for tag in HOMEVPN_MARK HOMEVPN_HTTP_INJECTOR HOMEVPN_EXCLUDE HOMEVPN_MSS; do
         while iptables -S -t mangle 2>/dev/null | grep -q "$tag"; do
             rule=$(iptables -S -t mangle 2>/dev/null | grep "$tag" | head -1 | sed 's/^-A /-D /')
             [ -z "$rule" ] && break
@@ -2330,88 +2396,72 @@ wghome_routing_off() {
 wghome_check_ip() {
     clear
     print_title 2>/dev/null || true
-    echo -e "$SEP"
-    echo -e "${WH}     VERIFICAR IP DE SALIDA (NORMAL VS RESIDENCIAL)${CR}"
-    echo -e "$SEP"
-    echo ""
+    ui_section "IP DE SALIDA" "por donde sale cada quien, de verdad"
+    ui_blank
 
-    _wgh_repair_conf_if_needed
-
-    echo -e "  ${YL}[*]${CR} Consultando IP pública del Droplet (tabla main)..."
-    local ip_normal country_normal
+    local ip_normal
     ip_normal=$(_wgh_get_droplet_ip)
-    country_normal=$(curl -4 -s --max-time 4 "http://ip-api.com/json/${ip_normal}?fields=country,city,isp" 2>/dev/null | grep -oE '"country":"[^"]*"' | cut -d: -f2 | tr -d '"' || echo "DigitalOcean")
-    [ -z "$country_normal" ] && country_normal="DigitalOcean Cloud"
+    echo -e "${UI_PAD}$(ui_cell "IP del VPS" "${ip_normal:-desconocida}" 40 "$WH")"
+    echo -e "${UI_PAD}${DM}   Es la que ven los usuarios SIN nodo asignado.${CR}"
+    ui_blank
+    ui_rule
+    ui_blank
 
-    echo -e "  ${DM}IP pública normal Droplet :${CR} ${GR}${ip_normal}${CR}"
-    echo -e "  ${DM}País / Origen             :${CR} ${WH}${country_normal}${CR}"
-    echo ""
-
-    # Datos WireGuard
-    local hs_sec hs_str rx_tx
-    hs_sec=$(_wgh_handshake_seconds)
-    if [ "$hs_sec" = "never" ]; then
-        hs_str="${RD}Sin handshake registrado${CR}"
-    else
-        hs_str="${CY}${hs_sec}s atrás${CR}"
+    if [ "$(_wgh_nodes_count)" -eq 0 ]; then
+        ui_warn "No hay nodos registrados."
+        ui_pause; return
     fi
 
-    rx_tx=$(wg show "${WGH_IFACE}" transfer 2>/dev/null | awk '{printf "RX: %s bytes | TX: %s bytes", $2, $3}' || echo "N/A")
+    if ! _wgh_routing_is_active; then
+        ui_warn "La salida residencial esta apagada."
+        echo -e "${UI_PAD}${DM}   Encendiendola, estas pruebas saldran por los nodos.${CR}"
+        ui_blank
+    fi
 
-    echo -e "  ${DM}Estado interfaz wg-home   :${CR} $(_wgh_is_up && echo -e "${GR}UP${CR}" || echo -e "${RD}DOWN${CR}")"
-    echo -e "  ${DM}Estado Gateway Residencial:${CR} $(_wgh_routing_is_active && echo -e "${GR}ACTIVO${CR}" || echo -e "${RD}INACTIVO${CR}")"
-    echo -e "  ${DM}Último handshake          :${CR} ${hs_str}"
-    echo -e "  ${DM}Transferencia             :${CR} ${WH}${rx_tx}${CR}"
-    echo ""
+    # La prueba de verdad es salir COMO el usuario: recorre
+    # exactamente el mismo camino que su trafico —su UID recibe la
+    # marca, la marca elige la tabla, la tabla el nodo—. Probar con
+    # 'curl --interface' solo demuestra que la interfaz existe, no
+    # que el reparto por usuario funcione.
+    local name key idx u probe ip_res
+    while IFS='|' read -r name key idx; do
+        [ -z "$idx" ] && continue
+        echo -e "${UI_PAD}${WH}Nodo ${name}${CR} ${DM}($(_wgn_iface "$idx"), $(_wgn_nodeip "$idx"))${CR}"
 
-    if _wgh_is_up; then
-        echo -e "  ${YL}[*]${CR} Consultando IP residencial vía gateway doméstico (10.77.77.2)..."
-
-        # Asegurar regla temporal para prueba si la salida residencial no está activa globalmente
-        local temp_rule=false
-        if ! _wgh_routing_is_active; then
-            ip route replace default via "$(_wgh_nodes_first_ip)" dev "${WGH_IFACE}" table "${WGH_RT_TABLE}" 2>/dev/null || true
-            ip rule add from "${WGH_DROPLET_IP}" table "${WGH_RT_TABLE}" priority 1000 2>/dev/null || true
-            temp_rule=true
+        if ! _wgh_node_is_up "$idx"; then
+            echo -e "${UI_PAD}  ${RD}interfaz apagada${CR}"
+            ui_blank; continue
+        fi
+        if [ "$(_wgh_node_hs "$idx")" -lt 0 ] 2>/dev/null; then
+            echo -e "${UI_PAD}  ${RD}sin handshake: el nodo no ha conectado nunca${CR}"
+            ui_blank; continue
         fi
 
-        local ip_res country_res
-        ip_res=$(curl -4 -s --max-time 7 --interface "${WGH_IFACE}" https://api.ipify.org 2>/dev/null || \
-                 curl -4 -s --max-time 7 --interface "${WGH_IFACE}" https://ifconfig.me 2>/dev/null || \
-                 curl -4 -s --max-time 7 --interface "${WGH_IFACE}" https://icanhazip.com 2>/dev/null || echo "N/A")
-        ip_res=$(echo "$ip_res" | tr -d ' \r\n')
-
-        if [ "$temp_rule" = true ]; then
-            ip rule del from "${WGH_DROPLET_IP}" table "${WGH_RT_TABLE}" 2>/dev/null || true
-            ip route flush table "${WGH_RT_TABLE}" 2>/dev/null || true
+        probe=$(_wgh_node_users "$name" | head -1)
+        if [ -z "$probe" ]; then
+            echo -e "${UI_PAD}  ${YL}sin usuarios asignados${CR}"
+            echo -e "${UI_PAD}  ${DM}Asignale alguno para poder probar su salida.${CR}"
+            ui_blank; continue
         fi
 
-        if [ -n "$ip_res" ] && [ "$ip_res" != "N/A" ]; then
-            country_res=$(curl -4 -s --max-time 4 "http://ip-api.com/json/${ip_res}?fields=country,city,isp" 2>/dev/null | grep -oE '"country":"[^"]*"' | cut -d: -f2 | tr -d '"' || echo "Colombia")
-            [ -z "$country_res" ] && country_res="Colombia (Residencial)"
+        echo -e "${UI_PAD}  ${DM}Probando como '${probe}'...${CR}"
+        ip_res=$(runuser -u "$probe" -- curl -4 -s --max-time 12 https://api.ipify.org 2>/dev/null)
+        [ -z "$ip_res" ] && ip_res=$(runuser -u "$probe" -- curl -4 -s --max-time 12 https://ifconfig.me 2>/dev/null)
 
-            echo -e "  ${DM}IP residencial (wg-home)  :${CR} ${CY}${ip_res}${CR}"
-            echo -e "  ${DM}País / ISP Residencial    :${CR} ${WH}${country_res}${CR}"
-            echo ""
-            if [ "$ip_normal" != "$ip_res" ]; then
-                echo -e "  ${GR}[✓] ¡GATEWAY RESIDENCIAL FUNCIONANDO CORRECTAMENTE!${CR}"
-                echo -e "  ${DM}    Las IPs son diferentes. El tráfico sale por el PC doméstico.${CR}"
-            else
-                echo -e "  ${YL}[!] La IP detectada es igual a la de la Droplet.${CR}"
-                echo -e "  ${DM}    Verifica NAT/MASQUERADE en wlan0 del PC doméstico.${CR}"
-            fi
+        if [ -z "$ip_res" ]; then
+            echo -e "${UI_PAD}  ${RD}sin respuesta: el trafico no llega a Internet${CR}"
+            echo -e "${UI_PAD}  ${DM}Revisa en el nodo que el reenvio y el NAT esten puestos.${CR}"
+        elif [ "$ip_res" = "$ip_normal" ]; then
+            echo -e "${UI_PAD}  ${YL}${ip_res}${CR} ${RD}<- es la IP del VPS, no la del nodo${CR}"
+            echo -e "${UI_PAD}  ${DM}Su trafico no se esta desviando: comprueba que el${CR}"
+            echo -e "${UI_PAD}  ${DM}usuario tenga UID >= 1000 y la salida este encendida.${CR}"
         else
-            echo -e "  ${RD}[-] IP residencial : N/A (Sin respuesta desde 10.77.77.2)${CR}"
-            echo -e "  ${DM}    Verifica:${CR}"
-            echo -e "  ${DM}    1. Que el PC doméstico (CachyOS) tenga WireGuard activo.${CR}"
-            echo -e "  ${DM}    2. Que tenga iptables MASQUERADE en su interfaz wlan0.${CR}"
-            echo -e "  ${DM}    3. Prueba ping con la opción 7 del menú.${CR}"
+            echo -e "${UI_PAD}  ${GR}${ip_res}${CR} ${DM}<- sale por el nodo${CR}"
         fi
-    else
-        echo -e "  ${YL}[!] El túnel wg-home está inactivo. Actívalo con la opción 4.${CR}"
-    fi
+        ui_blank
+    done < <(_wgh_nodes_list)
 
-    echo ""
+    ui_solid
     read -p "$(echo -e ${DM})Presiona Enter para continuar...$(echo -e ${CR})"
 }
 
