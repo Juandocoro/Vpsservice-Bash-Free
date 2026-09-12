@@ -2680,6 +2680,164 @@ wghome_remove() {
 # =========================================================
 # CAMBIO 13: MENÚ PRINCIPAL DEL MÓDULO (14 OPCIONES)
 # =========================================================
+# =========================================================
+# ¿POR QUE NO HAY INTERNET?
+# ---------------------------------------------------------
+# Recorre la cadena entera, eslabon por eslabon, con datos
+# reales del sistema. La clave son los CONTADORES de las
+# reglas: una regla instalada por la que no ha pasado ni un
+# paquete dice que el trafico no llega hasta ella, y eso
+# senala el eslabon roto sin tener que adivinarlo.
+# =========================================================
+_wgh_rule_pkts() {
+    # Paquetes que han cruzado una regla, buscada por comentario.
+    local tabla="$1" cadena="$2" patron="$3"
+    iptables -t "$tabla" -L "$cadena" -v -n -x 2>/dev/null \
+        | grep -- "$patron" | awk '{s+=$1} END{print s+0}'
+}
+
+wghome_why_no_internet() {
+    clear
+    print_title 2>/dev/null || true
+    ui_section "POR QUE NO HAY INTERNET" "la cadena completa, eslabon a eslabon"
+    ui_blank
+
+    local problemas=0
+    _p() { problemas=$((problemas+1)); echo -e "${UI_PAD}  ${RD}✗ $1${CR}"; [ -n "${2:-}" ] && echo -e "${UI_PAD}    ${DM}$2${CR}"; }
+    _v() { echo -e "${UI_PAD}  ${GR}✓ $1${CR}"; }
+    _i() { echo -e "${UI_PAD}    ${DM}$1${CR}"; }
+
+    # --- 1. Nodos ---
+    echo -e "${UI_PAD}${YL}1 · Nodos${CR}"
+    local total idx name key
+    total=$(_wgh_nodes_count)
+    if [ "${total:-0}" -eq 0 ]; then
+        _p "No hay ningun nodo registrado." "GESTIONAR NODOS > REGISTRAR NODO"
+        ui_solid; ui_pause; return
+    fi
+    _v "${total} nodo(s) registrado(s)."
+    local vivos=0
+    while IFS='|' read -r name key idx; do
+        [ -z "$idx" ] && continue
+        if ! _wgh_node_is_up "$idx"; then
+            _p "'${name}': su interfaz $(_wgn_iface "$idx") esta apagada." "Se levanta sola al aplicar la salida residencial."
+        elif [ "$(_wgh_node_hs "$idx")" -lt 0 ] 2>/dev/null; then
+            _p "'${name}': nunca ha conectado." "El aparato no esta llamando al VPS. Revisalo alli."
+        else
+            _v "'${name}': conectado hace $(_wgh_node_hs "$idx")s."
+            vivos=$((vivos+1))
+        fi
+    done < <(_wgh_nodes_list)
+    [ "$vivos" -eq 0 ] && { ui_blank; _p "Ningun nodo esta conectado: no hay por donde salir."; ui_solid; ui_pause; return; }
+    ui_blank
+
+    # --- 2. Ajustes del kernel ---
+    echo -e "${UI_PAD}${YL}2 · Kernel${CR}"
+    local fwd rpf
+    fwd=$(sysctl -n net.ipv4.ip_forward 2>/dev/null)
+    [ "$fwd" = "1" ] && _v "ip_forward activo." || _p "ip_forward apagado." "sysctl -w net.ipv4.ip_forward=1"
+    rpf=$(sysctl -n net.ipv4.conf.all.rp_filter 2>/dev/null)
+    if [ "$rpf" = "1" ]; then
+        _p "rp_filter = 1 (estricto)." "Descarta TODAS las respuestas que vuelven por el tunel."
+        _i "Se corrige al activar la salida residencial."
+    else
+        _v "rp_filter = ${rpf} (no descarta el retorno)."
+    fi
+    ui_blank
+
+    # --- 3. Usuarios asignados ---
+    echo -e "${UI_PAD}${YL}3 · Usuarios${CR}"
+    local u uid asign=0
+    while IFS= read -r u; do
+        [ -z "$u" ] && continue
+        name=$(_wgh_user_node "$u")
+        uid=$(id -u "$u" 2>/dev/null)
+        if [ -z "$name" ]; then
+            _i "${u} (UID ${uid}): sale por la IP del VPS"
+        elif [ -z "$uid" ] || [ "$uid" -lt 1000 ] 2>/dev/null; then
+            _p "${u} esta asignado a '${name}' pero su UID es ${uid:-?}." "Solo se enruta UID >= 1000. Esa cuenta nunca saldra por el nodo."
+        else
+            _v "${u} (UID ${uid}) -> ${name}"
+            asign=$((asign+1))
+        fi
+    done < <(_wgh_get_client_users | cut -d: -f1)
+    if [ "$asign" -eq 0 ]; then
+        ui_blank
+        _p "Ningun usuario esta asignado a un nodo." "GESTIONAR NODOS > ASIGNAR USUARIOS. Sin esto no se desvia nada."
+        ui_solid; ui_pause; return
+    fi
+    ui_blank
+
+    # --- 4. Reglas y contadores ---
+    echo -e "${UI_PAD}${YL}4 · Reglas aplicadas${CR}"
+    if ! _wgh_routing_is_active; then
+        _p "La salida residencial esta APAGADA." "Enciendela con la opcion 3 del menu."
+        ui_solid; ui_pause; return
+    fi
+    _v "Salida residencial encendida."
+
+    local marcados
+    marcados=$(_wgh_rule_pkts mangle OUTPUT HOMEVPN_MARK)
+    if [ "${marcados:-0}" -eq 0 ]; then
+        _p "Ni un solo paquete ha sido marcado todavia." \
+           "O el cliente no esta navegando, o su trafico no sale con su UID."
+        _i "Conecta el cliente, navega un poco y vuelve a mirar."
+    else
+        _v "${marcados} paquetes marcados: el trafico del cliente SI se esta desviando."
+    fi
+
+    while IFS='|' read -r name key idx; do
+        [ -z "$idx" ] && continue
+        local mark tbl ifc ruta natp
+        mark=$(_wgn_mark "$idx"); tbl=$(_wgn_table "$idx"); ifc=$(_wgn_iface "$idx")
+        echo -e "${UI_PAD}  ${WH}${name}${CR} ${DM}(marca ${mark}, tabla ${tbl})${CR}"
+        ip rule show | grep -q "fwmark ${mark} lookup ${tbl}" \
+            && _v "  regla fwmark -> tabla ${tbl}" \
+            || _p "  falta la regla fwmark ${mark} -> tabla ${tbl}"
+        ruta=$(ip route show table "$tbl" 2>/dev/null | grep '^default')
+        [ -n "$ruta" ] && _v "  ${ruta}" || _p "  la tabla ${tbl} no tiene ruta por defecto"
+        natp=$(_wgh_rule_pkts nat POSTROUTING "$ifc")
+        if [ "${natp:-0}" -eq 0 ]; then
+            _p "  el NAT de ${ifc} no ha traducido ningun paquete" \
+               "Marcado pero no enrutado: revisa la ruta de arriba."
+        else
+            _v "  NAT: ${natp} paquetes traducidos hacia el nodo"
+        fi
+    done < <(_wgh_nodes_list)
+    ui_blank
+
+    # --- 5. La prueba definitiva ---
+    echo -e "${UI_PAD}${YL}5 · Salida real${CR}"
+    local ip_normal probe res
+    ip_normal=$(_wgh_get_droplet_ip)
+    while IFS='|' read -r name key idx; do
+        [ -z "$idx" ] && continue
+        probe=$(_wgh_node_users "$name" | head -1)
+        [ -z "$probe" ] && continue
+        _i "Saliendo como '${probe}' por '${name}'..."
+        res=$(runuser -u "$probe" -- curl -4 -s --max-time 15 https://api.ipify.org 2>/dev/null)
+        if [ -z "$res" ]; then
+            _p "  sin respuesta: el trafico sale del VPS pero no vuelve" \
+               "El nodo recibe y no reenvia. Revisa ALLI el reenvio y el NAT."
+        elif [ "$res" = "$ip_normal" ]; then
+            _p "  ${res} — es la IP del VPS, no la del nodo" \
+               "El desvio no se esta aplicando a ese usuario."
+        else
+            _v "  ${res} — ¡sale por el nodo!"
+        fi
+    done < <(_wgh_nodes_list)
+
+    ui_blank; ui_rule
+    if [ "$problemas" -eq 0 ]; then
+        echo -e "${UI_PAD}${GR}Todo correcto: el gateway esta dando Internet.${CR}"
+    else
+        echo -e "${UI_PAD}${RD}${problemas} problema(s). El primero de la lista es el que hay que arreglar:${CR}"
+        echo -e "${UI_PAD}${DM}los de abajo suelen ser consecuencia suya.${CR}"
+    fi
+    ui_solid
+    read -p "$(echo -e ${DM})Presiona Enter para continuar...$(echo -e ${CR})"
+}
+
 wghome_menu() {
     # Reparar configuración existente en background si faltaba Table=off o AllowedIPs=0.0.0.0/0
     _wgh_repair_conf_if_needed
@@ -2732,10 +2890,12 @@ wghome_menu() {
         ui_opt "10" "PROBAR CONEXIÓN"      "ping al PC"
         ui_opt "11" "VER IP DE SALIDA"     "normal vs casa"
         ui_blank
+        ui_opt "13" "¿POR QUE NO HAY NET?" "cadena completa"
+        ui_blank
         ui_opt_danger "12" "ELIMINAR CONFIGURACIÓN" "borra el gateway"
         ui_opt "0" "VOLVER"
         ui_solid
-        ui_prompt "Elige una opción [0-12]"
+        ui_prompt "Elige una opción [0-13]"
 
         case "$REPLY_UI" in
             # Los pares activar/desactivar eran cuatro entradas de menu para dos
@@ -2751,6 +2911,7 @@ wghome_menu() {
             9)  wghome_diagnose ;;
             10) wghome_ping_peer ;;
             11) wghome_check_ip ;;
+            13) wghome_why_no_internet ;;
             12) wghome_remove ;;
             0)  break ;;
             *)  ui_err "Opción no válida."; sleep 1 ;;
