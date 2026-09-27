@@ -595,6 +595,14 @@ _wgh_nodes_del() {
     _wgh_nodes_list | awk -F'|' -v n="$name" '$1!=n' > "$tmp"
     mv "$tmp" "$WGH_NODES_CONF"; chmod 600 "$WGH_NODES_CONF"
 
+    # Quien lo tuviera de respaldo se queda apuntando a un nodo que
+    # ya no existe: al caer su preferido iria a una tabla vacia y
+    # perderia la salida en vez de caer a la IP del VPS.
+    tmp=$(mktemp)
+    _wgh_nodes_list | awk -F'|' -v OFS='|' -v n="$name" \
+        '{ t=($4==""?"wg":$4); if ($5==n) { $5="" } ; print $1,$2,$3,t,$5 }' > "$tmp"
+    mv "$tmp" "$WGH_NODES_CONF"; chmod 600 "$WGH_NODES_CONF"
+
     # Los usuarios que salian por el se quedan sin salida asignada:
     # vuelven a la IP del VPS en vez de quedar enrutados al vacio.
     if [ -f "$WGH_USERS_CONF" ]; then
@@ -1079,6 +1087,292 @@ _wgh_nodes_first_name() { _wgh_nodes_list | head -1 | cut -d'|' -f1; }
 _wgh_nodes_first_ip()   { local i; i=$(_wgh_nodes_first_idx); [ -n "$i" ] && _wgn_nodeip "$i" || echo "$WGH_PEER_IP"; }
 
 # =========================================================
+# SALUD DE LOS NODOS Y CONMUTACION AUTOMATICA
+# ---------------------------------------------------------
+# Objetivo: que un cliente no se quede sin Internet aunque su
+# nodo desaparezca. La cadena es
+#
+#   nodo preferido -> nodo de respaldo -> IP del VPS
+#
+# y se recorre sola, sin reasignar usuarios ni tocar marcas.
+#
+# El truco esta en como se montan las reglas. Para la marca de
+# un nodo se dejan puestas DOS reglas, una por cada destino, y
+# el vigilante solo pone o quita la RUTA POR DEFECTO de cada
+# tabla. Cuando una tabla se queda sin ruta, el kernel pasa
+# sola a la regla siguiente:
+#
+#   prio 1001  fwmark 0x77 -> tabla 200 (preferido)
+#   prio 1401  fwmark 0x77 -> tabla 202 (respaldo)
+#   (ninguna resuelve)     -> tabla main -> IP del VPS
+#
+# Asi conmutar es un solo comando y es atomico.
+#
+# Como se mide la salud: ESCUCHANDO, no preguntando. El kernel
+# ya cuenta los bytes recibidos de cada peer, y leer ese
+# contador no envia un solo paquete. Solo se sondea de verdad
+# donde sondear es gratis, que es el wifi del propio nodo.
+# =========================================================
+
+WGH_HEALTH_FILE="/run/homevpn-health"     # tmpfs: no desgasta el disco
+WGH_WATCH_SERVICE="/etc/systemd/system/homevpn-watchdog.service"
+WGH_WATCH_INTERVAL="${WGH_WATCH_INTERVAL:-1}"
+
+# Medidas malas seguidas para dar un nodo por caido, y buenas
+# para readmitirlo. Sin esta histeresis un microcorte de dos
+# segundos rebotaria a los clientes de un nodo a otro sin parar,
+# que se nota mas que la propia caida.
+WGH_DOWN_AFTER=3
+WGH_UP_AFTER=2
+
+# ---------------------------------------------------------
+# Maquina de estados. Funcion pura: entra estado y medida,
+# sale estado. Se aisla asi a proposito para poder probarla
+# sin nodos, sin red y sin privilegios.
+#   _wgh_health_step <up|down> <racha> <1|0>  ->  "estado racha"
+# ---------------------------------------------------------
+# Deja el resultado en HS_ESTADO / HS_RACHA en vez de imprimirlo,
+# por lo mismo que _wgh_measure_calc: una subshell por nodo y
+# vuelta es cara cuando la vuelta es cada segundo.
+_wgh_health_step() {
+    local estado="$1" racha="$2" ok="$3"
+    if [ "$ok" = "1" ]; then
+        if [ "$estado" = "up" ]; then HS_ESTADO=up; HS_RACHA=0; return; fi
+        racha=$((racha + 1))
+        if [ "$racha" -ge "$WGH_UP_AFTER" ]; then HS_ESTADO=up; HS_RACHA=0
+        else HS_ESTADO=down; HS_RACHA=$racha; fi
+    else
+        if [ "$estado" = "down" ]; then HS_ESTADO=down; HS_RACHA=0; return; fi
+        racha=$((racha + 1))
+        if [ "$racha" -ge "$WGH_DOWN_AFTER" ]; then HS_ESTADO=down; HS_RACHA=0
+        else HS_ESTADO=up; HS_RACHA=$racha; fi
+    fi
+}
+
+# Nodo de respaldo de otro nodo (cuarto campo del registro).
+# El respaldo es el 5o campo. El 4o ya lo ocupa el tipo de nodo, y
+# pisarlo convertiria un nodo socks en uno wg sin avisar.
+#   nombre | clave/usuario | indice | tipo | respaldo
+_wgh_node_backup_of() { _wgh_nodes_list | awk -F'|' -v n="$1" '$1==n {print $5}' | head -1; }
+
+_wgh_node_set_backup() {
+    local name="$1" bk="$2" tmp
+    tmp=$(mktemp)
+    _wgh_nodes_list | awk -F'|' -v OFS='|' -v n="$name" -v b="$bk" \
+        '{ t=($4==""?"wg":$4); if ($1==n) { $5=b } ; print $1,$2,$3,t,$5 }' > "$tmp"
+    mv "$tmp" "$WGH_NODES_CONF"; chmod 600 "$WGH_NODES_CONF"
+    _wgh_log "Respaldo de '${name}' fijado a '${bk:-la IP del VPS}'"
+}
+
+# ---------------------------------------------------------
+# ¿Esta vivo este nodo? Cada tipo se mide distinto, pero los
+# dos se miden ESCUCHANDO: ni uno ni otro envia un paquete.
+#   wg    -> interfaz arriba y el peer ha dado senales
+#   socks -> alguien escucha en el puerto inverso del movil
+# ---------------------------------------------------------
+# Un keepalive de WireGuard NO renueva el handshake: solo mueve el
+# contador de bytes del receptor. Medir por handshake daria por
+# muerto a un nodo sano que simplemente no tiene trafico, asi que
+# la senal buena es que el contador de recibidos avance.
+#
+# Cuanto silencio se tolera depende del keepalive que tenga pactado
+# cada peer, y eso lo dice el propio kernel: asi un nodo con
+# keepalive de 5s se detecta en ~15s y uno de 25s no da falsos
+# positivos. No hay que configurar nada a mano.
+_wgh_silence_for() {
+    local ka="${1:-25}" s
+    [ -z "$ka" ] || [ "$ka" -le 0 ] 2>/dev/null && ka=25
+    s=$(( 2 * ka + 5 ))
+    [ "$s" -lt 12 ] && s=12
+    echo "$s"
+}
+
+# Nucleo de la medida. Es pura —solo cuentas— y deja el resultado
+# en variables en vez de imprimirlo: llamarla con $( ) costaria una
+# subshell por nodo y vuelta, y a una vuelta por segundo eso se
+# nota en un VPS pequeno. Medido: pasar de subshells y comandos
+# externos a bash puro baja el vigilante del 3,9% de un nucleo a
+# una decima parte.
+#   -> MED_OK (1/0), MED_RX, MED_TS
+_wgh_measure_calc() {
+    local rx="$1" ka="$2" ahora="$3" rxp="$4" tsp="$5" sil
+    if [ -z "$rx" ]; then MED_OK=0; MED_RX="$rxp"; MED_TS="$tsp"; return; fi
+    [ -z "$ka" ] || [ "$ka" -le 0 ] 2>/dev/null && ka=25
+    sil=$(( 2 * ka + 5 )); [ "$sil" -lt 12 ] && sil=12
+    if [ "$rx" != "$rxp" ]; then
+        MED_OK=1; MED_RX="$rx"; MED_TS="$ahora"
+    elif [ $(( ahora - tsp )) -lt "$sil" ]; then
+        MED_OK=1; MED_RX="$rx"; MED_TS="$tsp"
+    else
+        MED_OK=0; MED_RX="$rx"; MED_TS="$tsp"
+    fi
+}
+
+# ---------------------------------------------------------
+# Abrir o cerrar el camino de un nodo. Cerrarlo hace que el
+# trafico marcado caiga a la regla siguiente: el respaldo, y
+# si no hay, la IP del VPS.
+#   wg    -> la ruta por defecto de su tabla
+#   socks -> su regla REDIRECT hacia redsocks
+# ---------------------------------------------------------
+_wgh_node_path_on() {
+    local idx="$1"
+    if _wgh_node_is_socks "$idx"; then
+        local mark redport
+        mark=$(_wgn_mark "$idx"); redport=$(_wgn_redport "$idx")
+        iptables -t nat -C OUTPUT -p tcp -m mark --mark "${mark}" -m comment --comment "HOMEVPN_SOCKS" -j REDIRECT --to-ports "${redport}" 2>/dev/null ||             iptables -t nat -A OUTPUT -p tcp -m mark --mark "${mark}" -m comment --comment "HOMEVPN_SOCKS" -j REDIRECT --to-ports "${redport}" 2>/dev/null
+    else
+        ip route replace default via "$(_wgn_nodeip "$idx")" dev "$(_wgn_iface "$idx")" table "$(_wgn_table "$idx")" 2>/dev/null
+    fi
+}
+
+_wgh_node_path_off() {
+    local idx="$1"
+    if _wgh_node_is_socks "$idx"; then
+        local mark redport
+        mark=$(_wgn_mark "$idx"); redport=$(_wgn_redport "$idx")
+        while iptables -t nat -D OUTPUT -p tcp -m mark --mark "${mark}" -m comment --comment "HOMEVPN_SOCKS" -j REDIRECT --to-ports "${redport}" 2>/dev/null; do :; done
+    else
+        ip route del default table "$(_wgn_table "$idx")" 2>/dev/null
+    fi
+}
+
+# ---------------------------------------------------------
+# EL VIGILANTE
+# ---------------------------------------------------------
+wghome_watchdog_loop() {
+    _wgh_log "Vigilante iniciado (tick ${WGH_WATCH_INTERVAL}s, caida tras ${WGH_DOWN_AFTER} medidas)"
+    declare -A ESTADO RACHA RXP TSP RX KA IFC
+    declare -a LISTA=()
+    local ahora name key idx tipo estado racha nuevo bk ln mt="" mtprev="" vuelta=0
+    local f1 f2 f3 f4 f5 f6 f7 f8 f9
+
+    while true; do
+        if ! _wgh_routing_is_active; then sleep "$WGH_WATCH_INTERVAL"; continue; fi
+
+        # EPOCHSECONDS lo da bash sin lanzar 'date'.
+        ahora=${EPOCHSECONDS:-$(date +%s)}
+
+        # El registro apenas cambia —solo al dar de alta o de baja un
+        # nodo—, asi que preguntar por su fecha cada segundo es
+        # gastar un proceso para nada. Cada 10 vueltas basta.
+        vuelta=$(( vuelta + 1 ))
+        if [ $(( vuelta % 10 )) -eq 1 ]; then
+            mt=$(stat -c %Y "$WGH_NODES_CONF" 2>/dev/null || echo 0)
+        fi
+        if [ "$mt" != "$mtprev" ]; then
+            mtprev="$mt"; LISTA=()
+            while IFS= read -r ln; do
+                case "$ln" in ''|\#*) continue ;; esac
+                LISTA+=("$ln")
+                idx="${ln#*|}"; idx="${idx#*|}"; idx="${idx%%|*}"
+                IFC[$idx]=$(_wgn_iface "$idx")
+            done < "$WGH_NODES_CONF"
+        fi
+
+        # Una sola llamada al kernel por vuelta, para todas las
+        # interfaces, y se reparte en bash. Antes esto eran dos awk
+        # por nodo y por vuelta.
+        RX=(); KA=()
+        while IFS=$'\t' read -r f1 f2 f3 f4 f5 f6 f7 f8 f9; do
+            [ -z "$f9" ] && continue          # linea de interfaz, no de peer
+            RX["${f1}|${f2}"]="$f7"
+            KA["${f1}|${f2}"]="$f9"
+        done < <(wg show all dump 2>/dev/null)
+
+        while IFS='|' read -r name key idx tipo _; do
+            [ -z "$idx" ] && continue
+
+            if [ "${tipo:-wg}" = "socks" ]; then
+                if _socks_reverse_up "$idx"; then MED_OK=1; else MED_OK=0; fi
+                MED_RX=0; MED_TS="$ahora"
+            elif ! _wgh_node_is_up "$idx"; then
+                MED_OK=0; MED_RX="${RXP[$name]:--1}"; MED_TS="${TSP[$name]:-$ahora}"
+            else
+                _wgh_measure_calc "${RX["${IFC[$idx]}|${key}"]:-}" "${KA["${IFC[$idx]}|${key}"]:-}" \
+                                  "$ahora" "${RXP[$name]:--1}" "${TSP[$name]:-$ahora}"
+            fi
+            RXP[$name]="$MED_RX"; TSP[$name]="$MED_TS"
+
+            estado="${ESTADO[$name]:-up}"; racha="${RACHA[$name]:-0}"
+            _wgh_health_step "$estado" "$racha" "$MED_OK"
+            nuevo="$HS_ESTADO"; RACHA[$name]="$HS_RACHA"
+            ESTADO[$name]="${ESTADO[$name]:-$estado}"
+
+            if [ "$nuevo" != "$estado" ]; then
+                ESTADO[$name]="$nuevo"
+                if [ "$nuevo" = "down" ]; then
+                    _wgh_node_path_off "$idx"
+                    bk=$(_wgh_node_backup_of "$name")
+                    _wgh_log "Nodo '${name}' CAIDO: sus usuarios pasan a ${bk:-la IP del VPS}"
+                else
+                    _wgh_node_path_on "$idx"
+                    _wgh_log "Nodo '${name}' recuperado: vuelve a dar salida"
+                fi
+                _wgh_health_dump ESTADO
+            fi
+        done < <(printf '%s\n' "${LISTA[@]}")
+
+        sleep "$WGH_WATCH_INTERVAL"
+    done
+}
+
+# Vuelca el estado a /run para que el panel pueda leerlo.
+_wgh_health_dump() {
+    local -n _e="$1"
+    local k
+    : > "$WGH_HEALTH_FILE" 2>/dev/null || return
+    for k in "${!_e[@]}"; do echo "${k}=${_e[$k]}"; done >> "$WGH_HEALTH_FILE"
+}
+
+_wgh_health_of() {
+    [ -f "$WGH_HEALTH_FILE" ] || { echo "up"; return; }
+    local v
+    v=$(sed -n "s/^$1=//p" "$WGH_HEALTH_FILE" 2>/dev/null | head -1)
+    echo "${v:-up}"
+}
+
+# ---------------------------------------------------------
+# Servicio
+# ---------------------------------------------------------
+_wgh_watchdog_is_on() { systemctl is-enabled homevpn-watchdog.service &>/dev/null; }
+
+_wgh_watchdog_enable() {
+    local dir
+    dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+    cat > "$WGH_WATCH_SERVICE" <<EOF
+[Unit]
+Description=Vigilante de nodos residenciales
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash ${dir}/wg_home.sh --watchdog
+Restart=always
+RestartSec=5
+Nice=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload &>/dev/null
+    systemctl enable --now homevpn-watchdog.service &>/dev/null
+    _wgh_log "Vigilante activado"
+}
+
+_wgh_watchdog_disable() {
+    systemctl disable --now homevpn-watchdog.service &>/dev/null
+    rm -f "$WGH_WATCH_SERVICE"
+    systemctl daemon-reload &>/dev/null
+    # Al apagarlo se devuelven todas las rutas: si no, un nodo que
+    # quedo marcado como caido se quedaria fuera para siempre.
+    local i
+    for i in $(_wgh_nodes_list | cut -d'|' -f3); do _wgh_node_path_on "$i"; done
+    rm -f "$WGH_HEALTH_FILE"
+    _wgh_log "Vigilante desactivado y rutas restauradas"
+}
+
+# =========================================================
 # AISLAMIENTO ENTRE NODOS
 # ---------------------------------------------------------
 # Los nodos comparten la subred 10.77.77.0/24, asi que sin esto
@@ -1436,41 +1730,76 @@ wghome_view_users() {
 
 # Configurar Fallback Residencial (Opción 14)
 wghome_configure_fallback() {
-    clear
-    print_title 2>/dev/null || true
-    echo -e "$SEP"
-    echo -e "${WH}     CONFIGURACIÓN DE FALLBACK RESIDENCIAL${CR}"
-    echo -e "$SEP"
-    echo ""
-    local current_fb
-    current_fb=$(_wgh_get_fallback)
+    while true; do
+        clear
+        print_title 2>/dev/null || true
+        ui_section "QUE NADIE SE QUEDE SIN INTERNET" "conmutacion automatica"
+        ui_blank
 
-    echo -e "  ${DM}Estado actual de Fallback:${CR} $([ "$current_fb" = "ON" ] && echo -e "${GR}[ ON  ]${CR}" || echo -e "${RD}[ OFF ]${CR}")"
-    echo ""
-    echo -e "  ${WH}¿Cómo funciona el Fallback?${CR}"
-    echo -e "  ${DM}• ${GR}ON (Recomendado)${CR}: Si el PC doméstico se apaga o pierde Internet,${CR}"
-    echo -e "  ${DM}  el tráfico de HTTP Injector vuelve temporalmente a la IP de la VPS.${CR}"
-    echo -e "  ${DM}  Los clientes no se quedan sin navegación.${CR}"
-    echo -e "  ${DM}• ${RD}OFF${CR}: Si el PC doméstico cae, el tráfico de HTTP Injector se detiene${CR}"
-    echo -e "  ${DM}  hasta que el gateway residencial vuelva a estar disponible (cero fugas).${CR}"
-    echo -e "  ${YL}[!] El acceso SSH administrativo NUNCA se ve afectado en ningún caso.${CR}"
-    echo ""
-    echo -e "  ${CY}1)${CR} Activar Fallback   ${GR}[ ON  ]${CR}"
-    echo -e "  ${CY}2)${CR} Desactivar Fallback ${RD}[ OFF ]${CR}"
-    echo -e "  ${CY}0)${CR} Cancelar"
-    echo -e "$SEP"
-    read -p "$(echo -e ${DM})Elige [0-2]: $(echo -e ${CR})" fb_opt
+        local tag
+        _wgh_watchdog_is_on && tag="$(ui_tag_str on)" || tag="$(ui_tag_str off)"
+        echo -e "${UI_PAD}$(ui_cell "Vigilante" "" 22)${tag}"
+        ui_blank
+        echo -e "${UI_PAD}${DM}Vigila los nodos y, si uno deja de responder, manda a${CR}"
+        echo -e "${UI_PAD}${DM}sus usuarios por el camino siguiente:${CR}"
+        ui_blank
+        echo -e "${UI_PAD}  ${WH}nodo preferido${CR} ${DM}->${CR} ${WH}nodo de respaldo${CR} ${DM}->${CR} ${GR}IP del VPS${CR}"
+        ui_blank
+        echo -e "${UI_PAD}${DM}La IP del VPS siempre funciona, asi que nadie se queda${CR}"
+        echo -e "${UI_PAD}${DM}sin salida; como mucho pierde la IP residencial un rato.${CR}"
+        ui_blank
+        echo -e "${UI_PAD}${DM}No gasta datos: mide escuchando los contadores que el${CR}"
+        echo -e "${UI_PAD}${DM}kernel ya lleva, sin enviar un solo paquete.${CR}"
+        ui_rule
+        ui_blank
 
-    case "$fb_opt" in
-        1)
-            _wgh_set_fallback "ON"
-            echo -e "  ${GR}[+] Fallback activado (ON).${CR}"; sleep 1 ;;
-        2)
-            _wgh_set_fallback "OFF"
-            echo -e "  ${YL}[*] Fallback desactivado (OFF).${CR}"; sleep 1 ;;
-        *)
-            ;;
-    esac
+        local name key idx tipo bk est
+        printf "${UI_PAD}${DM}%-14s %-8s %-14s %s${CR}\n" "NODO" "TIPO" "RESPALDO" "ESTADO"
+        while IFS='|' read -r name key idx tipo _; do
+            [ -z "$idx" ] && continue
+            bk=$(_wgh_node_backup_of "$name")
+            est=$(_wgh_health_of "$name")
+            [ "$est" = "up" ] && est="${GR}dando salida${CR}" || est="${RD}caido${CR}"
+            printf "${UI_PAD}${WH}%-14s${CR} ${DM}%-8s${CR} ${CY}%-14s${CR} %b\n" \
+                "$name" "${tipo:-wg}" "${bk:-IP del VPS}" "$est"
+        done < <(_wgh_nodes_list)
+
+        ui_blank
+        ui_solid
+        if _wgh_watchdog_is_on; then ui_opt "1" "DESACTIVAR" "dejar de vigilar"
+        else ui_opt "1" "ACTIVAR" "conmutar solo"; fi
+        ui_opt "2" "FIJAR RESPALDO" "de un nodo"
+        ui_opt "0" "VOLVER"
+        ui_solid
+        ui_prompt "Elige una opcion [0-2]"
+
+        case "$REPLY_UI" in
+            1)  if _wgh_watchdog_is_on; then
+                    _wgh_watchdog_disable; ui_ok "Vigilante apagado y rutas restauradas."
+                else
+                    _wgh_watchdog_enable
+                    _wgh_watchdog_is_on && ui_ok "Vigilante activo." || ui_err "No se pudo activar."
+                fi; sleep 2 ;;
+            2)  ui_blank
+                read -p "$(echo -e "${UI_PAD}${DM}Nodo a configurar ${CY}»${CR} ")" n1
+                _wgh_node_exists "$n1" || { ui_err "No existe."; sleep 2; continue; }
+                echo -e "${UI_PAD}${DM}Respaldo para '${n1}'. Nombre de otro nodo, o 'no'${CR}"
+                echo -e "${UI_PAD}${DM}para que caiga directo a la IP del VPS.${CR}"
+                read -p "$(echo -e "${UI_PAD}${DM}Respaldo ${CY}»${CR} ")" n2
+                if [ "$n2" = "no" ] || [ -z "$n2" ]; then
+                    _wgh_node_set_backup "$n1" ""; ui_ok "'${n1}' caera a la IP del VPS."
+                elif [ "$n2" = "$n1" ]; then
+                    ui_err "Un nodo no puede ser su propio respaldo."; sleep 2; continue
+                elif _wgh_node_exists "$n2"; then
+                    _wgh_node_set_backup "$n1" "$n2"; ui_ok "'${n1}' caera a '${n2}'."
+                else
+                    ui_err "No existe el nodo '${n2}'."; sleep 2; continue
+                fi
+                _wgh_routing_is_active && { _wgh_apply_user_routing; ui_ok "Aplicado al instante."; }
+                sleep 2 ;;
+            0)  break ;;
+        esac
+    done
 }
 
 # =========================================================
@@ -2853,7 +3182,7 @@ wghome_menu() {
         _wgh_is_installed      && TAG_INST="${GR}[ INSTALADO ]${CR}" || TAG_INST="${RD}[ NO INSTALADO ]${CR}"
         _wgh_is_up             && TAG_TUNNEL="$(ui_tag_str on)"      || TAG_TUNNEL="$(ui_tag_str off)"
         _wgh_routing_is_active && TAG_ROUTING="$(ui_tag_str on)"     || TAG_ROUTING="$(ui_tag_str off)"
-        [ "$(_wgh_get_fallback)" = "ON" ] && TAG_FB="$(ui_tag_str on)" || TAG_FB="$(ui_tag_str off)"
+        _wgh_watchdog_is_on && TAG_FB="$(ui_tag_str on)" || TAG_FB="$(ui_tag_str off)"
 
         u_count=0
         [ -f "$WGH_USERS_CONF" ] && u_count=$(_wgh_get_configured_users | wc -l)
@@ -2875,7 +3204,7 @@ wghome_menu() {
         ui_opt "1" "INSTALAR / RECONFIG"  "asistente"
         ui_opt "2" "TÚNEL WG-HOME"        "activar/apagar"  "$TAG_TUNNEL"
         ui_opt "3" "SALIDA RESIDENCIAL"   "activar/apagar"  "$TAG_ROUTING"
-        ui_opt "4" "FALLBACK AUTOMÁTICO"  "si cae el túnel" "$TAG_FB"
+        ui_opt "4" "NUNCA SIN INTERNET"   "conmuta solo"    "$TAG_FB"
         ui_blank
         echo -e "${UI_PAD}${YL}── CLAVES ──${CR}"
         ui_opt "5" "CLAVE PÚBLICA DEL VPS" "para el PC"

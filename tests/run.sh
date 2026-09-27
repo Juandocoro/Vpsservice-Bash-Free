@@ -145,6 +145,55 @@ is "sus usuarios vuelven a la IP del VPS" "$(_wgh_user_node usuario3)" ""
 is "el indice liberado se reutiliza" "$(_wgh_nodes_next_idx)" "2"
 
 # =========================================================
+group "Salud de los nodos: histeresis"
+# ---------------------------------------------------------
+# Sin histeresis, un microcorte de dos segundos rebotaria a los
+# clientes de un nodo a otro sin parar: se nota mas que la caida.
+# =========================================================
+step() { _wgh_health_step "$1" "$2" "$3"; echo "$HS_ESTADO $HS_RACHA"; }
+is "un fallo suelto no tumba el nodo"      "$(step up 0 0)"    "up 1"
+is "dos fallos tampoco"                    "$(step up 1 0)"    "up 2"
+is "al tercero se da por caido"            "$(step up 2 0)"    "down 0"
+is "una medida buena limpia la racha"      "$(step up 2 1)"    "up 0"
+is "caido, un acierto no basta"            "$(step down 0 1)"  "down 1"
+is "al segundo acierto vuelve"             "$(step down 1 1)"  "up 0"
+is "caido, un fallo lo mantiene caido"     "$(step down 3 0)"  "down 0"
+
+# Un ciclo completo: cae y se recupera sin quedarse atascado.
+e=up; r=0
+for m in 0 0 0 0 1 1 1; do
+    _wgh_health_step "$e" "$r" "$m"; e="$HS_ESTADO"; r="$HS_RACHA"
+done
+is "tras caer y volver, termina arriba" "$e" "up"
+
+group "Tolerancia al silencio segun el keepalive"
+# Se deduce del keepalive que el kernel dice que tiene pactado cada
+# peer: un nodo de 5s se detecta rapido y uno de 25s no da falsos
+# positivos, sin configurar nada a mano.
+is "keepalive 5s  -> 15s de margen" "$(_wgh_silence_for 5)"  "15"
+is "keepalive 25s -> 55s de margen" "$(_wgh_silence_for 25)" "55"
+is "keepalive 0 se trata como 25"   "$(_wgh_silence_for 0)"  "55"
+is "nunca baja de 12s"              "$(_wgh_silence_for 1)"  "12"
+
+group "Nodo de respaldo"
+# El respaldo va en el 5o campo: el 4o es el tipo, y pisarlo
+# convertiria un nodo socks en uno wg sin avisar.
+: > "$WGH_NODES_CONF"
+_wgh_nodes_add pc   "$K1" wg    >/dev/null
+_wgh_nodes_add movil "$K2" socks >/dev/null
+_wgh_node_set_backup movil pc
+is "el respaldo se guarda"          "$(_wgh_node_backup_of movil)" "pc"
+is "y el tipo NO se pisa"           "$(_wgh_node_type movil)"      "socks"
+is "el otro nodo conserva su tipo"  "$(_wgh_node_type pc)"         "wg"
+is "sin respaldo definido, vacio"   "$(_wgh_node_backup_of pc)"    ""
+
+# Al borrar un nodo, quien lo tuviera de respaldo no puede quedarse
+# apuntando a una tabla que ya no existe.
+_wgh_node_down() { :; }
+_wgh_nodes_del pc
+is "el respaldo huerfano se limpia" "$(_wgh_node_backup_of movil)" ""
+
+# =========================================================
 group "Resolucion de cuentas"
 # =========================================================
 source modules/users.sh 2>/dev/null
