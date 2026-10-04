@@ -485,6 +485,29 @@ group "Entrada de texto"
 printf 'ab\\c1\n' | { ui_prompt x >/dev/null; is "una contraseña con barra invertida llega entera" "$REPLY_UI" 'ab\c1'; }
 
 # =========================================================
+group "Registro del formato v1 (IP en vez de indice)"
+# ---------------------------------------------------------
+# Con 'pc|clave|10.77.77.2|si' el panel tomaba la IP como indice:
+# interfaz 'wg-home10.77.77.2', marca '0x7710.77.77.2'...
+# =========================================================
+WGH_RECONFIG="$TMP/reconfig"; rm -f "$WGH_RECONFIG"
+printf '%s\n' "pc|$K1|10.77.77.2|si" "movil|$K2|10.77.77.3|no" > "$WGH_NODES_CONF"
+_wgh_nodes_migrate
+is "el 10.77.77.2 pasa a ser el nodo 1 (mismo sitio, no hay que tocarlo)" "$(_wgh_node_idx_of pc)" "1"
+is "y queda como WireGuard"                     "$(_wgh_idx_type 1)" "wg"
+is "el resto recibe un indice libre"            "$(_wgh_node_idx_of movil)" "2"
+is "y se anota para reconfigurarlo"             "$(cat "$WGH_RECONFIG")" "movil"
+is "la clave se conserva"                       "$(_wgh_node_key_of pc)" "$K1"
+[ -f "$WGH_NODES_CONF.v1.bak" ] && ok "se guarda copia del registro antiguo" || bad "sin copia del registro antiguo"
+is "la interfaz vuelve a ser wg-home"           "$(_wgn_iface "$(_wgh_node_idx_of pc)")" "wg-home"
+printf '%s\n' "viejo" > "$WGH_USERS_CONF"
+is "las asignaciones antiguas vuelven a salir por ese nodo" "$(_wgh_user_node viejo)" "pc"
+cp "$WGH_NODES_CONF" "$TMP/antes"; _wgh_nodes_migrate
+cmp -s "$WGH_NODES_CONF" "$TMP/antes" && ok "migrar dos veces no cambia nada" || bad "la migracion no es idempotente"
+grep -q '_wgn_table_re' modules/installers/wg_home.sh && is "la tabla 200 se reconoce por su nombre" "$(_wgn_table_re 1)" "(200|homevpn)" \
+    || bad "falta reconocer 'lookup homevpn'"
+
+# =========================================================
 group "Resolucion de cuentas"
 # =========================================================
 source modules/users.sh 2>/dev/null

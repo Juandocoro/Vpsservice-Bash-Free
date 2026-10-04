@@ -486,6 +486,11 @@ _wgn_subnet() { echo "$(_wgn_net "$1").0/24"; }
 _wgn_table()  { [ "$1" = "1" ] && echo "200"               || echo $(( 200 + $1 )); }
 _wgn_mark()   { [ "$1" = "1" ] && echo "0x77"              || echo "0x77$1"; }
 _wgn_conf()   { echo "/etc/wireguard/$(_wgn_iface "$1").conf"; }
+# Como aparece la tabla en 'ip rule show'. La 200 esta registrada en
+# rt_tables como 'homevpn' y se muestra con ese nombre: buscar
+# "lookup 200" fallaba, se duplicaban reglas al aplicar y la del nodo 1
+# no se borraba al apagar la salida.
+_wgn_table_re() { [ "$1" = "1" ] && echo "(200|${WGH_RT_NAME})" || _wgn_table "$1"; }
 
 # --- Parametros derivados de los nodos SOCKS (movil sin root) ---
 # Un nodo SOCKS no tiene interfaz WireGuard: el movil abre un tunel
@@ -510,8 +515,72 @@ _wgh_node_is_socks() { [ "$(_wgh_node_type "$1")" = "socks" ]; }
 
 # --- Registro: nombre|clave_publica|indice ---
 
+# ---------------------------------------------------------
+# Registro del formato v1 (version a613a34):
+#   nombre|clave|10.77.77.X|si/no      (IP y "activo")
+# El formato actual guarda el INDICE del nodo en el 3er campo:
+#   nombre|clave|N|tipo[|respaldo]
+# Nunca se escribio esta migracion, y con el registro antiguo el
+# panel tomaba "10.77.77.2" como indice: interfaces como
+# 'wg-home10.77.77.2', marcas como '0x7710.77.77.2', nodos dados por
+# caidos y usuarios "sin asignar", aunque el trafico siguiera
+# saliendo por casa gracias a las reglas que ya estaban puestas.
+#
+# 10.77.77.2 era el primer nodo y en el modelo actual es justo el
+# indice 1 (misma interfaz wg-home, puerto 51820 e IP): ese nodo no
+# hay que tocarlo. Los demas (10.77.77.3, .4...) compartian interfaz
+# y ahora tienen la suya: se les da indice libre y se anotan para
+# avisar de que hay que reconfigurarlos con DATOS PARA EL NODO.
+# ---------------------------------------------------------
+WGH_RECONFIG="/etc/wireguard/homevpn-reconfigurar"
+
+_wgh_nodes_migrate_v1() {
+    local f="$WGH_NODES_CONF"
+    grep -qE '^[^|#]*\|[^|]*\|10\.77\.[0-9]+\.[0-9]+' "$f" 2>/dev/null || return 0
+    cp -p "$f" "$f.v1.bak" 2>/dev/null
+    local -a keep=() pend=() out=()
+    local -A usado=()
+    local line name key f3 f4 i n tipo
+    while IFS= read -r line; do
+        case "$line" in ''|\#*) continue ;; esac
+        IFS='|' read -r name key f3 f4 _ <<<"$line"
+        if [[ "$f3" =~ ^[0-9]+$ ]]; then keep+=("$line"); usado[$f3]=1
+        else pend+=("${name}|${key}|${f3}|${f4}"); fi
+    done < "$f"
+    out=("${keep[@]}")
+    # El 10.77.77.2 primero: es el unico que conserva su sitio exacto.
+    local orden=()
+    for line in "${pend[@]}"; do [[ "$line" == *"|10.77.77.2|"* ]] && orden=("$line" "${orden[@]}") || orden+=("$line"); done
+    for line in "${orden[@]}"; do
+        IFS='|' read -r name key f3 f4 <<<"$line"
+        i=""
+        if [ "$f3" = "10.77.77.2" ] && [ -z "${usado[1]:-}" ]; then
+            i=1
+        else
+            for n in $(seq 1 16); do [ -z "${usado[$n]:-}" ] && { i=$n; break; }; done
+            [ -n "$i" ] && echo "$name" >> "$WGH_RECONFIG"
+        fi
+        [ -z "$i" ] && continue
+        usado[$i]=1
+        tipo=wg; [ "$f4" = "socks" ] && tipo=socks
+        out+=("${name}|${key}|${i}|${tipo}")
+        _wgh_log "Registro v1 migrado: '${name}' (${f3}) -> indice ${i}"
+    done
+    printf '%s\n' "${out[@]}" > "$f"; chmod 600 "$f"
+
+    # Restos que dejo el panel al leer la IP como indice.
+    local c u
+    for c in /etc/wireguard/wg-home10.*.conf; do
+        [ -f "$c" ] || continue
+        u="wg-quick@$(basename "$c" .conf)"
+        systemctl disable --now "$u" &>/dev/null
+        rm -f "$c"
+    done
+    rm -f "$WGH_HEALTH_FILE" 2>/dev/null
+}
+
 _wgh_nodes_migrate() {
-    [ -f "$WGH_NODES_CONF" ] && return 0
+    if [ -f "$WGH_NODES_CONF" ]; then _wgh_nodes_migrate_v1; return 0; fi
     mkdir -p /etc/wireguard 2>/dev/null
     : > "$WGH_NODES_CONF"; chmod 600 "$WGH_NODES_CONF"
     if [ -s "${WGH_PEER_KEY}" ]; then
@@ -1374,14 +1443,21 @@ wghome_watchdog_loop() {
             mt=$(stat -c %Y "$WGH_NODES_CONF" 2>/dev/null || echo 0)
         fi
         if [ "$mt" != "$mtprev" ]; then
-            mtprev="$mt"; LISTA=()
+            # Un registro de formato antiguo se migra antes de leerlo.
+            _wgh_nodes_migrate
+            mtprev=$(stat -c %Y "$WGH_NODES_CONF" 2>/dev/null || echo 0); mt="$mtprev"; LISTA=()
             while IFS= read -r ln; do
                 case "$ln" in ''|\#*) continue ;; esac
                 LISTA+=("$ln")
                 idx="${ln#*|}"; idx="${idx#*|}"; idx="${idx%%|*}"
                 IFC[$idx]=$(_wgn_iface "$idx")
             done < "$WGH_NODES_CONF"
-            vuelta=0   # fuerza una reconciliacion con la lista nueva
+            # Reconciliar dentro de 15 vueltas, cuando ya se haya medido la
+            # lista nueva: hacerlo ahora usaria el estado viejo en memoria.
+            vuelta=1
+            for k in "${!ESTADO[@]}"; do
+                printf '%s\n' "${LISTA[@]}" | grep -q "^${k}|" || unset "ESTADO[$k]"
+            done
         fi
 
         # Una sola llamada al kernel por vuelta, para todas las
@@ -1837,14 +1913,14 @@ _wgh_apply_user_routing() {
 
             ip route replace default via "${nodeip}" dev "${ifc}" table "${tbl}" 2>/dev/null
 
-            ip rule show | grep -q "fwmark ${mark} lookup ${tbl}" || \
+            ip rule show | grep -qE "fwmark ${mark} lookup $(_wgn_table_re "$idx")( |$)" || \
                 ip rule add fwmark "${mark}" table "${tbl}" priority $(( 1000 + idx )) 2>/dev/null || true
 
             # Regla por origen: lo que salga con la IP de esta interfaz usa
             # su tabla. Sin esto, un 'curl --interface wg-homeN' se va por
             # eth0 con un origen que no le corresponde, y la comprobacion
             # de IP de salida da un resultado enganoso.
-            ip rule show | grep -q "from $(_wgn_vpsip "$idx") lookup ${tbl}" || \
+            ip rule show | grep -qE "from $(_wgn_vpsip "$idx") lookup $(_wgn_table_re "$idx")( |$)" || \
                 ip rule add from "$(_wgn_vpsip "$idx")" table "${tbl}" priority $(( 900 + idx )) 2>/dev/null || true
 
             # El tunel recorta el MTU. Sin ajustar el MSS el handshake TCP
@@ -1894,6 +1970,14 @@ _wgh_apply_user_routing() {
         iptables -t mangle ${rule/-A /-D } 2>/dev/null || true
     done < <(iptables -t mangle -S OUTPUT 2>/dev/null | grep "HOMEVPN_MARK")
 
+    # Marcas de la version de una sola salida (etiqueta HOMEVPN_HTTP_INJECTOR).
+    # Las nuevas ya estan puestas, asi que se retiran: si no, un usuario al
+    # que se le quita la salida residencial seguiria saliendo por casa.
+    while rule=$(iptables -t mangle -S OUTPUT 2>/dev/null | grep "HOMEVPN_HTTP_INJECTOR" | head -1) && [ -n "$rule" ]; do
+        # shellcheck disable=SC2086
+        iptables -t mangle ${rule/-A /-D } 2>/dev/null || break
+    done
+
     _wgh_isolate_on
 
     # IPv6: que los usuarios enrutados no se salten el nodo por la otra
@@ -1926,10 +2010,10 @@ _wgh_routing_off_internal() {
     local i tbl mark
     for i in $(seq 1 16); do
         tbl=$(_wgn_table "$i"); mark=$(_wgn_mark "$i")
-        while ip rule show | grep -q "fwmark ${mark} lookup ${tbl}"; do
+        while ip rule show | grep -qE "fwmark ${mark} lookup $(_wgn_table_re "$i")( |$)"; do
             ip rule del fwmark "${mark}" table "${tbl}" 2>/dev/null || break
         done
-        while ip rule show | grep -qE "lookup ${tbl}\b"; do
+        while ip rule show | grep -qE "lookup $(_wgn_table_re "$i")\b"; do
             ip rule del table "${tbl}" 2>/dev/null || break
         done
         ip route flush table "${tbl}" 2>/dev/null || true
@@ -2828,12 +2912,17 @@ wghome_diagnose() {
                 _p "'${name}' (PC): su interfaz $(_wgn_iface "$idx") está apagada." "Se levanta sola al encender la salida residencial."
             else
                 hs=$(_wgh_node_hs "$idx")
-                if [ "$hs" -lt 0 ] 2>/dev/null; then
+                if [ "$hs" -lt 0 ] 2>/dev/null && grep -qx "$name" "$WGH_RECONFIG" 2>/dev/null; then
+                    _p "'${name}' (PC): con la actualización cambió de IP y puerto." \
+                       "Reconfigúralo con NODOS > DATOS PARA EL NODO: IP $(_wgn_nodeip "$idx"), puerto $(_wgn_port "$idx")."
+                elif [ "$hs" -lt 0 ] 2>/dev/null; then
                     _p "'${name}' (PC): nunca ha conectado." "El equipo no está llamando al VPS. Revisa allí clave, Endpoint y puerto $(_wgn_port "$idx")."
                 elif [ "$hs" -ge 180 ]; then
                     _p "'${name}' (PC): último contacto hace ${hs}s." "Comprueba que el equipo esté encendido y con PersistentKeepalive = 25."
                 else
                     _v "'${name}' (PC): conectado (handshake hace ${hs}s)."; vivos=$((vivos+1))
+                    # Ya conecta con sus datos nuevos: fuera del aviso.
+                    [ -f "$WGH_RECONFIG" ] && sed -i "/^${name}$/d" "$WGH_RECONFIG"
                     ping -c1 -W2 "$(_wgn_nodeip "$idx")" &>/dev/null \
                         && _i "responde al ping en $(_wgn_nodeip "$idx")" \
                         || _i "no responde al ping (no es grave si su firewall bloquea ICMP)"
