@@ -1768,6 +1768,14 @@ _wgh_repair_conf_if_needed() {
     [ -f "$WGH_PEER_KEY" ] && peer_pub=$(tr -d '[:space:]' < "$WGH_PEER_KEY" 2>/dev/null)
     want=$(_wgh_render_conf "$priv" "$peer_pub")
     [ "$want" = "$(cat "$WGH_CONF" 2>/dev/null)" ] && return 0
+    # Seguro: una reparacion NUNCA deja sin peer una interfaz que lo tiene.
+    # Si el registro no reconoce al nodo 1 (formato antiguo, archivo
+    # dañado...), quitar el peer corta el tunel que estaba funcionando:
+    # mejor no tocar nada y dejarlo anotado.
+    if ! grep -q '^\[Peer\]' <<<"$want" && grep -q '^\[Peer\]' "$WGH_CONF" 2>/dev/null; then
+        _wgh_log "AVISO: no se reescribe ${WGH_CONF}: quitaria el peer del nodo 1 (registro sin nodo 1)"
+        return 0
+    fi
     _wgh_log "Reescribiendo ${WGH_CONF} con la configuracion del nodo 1"
     printf '%s\n' "$want" > "$WGH_CONF"
     chmod 600 "$WGH_CONF"

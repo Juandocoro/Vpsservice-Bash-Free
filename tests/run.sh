@@ -508,6 +508,25 @@ grep -q '_wgn_table_re' modules/installers/wg_home.sh && is "la tabla 200 se rec
     || bad "falta reconocer 'lookup homevpn'"
 
 # =========================================================
+group "La reparacion nunca corta un tunel vivo"
+# ---------------------------------------------------------
+# Con un registro sin nodo 1, la reparacion reescribia wg-home.conf
+# sin peer y lo aplicaba en caliente: el tunel que funcionaba se caia.
+# =========================================================
+WGH_CONF="$TMP/wg-home.conf"
+printf '[Interface]\nPrivateKey = x\n\n[Peer]\nPublicKey = %s\nAllowedIPs = 0.0.0.0/0\n' "$K1" > "$WGH_CONF"
+cp "$WGH_CONF" "$TMP/wg-antes"
+printf '%s\n' "movil|$K2|2|socks" > "$WGH_NODES_CONF"          # sin nodo 1
+_wgh_is_up() { return 1; }
+_wgh_repair_conf_if_needed
+cmp -s "$WGH_CONF" "$TMP/wg-antes" && ok "sin nodo 1 en el registro, el peer existente se conserva" \
+    || bad "la reparacion borro el peer de un tunel en uso"
+printf '%s\n' "pc|$K1|1|wg" > "$WGH_NODES_CONF"
+_wgh_repair_conf_if_needed
+grep -q 'AllowedIPs *= 0.0.0.0/0' "$WGH_CONF" && grep -q "$K1" "$WGH_CONF" \
+    && ok "con el nodo 1 registrado se escribe su peer correcto" || bad "no se escribe el peer del nodo 1"
+
+# =========================================================
 group "Resolucion de cuentas"
 # =========================================================
 source modules/users.sh 2>/dev/null
