@@ -81,6 +81,14 @@ if ! crontab -l 2>/dev/null | grep -q "killer.sh"; then
     (crontab -l 2>/dev/null; echo "* * * * * bash $TARGET_DIR/modules/killer.sh") | crontab -
 fi
 
+# Guardian: si un protocolo instalado se cae, lo levanta en menos de
+# un minuto. Sin el, los clientes se quedaban sin servicio hasta que
+# alguien abria el panel y se daba cuenta.
+if ! crontab -l 2>/dev/null | grep -q "guardian.sh"; then
+    echo -e "\033[0;33m[*]\033[0m Activando guardián de servicios..."
+    (crontab -l 2>/dev/null; echo "* * * * * bash $TARGET_DIR/modules/guardian.sh") | crontab -
+fi
+
 # =========================================================
 # PASO 7: Instalar dependencias base
 # =========================================================

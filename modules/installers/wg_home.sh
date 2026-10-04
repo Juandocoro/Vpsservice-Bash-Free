@@ -246,7 +246,7 @@ _wgh_ensure_installed() {
     if command -v wg &>/dev/null && command -v wg-quick &>/dev/null; then
         return 0
     fi
-    echo -e "  ${YL}[*]${CR} WireGuard no encontrado. Instalando..."
+    ui_info "WireGuard no encontrado. Instalando..."
     local distro
     distro=$(_wgh_distro)
     case "$distro" in
@@ -258,16 +258,16 @@ _wgh_ensure_installed() {
             pacman -Sy --noconfirm wireguard-tools &>/dev/null
             ;;
         *)
-            echo -e "  ${RD}[-]${CR} Distribución no reconocida: $distro"
-            echo -e "  ${YL}[!]${CR} Instala manualmente: wireguard y wireguard-tools"
+            ui_err "Distribución no reconocida: $distro"
+            ui_warn "Instala manualmente: wireguard y wireguard-tools"
             return 1
             ;;
     esac
     if ! command -v wg &>/dev/null; then
-        echo -e "  ${RD}[-]${CR} Error instalando WireGuard."
+        ui_err "Error instalando WireGuard."
         return 1
     fi
-    echo -e "  ${GR}[+]${CR} WireGuard instalado correctamente."
+    ui_ok "WireGuard instalado correctamente."
     return 0
 }
 
@@ -278,10 +278,10 @@ _wgh_ensure_rt_table() {
         touch /etc/iproute2/rt_tables
     fi
     if ! grep -q "^${WGH_RT_TABLE}[[:space:]]" /etc/iproute2/rt_tables 2>/dev/null; then
-        echo -e "  ${YL}[*]${CR} Registrando tabla de rutas ${WGH_RT_TABLE} ${WGH_RT_NAME}..."
+        ui_info "Registrando tabla de rutas ${WGH_RT_TABLE} ${WGH_RT_NAME}..."
         echo "${WGH_RT_TABLE} ${WGH_RT_NAME}" >> /etc/iproute2/rt_tables
         _wgh_log "Tabla ${WGH_RT_TABLE} ${WGH_RT_NAME} agregada a /etc/iproute2/rt_tables"
-        echo -e "  ${GR}[+]${CR} Tabla ${WGH_RT_NAME} registrada."
+        ui_ok "Tabla ${WGH_RT_NAME} registrada."
     fi
 }
 
@@ -370,8 +370,8 @@ _wgh_verify_ssh_route() {
     local default_gw
     default_gw=$(ip route show table main | grep '^default' | grep -v "wg-home" | head -1)
     if [ -z "$default_gw" ]; then
-        echo -e "  ${RD}[!]${CR} ADVERTENCIA: La ruta por defecto en tabla main no se encontró o usa wg-home."
-        echo -e "  ${RD}[!]${CR} SSH podría verse afectado. Revisa: ip route show table main"
+        ui_warn "ADVERTENCIA: La ruta por defecto en tabla main no se encontró o usa wg-home."
+        ui_warn "SSH podría verse afectado. Revisa: ip route show table main"
         _wgh_log "ALERTA: Verificación de ruta SSH falló en tabla main"
         return 1
     fi
@@ -382,7 +382,7 @@ _wgh_verify_ssh_route() {
 _wgh_open_firewall() {
     if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
         ufw allow "${WGH_PORT}/udp" &>/dev/null
-        echo -e "  ${GR}[+]${CR} UFW: puerto ${WGH_PORT}/UDP abierto."
+        ui_ok "UFW: puerto ${WGH_PORT}/UDP abierto."
         _wgh_log "UFW: puerto ${WGH_PORT}/UDP abierto"
     fi
 }
@@ -391,7 +391,7 @@ _wgh_open_firewall() {
 _wgh_close_firewall() {
     if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
         ufw delete allow "${WGH_PORT}/udp" &>/dev/null
-        echo -e "  ${GR}[+]${CR} UFW: regla ${WGH_PORT}/UDP eliminada."
+        ui_ok "UFW: regla ${WGH_PORT}/UDP eliminada."
         _wgh_log "UFW: regla ${WGH_PORT}/UDP eliminada"
     fi
 }
@@ -431,23 +431,6 @@ _wgh_routing_is_active() {
     return 1
 }
 
-# Obtener o fijar estado de Fallback (por defecto ON)
-_wgh_get_fallback() {
-    if [ -f "$WGH_FALLBACK_CONF" ]; then
-        grep -oE "ON|OFF" "$WGH_FALLBACK_CONF" 2>/dev/null | head -1 || echo "ON"
-    else
-        echo "ON"
-    fi
-}
-
-_wgh_set_fallback() {
-    local val="$1"
-    [ "$val" != "OFF" ] && val="ON"
-    mkdir -p /etc/wireguard 2>/dev/null
-    echo "FALLBACK=${val}" > "$WGH_FALLBACK_CONF"
-    chmod 644 "$WGH_FALLBACK_CONF"
-    _wgh_log "Fallback residencial configurado a: ${val}"
-}
 
 # =========================================================
 # REGISTRO DE NODOS RESIDENCIALES
@@ -674,7 +657,7 @@ _wgh_node_up() {
         ufw allow in on "$ifc" &>/dev/null
     fi
 
-    if _wgh_node_is_up; then
+    if _wgh_node_is_up "$idx"; then
         # Ya arriba: se aplica el conf en caliente, sin cortar.
         wg syncconf "$ifc" <(wg-quick strip "$ifc" 2>/dev/null) 2>/dev/null && return 0
     fi
@@ -696,7 +679,7 @@ _wgh_node_down() {
 # Levanta todas las interfaces registradas.
 _wgh_nodes_up_all() {
     local name idx key type
-    while IFS='|' read -r name key idx type; do
+    while IFS='|' read -r name key idx type _; do
         [ -z "$idx" ] && continue
         if [ "${type:-wg}" = "socks" ]; then
             _socks_up "$idx"
@@ -741,10 +724,19 @@ _socks_install_deps() {
 # sshd: los usuarios de nodo solo pueden abrir el reenvio inverso, nada
 # mas. Sin esto un snodeN con contrasena seria un proxy abierto hacia el
 # localhost del VPS.
-_socks_harden_sshd() {
-    [ -f "$_SOCKS_SSHD_DROPIN" ] && return 0
-    [ -d /etc/ssh/sshd_config.d ] || return 0
-    cat > "$_SOCKS_SSHD_DROPIN" <<'SSHEOF'
+#
+# ClientAlive es lo que hace que un movil caido se detecte: sin el,
+# si el telefono pierde la cobertura sshd mantiene su puerto -R
+# abierto durante HORAS (hasta que caduca el TCP). El vigilante lo
+# veia "conectado", el trafico de sus usuarios se iba a un SOCKS
+# muerto, y el movil ni siquiera podia volver a conectar porque su
+# puerto seguia ocupado. Con 10s x 3 se libera en unos 30 segundos.
+#
+# El fichero se reescribe si su contenido cambia (antes solo se
+# creaba una vez, y una correccion nunca llegaba a los VPS que ya lo
+# tenian), y solo se aplica si sshd lo da por valido.
+_socks_sshd_conf() {
+    cat <<'SSHEOF'
 # Usuarios de nodo movil (SOCKS inverso). Solo reenvio remoto.
 Match User snode*
     AllowTcpForwarding remote
@@ -752,9 +744,27 @@ Match User snode*
     X11Forwarding no
     AllowAgentForwarding no
     PermitTTY no
+    ClientAliveInterval 10
+    ClientAliveCountMax 3
     ForceCommand echo "Nodo conectado. Manten esta sesion abierta."
 SSHEOF
-    systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null
+}
+
+_socks_harden_sshd() {
+    [ -d /etc/ssh/sshd_config.d ] || return 0
+    local want old=""
+    want=$(_socks_sshd_conf)
+    [ -f "$_SOCKS_SSHD_DROPIN" ] && old=$(cat "$_SOCKS_SSHD_DROPIN")
+    [ "$want" = "$old" ] && return 0
+    echo "$want" > "$_SOCKS_SSHD_DROPIN"
+    if command -v sshd &>/dev/null && ! sshd -t &>/dev/null; then
+        # No se arriesga el SSH de todos por esta mejora.
+        if [ -n "$old" ]; then echo "$old" > "$_SOCKS_SSHD_DROPIN"; else rm -f "$_SOCKS_SSHD_DROPIN"; fi
+        _wgh_log "ERROR: la config sshd de nodos movil no valida; se mantiene la anterior"
+        return 1
+    fi
+    systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null ||         systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null
+    _wgh_log "Config sshd de nodos movil actualizada"
 }
 
 # Crea (o reutiliza) el usuario de sistema del movil y autoriza SU LLAVE.
@@ -1024,7 +1034,7 @@ wghome_register_socks() {
     _socks_up "$nidx" >/dev/null 2>&1 || true
 
     # Si la salida residencial ya estaba activa, entra en caliente.
-    _wgh_routing_is_active && _wgh_apply_user_routing >/dev/null 2>&1
+    { [ -f "$WGH_ROUTING_FLAG" ] || _wgh_routing_is_active; } && _wgh_apply_user_routing >/dev/null 2>&1
 
     ui_blank
     if [ -n "$pubkey" ]; then
@@ -1181,7 +1191,11 @@ _wgh_node_set_backup() {
 # positivos. No hay que configurar nada a mano.
 _wgh_silence_for() {
     local ka="${1:-25}" s
-    [ -z "$ka" ] || [ "$ka" -le 0 ] 2>/dev/null && ka=25
+    # El kernel escribe 'off' cuando el keepalive es 0, que es justo lo
+    # que tiene el VPS. Antes 'off' acababa valiendo 0 en la cuenta y la
+    # tolerancia quedaba en 12s con nodos que hablan cada 25s: un nodo
+    # sano y sin trafico se daba por caido y recuperado cada 25 segundos.
+    [[ "$ka" =~ ^[0-9]+$ ]] && [ "$ka" -gt 0 ] || ka=25
     s=$(( 2 * ka + 5 ))
     [ "$s" -lt 12 ] && s=12
     echo "$s"
@@ -1194,11 +1208,14 @@ _wgh_silence_for() {
 # externos a bash puro baja el vigilante del 3,9% de un nucleo a
 # una decima parte.
 #   -> MED_OK (1/0), MED_RX, MED_TS
+#   _wgh_measure_calc <rx> <keepalive> <ahora> <rx_prev> <ts_prev> [silencio_max]
 _wgh_measure_calc() {
-    local rx="$1" ka="$2" ahora="$3" rxp="$4" tsp="$5" sil
+    local rx="$1" ka="$2" ahora="$3" rxp="$4" tsp="$5" sil="${6:-}"
     if [ -z "$rx" ]; then MED_OK=0; MED_RX="$rxp"; MED_TS="$tsp"; return; fi
-    [ -z "$ka" ] || [ "$ka" -le 0 ] 2>/dev/null && ka=25
-    sil=$(( 2 * ka + 5 )); [ "$sil" -lt 12 ] && sil=12
+    if [ -z "$sil" ]; then
+        [[ "$ka" =~ ^[0-9]+$ ]] && [ "$ka" -gt 0 ] || ka=25
+        sil=$(( 2 * ka + 5 )); [ "$sil" -lt 12 ] && sil=12
+    fi
     if [ "$rx" != "$rxp" ]; then
         MED_OK=1; MED_RX="$rx"; MED_TS="$ahora"
     elif [ $(( ahora - tsp )) -lt "$sil" ]; then
@@ -1214,13 +1231,25 @@ _wgh_measure_calc() {
 # si no hay, la IP del VPS.
 #   wg    -> la ruta por defecto de su tabla
 #   socks -> su regla REDIRECT hacia redsocks
+# Todas reciben el INDICE del nodo. Antes el tipo se buscaba
+# por nombre pasandole el indice, nunca coincidia, y un nodo
+# movil caido se trataba como WireGuard: se borraba una ruta
+# que no existia y su REDIRECT seguia mandando a sus usuarios
+# a un SOCKS muerto.
 # ---------------------------------------------------------
+_wgh_idx_type() {
+    local t
+    t=$(_wgh_nodes_list | awk -F'|' -v i="$1" '$3==i {print $4}' | head -1)
+    echo "${t:-wg}"
+}
+
 _wgh_node_path_on() {
     local idx="$1"
-    if _wgh_node_is_socks "$idx"; then
+    if [ "$(_wgh_idx_type "$idx")" = "socks" ]; then
         local mark redport
         mark=$(_wgn_mark "$idx"); redport=$(_wgn_redport "$idx")
-        iptables -t nat -C OUTPUT -p tcp -m mark --mark "${mark}" -m comment --comment "HOMEVPN_SOCKS" -j REDIRECT --to-ports "${redport}" 2>/dev/null ||             iptables -t nat -A OUTPUT -p tcp -m mark --mark "${mark}" -m comment --comment "HOMEVPN_SOCKS" -j REDIRECT --to-ports "${redport}" 2>/dev/null
+        iptables -t nat -C OUTPUT -p tcp -m mark --mark "${mark}" -m comment --comment "HOMEVPN_SOCKS" -j REDIRECT --to-ports "${redport}" 2>/dev/null || \
+            iptables -t nat -A OUTPUT -p tcp -m mark --mark "${mark}" -m comment --comment "HOMEVPN_SOCKS" -j REDIRECT --to-ports "${redport}" 2>/dev/null
     else
         ip route replace default via "$(_wgn_nodeip "$idx")" dev "$(_wgn_iface "$idx")" table "$(_wgn_table "$idx")" 2>/dev/null
     fi
@@ -1228,7 +1257,7 @@ _wgh_node_path_on() {
 
 _wgh_node_path_off() {
     local idx="$1"
-    if _wgh_node_is_socks "$idx"; then
+    if [ "$(_wgh_idx_type "$idx")" = "socks" ]; then
         local mark redport
         mark=$(_wgn_mark "$idx"); redport=$(_wgn_redport "$idx")
         while iptables -t nat -D OUTPUT -p tcp -m mark --mark "${mark}" -m comment --comment "HOMEVPN_SOCKS" -j REDIRECT --to-ports "${redport}" 2>/dev/null; do :; done
@@ -1238,17 +1267,100 @@ _wgh_node_path_off() {
 }
 
 # ---------------------------------------------------------
+# Desvio al RESPALDO. Los usuarios de un nodo caido pasan al
+# nodo que se le haya fijado como respaldo, y solo si ese
+# respaldo esta vivo; si no, siguen cayendo a la IP del VPS.
+#   respaldo wg    -> regla 'fwmark <marca del caido> -> tabla
+#                     del respaldo', prioridad 1400+indice
+#   respaldo socks -> REDIRECT de la marca del caido hacia el
+#                     redsocks del respaldo (solo TCP)
+# Antes esto se anunciaba en el log pero no existia: la regla
+# nunca se creaba y todos caian directos a la IP del VPS.
+# ---------------------------------------------------------
+_wgh_backup_prio() { echo $(( 1400 + $1 )); }
+
+# Que habria que ejecutar para desviar <idx> a <idx_respaldo>.
+# Funcion pura (solo imprime): asi se puede probar sin root.
+_wgh_backup_cmd() {
+    local idx="$1" bidx="$2" btype="$3" mark
+    mark=$(_wgn_mark "$idx")
+    if [ "$btype" = "socks" ]; then
+        echo "iptables -t nat -A OUTPUT -p tcp -m mark --mark ${mark} -m comment --comment HOMEVPN_SOCKS_BK -j REDIRECT --to-ports $(_wgn_redport "$bidx")"
+    else
+        echo "ip rule add fwmark ${mark} table $(_wgn_table "$bidx") priority $(_wgh_backup_prio "$idx")"
+    fi
+}
+
+_wgh_backup_on() {
+    local idx="$1" name bk bidx btype mark
+    name=$(_wgh_node_name_of "$idx"); bk=$(_wgh_node_backup_of "$name")
+    [ -z "$bk" ] && return 0
+    bidx=$(_wgh_node_idx_of "$bk"); [ -z "$bidx" ] && return 0
+    btype=$(_wgh_idx_type "$bidx"); mark=$(_wgn_mark "$idx")
+    if [ "$btype" = "socks" ]; then
+        iptables -t nat -C OUTPUT -p tcp -m mark --mark "${mark}" -m comment --comment "HOMEVPN_SOCKS_BK" -j REDIRECT --to-ports "$(_wgn_redport "$bidx")" 2>/dev/null && return 0
+    else
+        ip rule show 2>/dev/null | grep -q "^$(_wgh_backup_prio "$idx"):" && return 0
+    fi
+    # shellcheck disable=SC2046
+    $(_wgh_backup_cmd "$idx" "$bidx" "$btype") 2>/dev/null
+}
+
+_wgh_backup_off() {
+    local idx="$1" mark rule
+    mark=$(_wgn_mark "$idx")
+    while ip rule del priority "$(_wgh_backup_prio "$idx")" 2>/dev/null; do :; done
+    while rule=$(iptables -t nat -S OUTPUT 2>/dev/null | grep "HOMEVPN_SOCKS_BK" | grep -- "--mark ${mark} " | head -1) && [ -n "$rule" ]; do
+        # shellcheck disable=SC2086
+        iptables -t nat ${rule/-A /-D } 2>/dev/null || break
+    done
+}
+
+# ---------------------------------------------------------
+# Lleva el sistema al estado que dicta la salud de los nodos.
+# Es idempotente: se llama en cada cambio y, ademas, cada pocos
+# segundos, asi que si algo se desajusta (un reinicio del
+# vigilante, alguien que toco iptables) se corrige solo.
+#   _wgh_reconcile <nombre_array_estado>
+# ---------------------------------------------------------
+_wgh_reconcile() {
+    local -n _st="$1"
+    local name key idx tipo bk est bk_est
+    [ -f "$WGH_ROUTING_FLAG" ] || return 0
+    while IFS='|' read -r name key idx tipo bk; do
+        [ -z "$idx" ] && continue
+        est="${_st[$name]:-up}"
+        if [ "$est" = "up" ]; then
+            _wgh_node_path_on "$idx"; _wgh_backup_off "$idx"
+        else
+            _wgh_node_path_off "$idx"
+            bk_est="down"; [ -n "$bk" ] && bk_est="${_st[$bk]:-up}"
+            if [ -n "$bk" ] && [ "$bk_est" = "up" ]; then _wgh_backup_on "$idx"; else _wgh_backup_off "$idx"; fi
+        fi
+    done < <(_wgh_nodes_list)
+}
+
+# ---------------------------------------------------------
 # EL VIGILANTE
 # ---------------------------------------------------------
 wghome_watchdog_loop() {
     _wgh_log "Vigilante iniciado (tick ${WGH_WATCH_INTERVAL}s, caida tras ${WGH_DOWN_AFTER} medidas)"
-    declare -A ESTADO RACHA RXP TSP RX KA IFC
+    declare -A ESTADO RACHA RXP TSP RX KA IFC PING RESP
     declare -a LISTA=()
-    local ahora name key idx tipo estado racha nuevo bk ln mt="" mtprev="" vuelta=0
-    local f1 f2 f3 f4 f5 f6 f7 f8 f9
+    local ahora name key idx tipo estado racha nuevo bk ln mt="" mtprev="" vuelta=0 cambio sil
+    local f1 f2 f3 f4 f5 f6 f7 f8 f9 k v
+
+    # Se recupera el estado que dejo la ejecucion anterior (vive en
+    # /run: sobrevive a un reinicio del vigilante, no al del VPS). Asi
+    # un nodo que estaba caido no se da por bueno al arrancar.
+    if [ -f "$WGH_HEALTH_FILE" ]; then
+        while IFS='=' read -r k v; do
+            [ -n "$k" ] && ESTADO[$k]="$v"
+        done < "$WGH_HEALTH_FILE"
+    fi
 
     while true; do
-        if ! _wgh_routing_is_active; then sleep "$WGH_WATCH_INTERVAL"; continue; fi
+        if [ ! -f "$WGH_ROUTING_FLAG" ]; then sleep "$WGH_WATCH_INTERVAL"; continue; fi
 
         # EPOCHSECONDS lo da bash sin lanzar 'date'.
         ahora=${EPOCHSECONDS:-$(date +%s)}
@@ -1268,11 +1380,11 @@ wghome_watchdog_loop() {
                 idx="${ln#*|}"; idx="${idx#*|}"; idx="${idx%%|*}"
                 IFC[$idx]=$(_wgn_iface "$idx")
             done < "$WGH_NODES_CONF"
+            vuelta=0   # fuerza una reconciliacion con la lista nueva
         fi
 
         # Una sola llamada al kernel por vuelta, para todas las
-        # interfaces, y se reparte en bash. Antes esto eran dos awk
-        # por nodo y por vuelta.
+        # interfaces, y se reparte en bash.
         RX=(); KA=()
         while IFS=$'\t' read -r f1 f2 f3 f4 f5 f6 f7 f8 f9; do
             [ -z "$f9" ] && continue          # linea de interfaz, no de peer
@@ -1280,38 +1392,74 @@ wghome_watchdog_loop() {
             KA["${f1}|${f2}"]="$f9"
         done < <(wg show all dump 2>/dev/null)
 
+        cambio=0
         while IFS='|' read -r name key idx tipo _; do
             [ -z "$idx" ] && continue
+            estado="${ESTADO[$name]:-up}"
+
+            # Un nodo que arranca caido no tiene el beneficio de la duda:
+            # hace falta ver bytes nuevos de verdad para readmitirlo.
+            if [ -z "${TSP[$name]:-}" ]; then
+                if [ "$estado" = "down" ]; then TSP[$name]=0; else TSP[$name]="$ahora"; fi
+            fi
 
             if [ "${tipo:-wg}" = "socks" ]; then
-                if _socks_reverse_up "$idx"; then MED_OK=1; else MED_OK=0; fi
+                # Vivo = el movil mantiene su ssh -R Y redsocks corre.
+                # sshd cierra la sesion de un movil sin cobertura en ~30s
+                # (ClientAliveInterval), asi que el puerto no queda
+                # "escuchando" a un telefono que ya no esta.
+                if _socks_reverse_up "$idx" && _socks_redsocks_up "$idx"; then MED_OK=1; else MED_OK=0; fi
                 MED_RX=0; MED_TS="$ahora"
             elif ! _wgh_node_is_up "$idx"; then
-                MED_OK=0; MED_RX="${RXP[$name]:--1}"; MED_TS="${TSP[$name]:-$ahora}"
+                MED_OK=0; MED_RX="${RXP[$name]:--1}"; MED_TS="${TSP[$name]}"
             else
+                # Sonda: tras 8s de silencio, un ping dentro del tunel cada
+                # 5s. Son 84 bytes. Un nodo que contesta deja de parecer
+                # mudo, y si contesta a pings se le puede exigir mas: se
+                # da por caido a los 20s en vez de a los ~55s del keepalive.
+                if [ $(( ahora - ${TSP[$name]} )) -ge 8 ] && [ $(( ahora - ${PING[$name]:-0} )) -ge 5 ]; then
+                    ping -c1 -W1 -I "${IFC[$idx]}" "$(_wgn_nodeip "$idx")" &>/dev/null &
+                    PING[$name]="$ahora"
+                fi
+                sil=""; [ "${RESP[$name]:-0}" -ge 2 ] && sil=20
                 _wgh_measure_calc "${RX["${IFC[$idx]}|${key}"]:-}" "${KA["${IFC[$idx]}|${key}"]:-}" \
-                                  "$ahora" "${RXP[$name]:--1}" "${TSP[$name]:-$ahora}"
+                                  "$ahora" "${RXP[$name]:--1}" "${TSP[$name]}" "$sil"
+                # Llegaron bytes justo despues de un ping tras un silencio:
+                # este nodo contesta a la sonda. Se exigen dos veces para no
+                # confundirlo con trafico del usuario que coincidio.
+                if [ "$MED_TS" = "$ahora" ] && [ "${RXP[$name]:--1}" != "-1" ] && [ $(( ahora - ${PING[$name]:-0} )) -le 2 ]; then
+                    RESP[$name]=$(( ${RESP[$name]:-0} + 1 ))
+                fi
             fi
             RXP[$name]="$MED_RX"; TSP[$name]="$MED_TS"
 
-            estado="${ESTADO[$name]:-up}"; racha="${RACHA[$name]:-0}"
+            racha="${RACHA[$name]:-0}"
             _wgh_health_step "$estado" "$racha" "$MED_OK"
             nuevo="$HS_ESTADO"; RACHA[$name]="$HS_RACHA"
-            ESTADO[$name]="${ESTADO[$name]:-$estado}"
+            ESTADO[$name]="$nuevo"
 
             if [ "$nuevo" != "$estado" ]; then
-                ESTADO[$name]="$nuevo"
+                cambio=1
                 if [ "$nuevo" = "down" ]; then
-                    _wgh_node_path_off "$idx"
                     bk=$(_wgh_node_backup_of "$name")
-                    _wgh_log "Nodo '${name}' CAIDO: sus usuarios pasan a ${bk:-la IP del VPS}"
+                    if [ -n "$bk" ] && [ "${ESTADO[$bk]:-up}" = "up" ]; then
+                        _wgh_log "Nodo '${name}' CAIDO: sus usuarios pasan al respaldo '${bk}'"
+                    else
+                        _wgh_log "Nodo '${name}' CAIDO: sus usuarios pasan a la IP del VPS"
+                    fi
                 else
-                    _wgh_node_path_on "$idx"
                     _wgh_log "Nodo '${name}' recuperado: vuelve a dar salida"
                 fi
-                _wgh_health_dump ESTADO
             fi
         done < <(printf '%s\n' "${LISTA[@]}")
+
+        # Un cambio en un nodo puede afectar a otros (si era respaldo de
+        # alguien), asi que se reconcilia todo. Y cada 15 vueltas aunque
+        # no cambie nada: es lo que repara cualquier desajuste.
+        if [ "$cambio" = "1" ] || [ $(( vuelta % 15 )) -eq 0 ]; then
+            _wgh_reconcile ESTADO
+            _wgh_health_dump ESTADO
+        fi
 
         sleep "$WGH_WATCH_INTERVAL"
     done
@@ -1320,9 +1468,9 @@ wghome_watchdog_loop() {
 # Vuelca el estado a /run para que el panel pueda leerlo.
 _wgh_health_dump() {
     local -n _e="$1"
-    local k
-    : > "$WGH_HEALTH_FILE" 2>/dev/null || return
-    for k in "${!_e[@]}"; do echo "${k}=${_e[$k]}"; done >> "$WGH_HEALTH_FILE"
+    local k tmp="${WGH_HEALTH_FILE}.tmp"
+    { for k in "${!_e[@]}"; do echo "${k}=${_e[$k]}"; done; } > "$tmp" 2>/dev/null || return
+    mv -f "$tmp" "$WGH_HEALTH_FILE" 2>/dev/null
 }
 
 _wgh_health_of() {
@@ -1333,7 +1481,7 @@ _wgh_health_of() {
 }
 
 # ---------------------------------------------------------
-# Servicio
+# Servicios
 # ---------------------------------------------------------
 _wgh_watchdog_is_on() { systemctl is-enabled homevpn-watchdog.service &>/dev/null; }
 
@@ -1343,7 +1491,7 @@ _wgh_watchdog_enable() {
     cat > "$WGH_WATCH_SERVICE" <<EOF
 [Unit]
 Description=Vigilante de nodos residenciales
-After=network-online.target
+After=network-online.target homevpn-rules.service
 
 [Service]
 Type=simple
@@ -1356,7 +1504,9 @@ Nice=10
 WantedBy=multi-user.target
 EOF
     systemctl daemon-reload &>/dev/null
-    systemctl enable --now homevpn-watchdog.service &>/dev/null
+    systemctl enable homevpn-watchdog.service &>/dev/null
+    # restart y no 'start': si ya corria con codigo viejo, que recoja el nuevo.
+    systemctl restart homevpn-watchdog.service &>/dev/null
     _wgh_log "Vigilante activado"
 }
 
@@ -1367,9 +1517,83 @@ _wgh_watchdog_disable() {
     # Al apagarlo se devuelven todas las rutas: si no, un nodo que
     # quedo marcado como caido se quedaria fuera para siempre.
     local i
-    for i in $(_wgh_nodes_list | cut -d'|' -f3); do _wgh_node_path_on "$i"; done
+    if [ -f "$WGH_ROUTING_FLAG" ]; then
+        for i in $(_wgh_nodes_list | cut -d'|' -f3); do _wgh_node_path_on "$i"; _wgh_backup_off "$i"; done
+    fi
     rm -f "$WGH_HEALTH_FILE"
     _wgh_log "Vigilante desactivado y rutas restauradas"
+}
+
+# ---------------------------------------------------------
+# PERSISTENCIA: que la salida residencial sobreviva a un
+# reinicio del VPS. Las reglas de iptables e 'ip rule' viven
+# en memoria; antes, tras reiniciar, desaparecian en silencio
+# y todos los usuarios pasaban a salir por la IP del VPS.
+# ---------------------------------------------------------
+WGH_ROUTING_FLAG="/etc/wireguard/homevpn-routing.on"
+
+_wgh_persist_on() {
+    local dir
+    dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+    mkdir -p /etc/wireguard 2>/dev/null
+    touch "$WGH_ROUTING_FLAG"
+    cat > "$WGH_SERVICE_FILE" <<EOF
+[Unit]
+Description=Restaura la salida residencial (vpsservice)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash ${dir}/wg_home.sh --restore
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload &>/dev/null
+    systemctl enable homevpn-rules.service &>/dev/null
+}
+
+_wgh_persist_off() {
+    rm -f "$WGH_ROUTING_FLAG"
+    systemctl disable homevpn-rules.service &>/dev/null
+    rm -f "$WGH_SERVICE_FILE"
+    systemctl daemon-reload &>/dev/null
+}
+
+# Vuelve a montar todo: interfaces de los nodos y reglas. Lo usan
+# el arranque del VPS y el guardian de servicios.
+wghome_restore() {
+    [ -f "$WGH_ROUTING_FLAG" ] || return 0
+    declare -F refresh_ports >/dev/null || source "$_INST_DIR/../network.sh"
+    refresh_ports
+    _wgh_nodes_up_all >/dev/null 2>&1
+    _wgh_apply_user_routing >/dev/null 2>&1
+    _wgh_log "Salida residencial restaurada"
+}
+
+# ¿Sigue montada? Barato: lo llama el guardian cada minuto.
+_wgh_rules_present() {
+    iptables -t mangle -S OUTPUT 2>/dev/null | grep -q "HOMEVPN_EXCLUDE" || return 1
+    local name key idx type
+    while IFS='|' read -r name key idx type _; do
+        [ -z "$idx" ] && continue
+        if [ "${type:-wg}" = "socks" ]; then
+            _socks_redsocks_up "$idx" || return 1
+        else
+            _wgh_node_is_up "$idx" || return 1
+            ip rule show 2>/dev/null | grep -q "fwmark $(_wgn_mark "$idx") lookup" || return 1
+        fi
+    done < <(_wgh_nodes_list)
+    return 0
+}
+
+wghome_check_restore() {
+    [ -f "$WGH_ROUTING_FLAG" ] || return 0
+    _wgh_rules_present && return 0
+    _wgh_log "Faltaban reglas de la salida residencial: restaurando"
+    wghome_restore
 }
 
 # =========================================================
@@ -1409,9 +1633,6 @@ _wgh_isolate_off() {
     done
 }
 
-_wgh_isolate_is_on() {
-    iptables -C FORWARD -i "${WGH_IFACE}" -o "${WGH_IFACE}" -m comment --comment "HOMEVPN_ISOLATE" -j DROP 2>/dev/null
-}
 
 # =========================================================
 # CAMBIO 1: GENERADOR DE CONFIGURACIÓN wg-home.conf
@@ -1469,7 +1690,7 @@ EOF
     fi
 
     local name key idx type
-    while IFS='|' read -r name key idx type; do
+    while IFS='|' read -r name key idx type _; do
         [ -z "$key" ] && continue
         # Un nodo movil (socks) no tiene clave ni peer WireGuard: se
         # omite para no escribir un [Peer] invalido en wg-home.conf.
@@ -1513,294 +1734,16 @@ _wgh_repair_conf_if_needed() {
     fi
 }
 
-# =========================================================
-# CAMBIO 3: DETECCIÓN AUTOMÁTICA DEL STACK HTTP INJECTOR
-# =========================================================
-_wgh_detect_http_injector() {
-    local ssl_port="" ssl_proc="" int_port="" final_service=""
-
-    # 1. Analizar stunnel
-    if [ -f /etc/stunnel/stunnel.conf ]; then
-        ssl_port=$(grep -E '^\s*accept\s*=' /etc/stunnel/stunnel.conf 2>/dev/null | awk -F'=' '{print $2}' | xargs)
-        int_port=$(grep -E '^\s*connect\s*=' /etc/stunnel/stunnel.conf 2>/dev/null | awk -F'=' '{print $2}' | xargs)
-        if systemctl is-active --quiet stunnel4 2>/dev/null || pgrep -x stunnel4 &>/dev/null; then
-            ssl_proc="stunnel4 (ACTIVO)"
-        else
-            ssl_proc="stunnel4 (INACTIVO)"
-        fi
-    fi
-
-    # 2. Analizar websocket si no hay stunnel o adicional
-    local ws_port=""
-    if [ -f /etc/websocket/proxy.py ]; then
-        ws_port=$(grep -oE 'WS_PORT[^0-9]*[0-9]+' /etc/websocket/proxy.py 2>/dev/null | grep -oE '[0-9]+' || echo "80")
-    fi
-
-    # 3. Analizar servicio SSH final
-    local ssh_p="22"
-    if grep -qE '^\s*Port\s+[0-9]+' /etc/ssh/sshd_config 2>/dev/null; then
-        ssh_p=$(grep -E '^\s*Port\s+[0-9]+' /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' | head -1)
-    fi
-    if systemctl is-active --quiet ssh 2>/dev/null || systemctl is-active --quiet sshd 2>/dev/null; then
-        final_service="OpenSSH (puerto $ssh_p)"
-    elif systemctl is-active --quiet dropbear 2>/dev/null; then
-        final_service="Dropbear SSH"
-    else
-        final_service="SSH / Dropbear"
-    fi
-
-    echo "SSL_PORT=${ssl_port:-443}|SSL_PROC=${ssl_proc:-N/A}|INT_PORT=${int_port:-127.0.0.1:22}|WS_PORT=${ws_port:-N/A}|FINAL_SVC=${final_service}"
-}
 
 # =========================================================
-# CAMBIO 14: GESTIÓN DE USUARIOS HTTP INJECTOR
+# CUENTAS DE CLIENTE
 # =========================================================
 
 # Obtiene la lista de usuarios reales del sistema con UID >= 1000 (excluye root y nobody)
 _wgh_get_client_users() {
-    awk -F: '$3 >= 1000 && $3 != 65534 {print $1 ":" $3}' /etc/passwd 2>/dev/null
+    awk -F: '$3 >= 1000 && $3 != 65534 && $1 != "nobody" && $1 != "ubuntu" {print $1 ":" $3}' /etc/passwd 2>/dev/null
 }
 
-# Leer usuarios seleccionados en /etc/wireguard/homevpn-users.conf
-_wgh_get_configured_users() {
-    if [ -f "$WGH_USERS_CONF" ]; then
-        grep -vE '^\s*#' "$WGH_USERS_CONF" 2>/dev/null | grep -v '^\s*$' | tr -d '\r'
-    fi
-}
-
-# Menú para configurar qué usuarios salen por la IP residencial (Opción 12)
-wghome_manage_users() {
-    while true; do
-        clear
-        print_title 2>/dev/null || true
-        echo -e "$SEP"
-        echo -e "${WH}     CONFIGURAR USUARIOS HTTP INJECTOR${CR}"
-        echo -e "$SEP"
-        echo -e "  ${DM}Selecciona los usuarios Linux cuyo tráfico saldrá${CR}"
-        echo -e "  ${DM}por el Gateway Residencial (PC doméstico en Colombia).${CR}"
-        echo -e "  ${YL}[!] El usuario 'root' y SSH de admin están siempre excluidos.${CR}"
-        echo -e "$SEP"
-
-        local -a system_users=()
-        local -a system_uids=()
-        local line u uid
-        while IFS=: read -r u uid; do
-            [ -z "$u" ] && continue
-            system_users+=("$u")
-            system_uids+=("$uid")
-        done < <(_wgh_get_client_users)
-
-        if [ ${#system_users[@]} -eq 0 ]; then
-            echo -e "  ${RD}[-] No hay usuarios de clientes creados (UID >= 1000).${CR}"
-            echo -e "  ${DM}Crea usuarios primero desde la opción 1 del menú principal.${CR}"
-            echo ""
-            read -p "$(echo -e ${DM})Presiona Enter para volver...$(echo -e ${CR})"
-            return
-        fi
-
-        local -a configured_users=()
-        if [ -f "$WGH_USERS_CONF" ]; then
-            while IFS= read -r cu; do
-                [ -n "$cu" ] && configured_users+=("$cu")
-            done < <(_wgh_get_configured_users)
-        fi
-
-        echo -e "  ${WH}Usuarios disponibles en el sistema:${CR}"
-        echo ""
-        local i is_sel tag
-        for i in "${!system_users[@]}"; do
-            u="${system_users[$i]}"
-            uid="${system_uids[$i]}"
-            is_sel=false
-            for cu in "${configured_users[@]}"; do
-                if [ "$cu" = "$u" ]; then is_sel=true; break; fi
-            done
-            if [ "$is_sel" = true ]; then
-                tag="${GR}[✓ ENRUTADO RESIDENCIAL]${CR}"
-            else
-                tag="${DM}[  Salida normal VPS  ]${CR}"
-            fi
-            printf "  ${CY}%2d)${CR} ${WH}%-16s${CR} (UID: %-5s) %b\n" "$((i + 1))" "$u" "$uid" "$tag"
-        done
-
-        echo ""
-        echo -e "  ${CY} A)${CR} ${WH}Seleccionar TODOS los usuarios${CR}"
-        echo -e "  ${CY} N)${CR} ${WH}Desmarcar TODOS${CR}"
-        echo -e "  ${CY} 0)${CR} ${WH}Guardar y Volver${CR}"
-        echo -e "$SEP"
-        read -p "$(echo -e ${DM})Elige un número para alternar (o A/N/0): $(echo -e ${CR})" sel
-
-        case "$sel" in
-            0|"")
-                break
-                ;;
-            a|A)
-                mkdir -p /etc/wireguard 2>/dev/null
-                printf "%s\n" "${system_users[@]}" > "$WGH_USERS_CONF"
-                chmod 600 "$WGH_USERS_CONF"
-                _wgh_log "Usuarios configurados: todos (${system_users[*]})"
-                ;;
-            n|N)
-                mkdir -p /etc/wireguard 2>/dev/null
-                > "$WGH_USERS_CONF"
-                chmod 600 "$WGH_USERS_CONF"
-                _wgh_log "Usuarios configurados: ninguno"
-                ;;
-            *)
-                if [[ "$sel" =~ ^[0-9]+$ ]] && [ "$sel" -ge 1 ] && [ "$sel" -le ${#system_users[@]} ]; then
-                    local target_user="${system_users[$((sel - 1))]}"
-                    local -a new_users=()
-                    local found=false
-                    for cu in "${configured_users[@]}"; do
-                        if [ "$cu" = "$target_user" ]; then
-                            found=true
-                        else
-                            new_users+=("$cu")
-                        fi
-                    done
-                    if [ "$found" = false ]; then
-                        new_users+=("$target_user")
-                    fi
-                    mkdir -p /etc/wireguard 2>/dev/null
-                    printf "%s\n" "${new_users[@]}" > "$WGH_USERS_CONF"
-                    chmod 600 "$WGH_USERS_CONF"
-                    _wgh_log "Usuario alternado: ${target_user} (activo: $([ "$found" = false ] && echo SI || echo NO))"
-                else
-                    echo -e "  ${RD}[-] Opción no válida.${CR}"; sleep 1
-                fi
-                ;;
-        esac
-
-        # Si el enrutamiento está activo en caliente, refrescar las reglas
-        if _wgh_routing_is_active; then
-            echo -e "  ${YL}[*] Actualizando reglas de policy routing en caliente...${CR}"
-            _wgh_apply_user_routing &>/dev/null
-        fi
-    done
-}
-
-# Ver usuarios actualmente enrutados (Opción 13)
-wghome_view_users() {
-    clear
-    print_title 2>/dev/null || true
-    echo -e "$SEP"
-    echo -e "${WH}     USUARIOS ENRUTADOS POR GATEWAY RESIDENCIAL${CR}"
-    echo -e "$SEP"
-    echo ""
-
-    local -a configured_users=()
-    if [ -f "$WGH_USERS_CONF" ]; then
-        while IFS= read -r cu; do
-            [ -n "$cu" ] && configured_users+=("$cu")
-        done < <(_wgh_get_configured_users)
-    fi
-
-    if [ ${#configured_users[@]} -eq 0 ]; then
-        echo -e "  ${YL}[!] No hay usuarios configurados para salida residencial.${CR}"
-        echo -e "  ${DM}Usa la opción 12 del menú para asignar usuarios.${CR}"
-    else
-        echo -e "  ${WH}Usuarios configurados en ${WGH_USERS_CONF}:${CR}"
-        echo ""
-        printf "  ${CY}%-16s${CR}  ${CY}%-8s${CR}  ${CY}%-22s${CR}  ${CY}%s${CR}\n" "USUARIO" "UID" "REGLA FIREWALL (MANGLE)" "CONEXIÓN ACTIVA"
-        echo -e "  $(printf '─%.0s' {1..70})"
-
-        local u uid rule_active conn_count
-        for u in "${configured_users[@]}"; do
-            uid=$(id -u "$u" 2>/dev/null || echo "N/A")
-            if [ "$uid" != "N/A" ] && iptables -t mangle -C OUTPUT -m owner --uid-owner "$uid" -m comment --comment "HOMEVPN_HTTP_INJECTOR" -j MARK --set-mark "${WGH_FWMARK}" &>/dev/null; then
-                rule_active="${GR}ACTIVA (0x77)${CR}"
-            else
-                rule_active="${RD}INACTIVA${CR}"
-            fi
-            conn_count=$(ps -u "$u" -o comm= 2>/dev/null | grep -E "^(sshd|dropbear)$" | wc -l)
-            if [ "$conn_count" -gt 0 ]; then
-                conn_status="${GR}${conn_count} sesion(es)${CR}"
-            else
-                conn_status="${DM}sin conexion${CR}"
-            fi
-            printf "  ${WH}%-16s${CR}  %-8s  %-31b  %b\n" "$u" "$uid" "$rule_active" "$conn_status"
-        done
-    fi
-
-    echo ""
-    echo -e "  ${DM}Estado global de policy routing: $(_wgh_routing_is_active && echo -e "${GR}ON${CR}" || echo -e "${RD}OFF${CR}")${CR}"
-    echo -e "$SEP"
-    read -p "$(echo -e ${DM})Presiona Enter para continuar...$(echo -e ${CR})"
-}
-
-# Configurar Fallback Residencial (Opción 14)
-wghome_configure_fallback() {
-    while true; do
-        clear
-        print_title 2>/dev/null || true
-        ui_section "QUE NADIE SE QUEDE SIN INTERNET" "conmutacion automatica"
-        ui_blank
-
-        local tag
-        _wgh_watchdog_is_on && tag="$(ui_tag_str on)" || tag="$(ui_tag_str off)"
-        echo -e "${UI_PAD}$(ui_cell "Vigilante" "" 22)${tag}"
-        ui_blank
-        echo -e "${UI_PAD}${DM}Vigila los nodos y, si uno deja de responder, manda a${CR}"
-        echo -e "${UI_PAD}${DM}sus usuarios por el camino siguiente:${CR}"
-        ui_blank
-        echo -e "${UI_PAD}  ${WH}nodo preferido${CR} ${DM}->${CR} ${WH}nodo de respaldo${CR} ${DM}->${CR} ${GR}IP del VPS${CR}"
-        ui_blank
-        echo -e "${UI_PAD}${DM}La IP del VPS siempre funciona, asi que nadie se queda${CR}"
-        echo -e "${UI_PAD}${DM}sin salida; como mucho pierde la IP residencial un rato.${CR}"
-        ui_blank
-        echo -e "${UI_PAD}${DM}No gasta datos: mide escuchando los contadores que el${CR}"
-        echo -e "${UI_PAD}${DM}kernel ya lleva, sin enviar un solo paquete.${CR}"
-        ui_rule
-        ui_blank
-
-        local name key idx tipo bk est
-        printf "${UI_PAD}${DM}%-14s %-8s %-14s %s${CR}\n" "NODO" "TIPO" "RESPALDO" "ESTADO"
-        while IFS='|' read -r name key idx tipo _; do
-            [ -z "$idx" ] && continue
-            bk=$(_wgh_node_backup_of "$name")
-            est=$(_wgh_health_of "$name")
-            [ "$est" = "up" ] && est="${GR}dando salida${CR}" || est="${RD}caido${CR}"
-            printf "${UI_PAD}${WH}%-14s${CR} ${DM}%-8s${CR} ${CY}%-14s${CR} %b\n" \
-                "$name" "${tipo:-wg}" "${bk:-IP del VPS}" "$est"
-        done < <(_wgh_nodes_list)
-
-        ui_blank
-        ui_solid
-        if _wgh_watchdog_is_on; then ui_opt "1" "DESACTIVAR" "dejar de vigilar"
-        else ui_opt "1" "ACTIVAR" "conmutar solo"; fi
-        ui_opt "2" "FIJAR RESPALDO" "de un nodo"
-        ui_opt "0" "VOLVER"
-        ui_solid
-        ui_prompt "Elige una opcion [0-2]"
-
-        case "$REPLY_UI" in
-            1)  if _wgh_watchdog_is_on; then
-                    _wgh_watchdog_disable; ui_ok "Vigilante apagado y rutas restauradas."
-                else
-                    _wgh_watchdog_enable
-                    _wgh_watchdog_is_on && ui_ok "Vigilante activo." || ui_err "No se pudo activar."
-                fi; sleep 2 ;;
-            2)  ui_blank
-                read -p "$(echo -e "${UI_PAD}${DM}Nodo a configurar ${CY}»${CR} ")" n1
-                _wgh_node_exists "$n1" || { ui_err "No existe."; sleep 2; continue; }
-                echo -e "${UI_PAD}${DM}Respaldo para '${n1}'. Nombre de otro nodo, o 'no'${CR}"
-                echo -e "${UI_PAD}${DM}para que caiga directo a la IP del VPS.${CR}"
-                read -p "$(echo -e "${UI_PAD}${DM}Respaldo ${CY}»${CR} ")" n2
-                if [ "$n2" = "no" ] || [ -z "$n2" ]; then
-                    _wgh_node_set_backup "$n1" ""; ui_ok "'${n1}' caera a la IP del VPS."
-                elif [ "$n2" = "$n1" ]; then
-                    ui_err "Un nodo no puede ser su propio respaldo."; sleep 2; continue
-                elif _wgh_node_exists "$n2"; then
-                    _wgh_node_set_backup "$n1" "$n2"; ui_ok "'${n1}' caera a '${n2}'."
-                else
-                    ui_err "No existe el nodo '${n2}'."; sleep 2; continue
-                fi
-                _wgh_routing_is_active && { _wgh_apply_user_routing; ui_ok "Aplicado al instante."; }
-                sleep 2 ;;
-            0)  break ;;
-        esac
-    done
-}
 
 # =========================================================
 # CAMBIO 4 & 5: APLICACIÓN Y REMOCIÓN DE REGLAS DE ENRUTAMIENTO
@@ -1846,7 +1789,8 @@ _wgh_apply_user_routing() {
     # usuario se le pone la marca del nodo que le toca. Dos usuarios
     # pueden salir por sitios distintos al mismo tiempo.
     local name key idx type ifc mark tbl nodeip redport total_users=0
-    while IFS='|' read -r name key idx type; do
+    local -A want=()
+    while IFS='|' read -r name key idx type _; do
         [ -z "$idx" ] && continue
         mark=$(_wgn_mark "$idx")
 
@@ -1897,13 +1841,39 @@ _wgh_apply_user_routing() {
             [ "$uid" -ge 1000 ] 2>/dev/null || continue
             iptables -t mangle -C OUTPUT -m owner --uid-owner "$uid" -m comment --comment "HOMEVPN_MARK" -j MARK --set-mark "${mark}" 2>/dev/null || \
                 iptables -t mangle -A OUTPUT -m owner --uid-owner "$uid" -m comment --comment "HOMEVPN_MARK" -j MARK --set-mark "${mark}" 2>/dev/null || true
+            want["${uid}|${mark}"]=1
             n=$((n+1))
         done < <(_wgh_node_users "$name")
         total_users=$(( total_users + n ))
         _wgh_log "Nodo ${name} (${ifc}, marca ${mark}, tabla ${tbl}): ${n} usuario(s)"
     done < <(_wgh_nodes_list)
 
+    # Marcas que ya no tocan: un usuario reasignado o devuelto a la IP
+    # del VPS, o una cuenta borrada. Antes nunca se quitaban, asi que
+    # "quitar la salida residencial" a un usuario no surtia efecto hasta
+    # apagar y encender todo. Se quitan DESPUES de poner las nuevas: el
+    # usuario no pasa ni un instante sin marca.
+    local rule ruid rmark
+    while IFS= read -r rule; do
+        ruid=$(sed -n 's/.*--uid-owner \([0-9]*\).*/\1/p' <<<"$rule")
+        rmark=$(sed -n 's/.*--set-xmark \(0x[0-9a-f]*\).*/\1/p' <<<"$rule")
+        { [ -z "$ruid" ] || [ -z "$rmark" ]; } && continue
+        [ -n "${want["${ruid}|${rmark}"]:-}" ] && continue
+        # shellcheck disable=SC2086
+        iptables -t mangle ${rule/-A /-D } 2>/dev/null || true
+    done < <(iptables -t mangle -S OUTPUT 2>/dev/null | grep "HOMEVPN_MARK")
+
     _wgh_isolate_on
+
+    # Lo de arriba abre el camino de TODOS los nodos. Si el vigilante
+    # tiene alguno por caido, se respeta: si no, al reasignar un usuario
+    # se devolveria trafico a un nodo muerto hasta la siguiente vuelta.
+    if [ -f "$WGH_HEALTH_FILE" ]; then
+        local -A _salud=()
+        local k v
+        while IFS='=' read -r k v; do [ -n "$k" ] && _salud[$k]="$v"; done < "$WGH_HEALTH_FILE"
+        _wgh_reconcile _salud
+    fi
     _wgh_log "Enrutamiento por usuario aplicado: ${total_users} usuario(s) sobre $(_wgh_nodes_count) nodo(s)"
 }
 
@@ -1938,7 +1908,7 @@ _wgh_routing_off_internal() {
             iptables -t mangle $rule 2>/dev/null || break
         done
     done
-    for tag in HOMEVPN_NAT HOMEVPN_SOCKS; do
+    for tag in HOMEVPN_NAT HOMEVPN_SOCKS_BK HOMEVPN_SOCKS; do
         while iptables -S -t nat 2>/dev/null | grep -q "$tag"; do
             rule=$(iptables -S -t nat 2>/dev/null | grep "$tag" | head -1 | sed 's/^-A /-D /')
             [ -z "$rule" ] && break
@@ -1949,7 +1919,7 @@ _wgh_routing_off_internal() {
     # Apagar los redsocks de los nodos socks: sin usuarios enrutados no
     # tienen nada que hacer, y asi no dejan un servicio suelto corriendo.
     local sidx styp sname skey
-    while IFS='|' read -r sname skey sidx styp; do
+    while IFS='|' read -r sname skey sidx styp _; do
         [ "${styp:-wg}" = "socks" ] && _socks_down "$sidx"
     done < <(_wgh_nodes_list)
     while iptables -S FORWARD 2>/dev/null | grep -q "HOMEVPN_FORWARD"; do
@@ -1970,17 +1940,15 @@ _wgh_routing_off_internal() {
 wghome_install() {
     clear
     print_title 2>/dev/null || true
-    echo -e "$SEP"
-    echo -e "${WH}     INSTALAR GATEWAY RESIDENCIAL (WireGuard)${CR}"
-    echo -e "$SEP"
+        ui_section "INSTALAR GATEWAY RESIDENCIAL (WireGuard)"
 
     if _wgh_is_installed; then
-        echo -e "  ${YL}[!]${CR} El gateway ya está configurado."
+        ui_warn "El gateway ya está configurado."
         echo -e "  ${DM}    Conf: ${WGH_CONF}${CR}"
         echo ""
-        read -p "$(echo -e ${DM})¿Reinstalar/sobreescribir? (s/n): $(echo -e ${CR})" resp
+        ui_prompt "¿Reinstalar/sobreescribir? (s/n)"; resp="$REPLY_UI"
         if [[ "$resp" != "s" && "$resp" != "S" ]]; then
-            echo -e "  ${GR}[+]${CR} Operación cancelada."; sleep 1; return
+            ui_info "Operación cancelada."; sleep 1; return
         fi
         systemctl stop "wg-quick@${WGH_IFACE}" 2>/dev/null
     fi
@@ -1990,9 +1958,9 @@ wghome_install() {
     _wgh_ensure_installed || { sleep 2; return 1; }
 
     # Paso 2: Habilitar forwarding
-    echo -e "  ${YL}[*]${CR} Habilitando IP forwarding..."
+    ui_info "Habilitando IP forwarding..."
     _wgh_enable_forwarding
-    echo -e "  ${GR}[+]${CR} IP forwarding activo."
+    ui_ok "IP forwarding activo."
 
     # Paso 3: Registrar tabla de rutas
     _wgh_ensure_rt_table
@@ -2005,75 +1973,71 @@ wghome_install() {
     mkdir -p /etc/wireguard
     if [ -s "${WGH_PRIV_KEY}" ]; then
         echo ""
-        echo -e "  ${YL}[!]${CR} Esta Droplet ya tiene su par de claves."
+        ui_warn "Esta Droplet ya tiene su par de claves."
         echo -e "  ${DM}      Publica actual: $(cat "${WGH_PUB_KEY}" 2>/dev/null)${CR}"
-        echo -e "  ${RD}[!]${CR} Generar unas nuevas DESCONECTA todos los nodos"
+        ui_warn "Generar unas nuevas DESCONECTA todos los nodos"
         echo -e "  ${DM}      registrados: habria que reconfigurarlos uno a uno.${CR}"
         echo ""
         if ui_confirm "¿Conservar las claves actuales?" "s"; then
             [ -s "${WGH_PUB_KEY}" ] || wg pubkey < "${WGH_PRIV_KEY}" > "${WGH_PUB_KEY}"
-            echo -e "  ${GR}[+]${CR} Claves conservadas: los nodos siguen validos."
+            ui_ok "Claves conservadas: los nodos siguen validos."
         else
             (umask 077; wg genkey > "${WGH_PRIV_KEY}")
             wg pubkey < "${WGH_PRIV_KEY}" > "${WGH_PUB_KEY}"
             _wgh_log "Claves de la Droplet REGENERADAS: nodos invalidados"
-            echo -e "  ${YL}[!]${CR} Claves nuevas. Actualiza la clave del VPS en cada nodo."
+            ui_warn "Claves nuevas. Actualiza la clave del VPS en cada nodo."
         fi
     else
-        echo -e "  ${YL}[*]${CR} Generando par de claves para la Droplet..."
+        ui_info "Generando par de claves para la Droplet..."
         (umask 077; wg genkey > "${WGH_PRIV_KEY}")
         wg pubkey < "${WGH_PRIV_KEY}" > "${WGH_PUB_KEY}"
-        echo -e "  ${GR}[+]${CR} Claves generadas (privada protegida chmod 600)."
+        ui_ok "Claves generadas (privada protegida chmod 600)."
     fi
     chmod 600 "${WGH_PRIV_KEY}"
     chmod 644 "${WGH_PUB_KEY}"
 
     # Paso 5: Crear wg-home.conf con Table = off y AllowedIPs = 0.0.0.0/0
-    echo -e "  ${YL}[*]${CR} Creando ${WGH_CONF}..."
+    ui_info "Creando ${WGH_CONF}..."
     local priv peer_pub=""
     priv=$(cat "${WGH_PRIV_KEY}")
     [ -f "${WGH_PEER_KEY}" ] && peer_pub=$(cat "${WGH_PEER_KEY}" 2>/dev/null)
 
     _wgh_render_conf "$priv" "$peer_pub" > "${WGH_CONF}"
     chmod 600 "${WGH_CONF}"
-    echo -e "  ${GR}[+]${CR} ${WGH_CONF} creado con Table = off (seguridad SSH)."
+    ui_ok "${WGH_CONF} creado con Table = off (seguridad SSH)."
 
     # Paso 6: Abrir firewall
     _wgh_open_firewall
 
     # Paso 7: Habilitar servicio systemd
     systemctl enable "wg-quick@${WGH_IFACE}" &>/dev/null
-    echo -e "  ${GR}[+]${CR} Servicio wg-quick@${WGH_IFACE} habilitado."
+    ui_ok "Servicio wg-quick@${WGH_IFACE} habilitado."
     # 'enable' solo programa el arranque futuro. Sin este 'start' la
     # Droplet quedaba instalada pero sin escuchar, y los nodos
     # enviaban handshakes contra un puerto que no atendia nadie.
     systemctl start "wg-quick@${WGH_IFACE}" &>/dev/null
     _wgh_nodes_up_all
     if _wgh_is_up; then
-        echo -e "  ${GR}[+]${CR} Túnel ${WGH_IFACE} levantado y escuchando en ${WGH_PORT}/UDP."
+        ui_ok "Túnel ${WGH_IFACE} levantado y escuchando en ${WGH_PORT}/UDP."
     else
-        echo -e "  ${YL}[!]${CR} El túnel no arrancó todavía (normal si aún no hay nodos)."
+        ui_warn "El túnel no arrancó todavía (normal si aún no hay nodos)."
     fi
 
-    # Inicializar fallback por defecto en ON si no existe
-    [ ! -f "$WGH_FALLBACK_CONF" ] && _wgh_set_fallback "ON"
 
     _wgh_nodes_migrate
     _wgh_log "Gateway residencial instalado exitosamente"
 
     echo ""
-    echo -e "$SEP"
-    echo -e "  ${GR}[+] ¡Instalación completada!${CR}"
+    ui_solid
+    ui_ok "¡Instalación completada!"
     echo ""
-    echo -e "  ${YL}[!] Pasos siguientes:${CR}"
-    echo -e "  ${DM}  1. Consulta la clave pública del Droplet (opción 2).${CR}"
-    echo -e "  ${DM}  2. Configura tu PC doméstico (CachyOS) con esa clave.${CR}"
-    echo -e "  ${DM}  3. Registra la clave del PC en el panel (opción 3).${CR}"
-    echo -e "  ${DM}  4. Activa el túnel (opción 4).${CR}"
-    echo -e "  ${DM}  5. Configura los usuarios HTTP Injector (opción 12).${CR}"
-    echo -e "  ${DM}  6. Activa la salida residencial (opción 8).${CR}"
-    echo -e "$SEP"
-    read -p "$(echo -e ${DM})Presiona Enter para continuar...$(echo -e ${CR})"
+    ui_warn "Pasos siguientes:"
+    echo -e "${UI_PAD}${DM}  1. NODOS > REGISTRAR NODO PC (o MÓVIL) con la clave del equipo.${CR}"
+    echo -e "${UI_PAD}${DM}  2. NODOS > DATOS PARA EL NODO: lo que hay que poner en él.${CR}"
+    echo -e "${UI_PAD}${DM}  3. ASIGNAR USUARIOS: quién sale por cada nodo.${CR}"
+    echo -e "${UI_PAD}${DM}  4. Enciende la SALIDA RESIDENCIAL (activa también el vigilante).${CR}"
+    ui_solid
+    ui_pause
 }
 
 # =========================================================
@@ -2082,13 +2046,11 @@ wghome_install() {
 wghome_show_pubkey() {
     clear
     print_title 2>/dev/null || true
-    echo -e "$SEP"
-    echo -e "${WH}     DATOS PARA CONFIGURAR UN NODO${CR}"
-    echo -e "$SEP"
+        ui_section "DATOS PARA CONFIGURAR UN NODO"
 
     if [ ! -f "${WGH_PUB_KEY}" ]; then
-        echo -e "  ${RD}[-]${CR} No se encontró la clave pública."
-        echo -e "  ${DM}    Instala el gateway primero (opción 1).${CR}"
+        ui_err "No se encontró la clave pública."
+        echo -e "  ${DM}    Instala el gateway primero (AVANZADO > INSTALAR).${CR}"
         sleep 2; return
     fi
 
@@ -2100,10 +2062,10 @@ wghome_show_pubkey() {
     if [ -n "$ip_pub" ]; then
         echo -e "  ${DM}IP pública Droplet :${CR} ${GR}${ip_pub}${CR}"
         echo -e "  ${DM}   ${YL}Comprueba que es la misma por la que entras por SSH.${CR}"
-        echo -e "  ${DM}   Si no lo es, corrígela en GESTIONAR NODOS > [5].${CR}"
+        echo -e "  ${DM}   Si no lo es, corrígela en AVANZADO > DIRECCIÓN PÚBLICA.${CR}"
     else
         echo -e "  ${RD}IP pública Droplet : NO SE PUDO AVERIGUAR${CR}"
-        echo -e "  ${DM}   Fíjala a mano en GESTIONAR NODOS > [5]; sin ella los${CR}"
+        echo -e "  ${DM}   Fíjala en AVANZADO > DIRECCIÓN PÚBLICA; sin ella los${CR}"
         echo -e "  ${DM}   nodos no saben a dónde abrir el túnel.${CR}"
         ip_pub="<PON_AQUI_LA_IP_DEL_VPS>"
     fi
@@ -2119,13 +2081,13 @@ wghome_show_pubkey() {
     total=$(_wgh_nodes_count)
 
     if [ "${total:-0}" -eq 0 ]; then
-        echo -e "$SEP"
-        echo -e "  ${YL}[!]${CR} Todavía no hay ningún nodo registrado."
+        ui_solid
+        ui_warn "Todavía no hay ningún nodo registrado."
         echo -e "  ${DM}    Regístralo primero en GESTIONAR NODOS: allí se le${CR}"
         echo -e "  ${DM}    asigna su dirección, y sin ella esta pantalla no${CR}"
         echo -e "  ${DM}    puede decirte qué poner en el campo Address.${CR}"
-        echo -e "$SEP"
-        read -p "$(echo -e ${DM})Presiona Enter para continuar...$(echo -e ${CR})"
+        ui_solid
+        ui_pause
         return
     fi
 
@@ -2133,11 +2095,11 @@ wghome_show_pubkey() {
     # fija de antes hacia que el segundo nodo se configurase con la
     # del primero, y entonces la Droplet le rechazaba los paquetes
     # por venir de una IP fuera de su AllowedIPs.
-    echo -e "$SEP"
+    ui_solid
     echo -e "  ${WH}Nodos registrados${CR}"
     echo ""
     local name key idx type n=0 etiq
-    while IFS='|' read -r name key idx type; do
+    while IFS='|' read -r name key idx type _; do
         [ -z "$idx" ] && continue
         n=$((n+1))
         if [ "${type:-wg}" = "socks" ]; then
@@ -2149,12 +2111,12 @@ wghome_show_pubkey() {
     done < <(_wgh_nodes_list)
 
     echo ""
-    read -p "$(echo -e ${DM})¿De qué nodo quieres la configuración? [1-${n}] (Enter = salir): $(echo -e ${CR})" pick
+    ui_prompt "¿De qué nodo quieres la configuración? [1-${n}] (Enter = salir)"; pick="$REPLY_UI"
     [ -z "$pick" ] && return
 
     local line
     line=$(_wgh_nodes_list | sed -n "${pick}p")
-    [ -z "$line" ] && { echo -e "  ${RD}[-]${CR} Opción no válida."; sleep 2; return; }
+    [ -z "$line" ] && { ui_err "Opción no válida."; sleep 2; return; }
 
     local n_name n_key n_idx n_type
     n_name=$(echo "$line" | cut -d'|' -f1)
@@ -2173,9 +2135,7 @@ wghome_show_pubkey() {
 
     clear
     print_title 2>/dev/null || true
-    echo -e "$SEP"
-    echo -e "${WH}     CONFIGURACIÓN DEL NODO: ${n_name}${CR}"
-    echo -e "$SEP"
+        ui_section "CONFIGURACIÓN DEL NODO: ${n_name}"
     echo ""
     echo -e "  ${DM}Dirección asignada :${CR} ${CY}${n_ip}${CR}"
     echo -e "  ${DM}Clave registrada   :${CR} ${DM}${n_key}${CR}"
@@ -2204,29 +2164,13 @@ wghome_show_pubkey() {
     echo -e "  ${DM}PostUp   = iptables -A FORWARD -i ${WGH_IFACE} -j ACCEPT; iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE${CR}"
     echo -e "  ${DM}PostDown = iptables -D FORWARD -i ${WGH_IFACE} -j ACCEPT; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE${CR}"
     echo ""
-    echo -e "  ${YL}[!] La clave privada de la Droplet NUNCA se comparte.${CR}"
-    echo -e "  ${YL}[!] La privada del nodo se queda en el nodo: aquí solo${CR}"
+    ui_warn "La clave privada de la Droplet NUNCA se comparte."
+    ui_warn "La privada del nodo se queda en el nodo: aquí solo"
     echo -e "  ${DM}      se guarda su clave pública.${CR}"
-    echo -e "$SEP"
-    read -p "$(echo -e ${DM})Presiona Enter para continuar...$(echo -e ${CR})"
+    ui_solid
+    ui_pause
 }
 
-# =========================================================
-# 3. REGISTRAR CLAVE PÚBLICA DEL PC DOMÉSTICO
-# =========================================================
-# Aplica el conf regenerado sobre la interfaz sin cortar el tunel.
-_wgh_nodes_sync() {
-    local priv
-    priv=$(cat "${WGH_PRIV_KEY}" 2>/dev/null)
-    [ -z "$priv" ] && return 1
-    _wgh_render_conf "$priv" > "${WGH_CONF}"
-    chmod 600 "${WGH_CONF}"
-    if _wgh_is_up; then
-        wg syncconf "${WGH_IFACE}" <(wg-quick strip "${WGH_IFACE}" 2>/dev/null) 2>/dev/null || \
-            systemctl restart "wg-quick@${WGH_IFACE}" 2>/dev/null
-        _wgh_isolate_on
-    fi
-}
 
 # =========================================================
 # GESTION DE NODOS RESIDENCIALES
@@ -2246,7 +2190,7 @@ wghome_manage_nodes() {
         else
             printf "${UI_PAD}${DM}%-13s %-6s %-10s %-7s %s${CR}\n" "NOMBRE" "TIPO" "PUERTO" "USUAR." "ESTADO"
             local name key idx type hs est nu tipo puerto
-            while IFS='|' read -r name key idx type; do
+            while IFS='|' read -r name key idx type _; do
                 [ -z "$idx" ] && continue
                 type="${type:-wg}"
                 nu=$(_wgh_node_users "$name" | wc -l)
@@ -2285,15 +2229,13 @@ wghome_manage_nodes() {
         echo -e "${UI_PAD}${DM}sale por el nodo que le asignes. Entre ellos no se ven.${CR}"
         ui_blank
 
-        ui_opt "1" "REGISTRAR NODO PC"  "WireGuard"
-        ui_opt "6" "REGISTRAR NODO MOVIL" "celular sin root"
-        ui_opt "2" "ASIGNAR USUARIOS"  "quien sale por donde"
-        ui_opt "3" "DATOS PARA EL NODO" "que poner alli"
-        ui_opt "5" "DIRECCION PUBLICA"  "endpoint del VPS"
-        ui_opt_danger "4" "ELIMINAR NODO" "lo desconecta"
+        ui_opt "1" "REGISTRAR NODO PC"    "WireGuard"
+        ui_opt "2" "REGISTRAR NODO MÓVIL" "celular sin root"
+        ui_opt "3" "DATOS PARA EL NODO"   "qué poner allí"
+        ui_opt_danger "4" "ELIMINAR NODO" "sus usuarios -> IP VPS"
         ui_opt "0" "VOLVER"
         ui_solid
-        ui_prompt "Elige una opcion [0-6]"
+        ui_prompt "Elige una opción [0-4]"
 
         case "$REPLY_UI" in
             1)  ui_blank
@@ -2307,108 +2249,39 @@ wghome_manage_nodes() {
                     ui_err "Formato de clave no valido (44 car. base64)."; sleep 2; continue
                 fi
                 _wgh_nodes_has_key "$nkey" && { ui_err "Esa clave ya esta registrada."; sleep 2; continue; }
+                _wgh_ensure_keys >/dev/null 2>&1
                 local nidx
                 nidx=$(_wgh_nodes_add "$nname" "$nkey")
                 [ -z "$nidx" ] && { ui_err "No quedan indices libres."; sleep 2; continue; }
                 ui_blank
                 ui_info "Levantando su interfaz..."
                 if _wgh_node_up "$nidx"; then ui_ok "Interfaz $(_wgn_iface "$nidx") activa."
-                else ui_warn "La interfaz no arranco; revisa con la opcion 9."; fi
+                else ui_warn "La interfaz no arrancó; revisa el DIAGNÓSTICO."; fi
                 ui_blank
                 ui_ok "Nodo '${nname}' registrado."
                 echo -e "${UI_PAD}${DM}   Configura EN EL NODO estos valores exactos:${CR}"
                 echo -e "${UI_PAD}${DM}     Puerto del VPS :${CR} ${WH}$(_wgn_port "$nidx")${CR}"
                 echo -e "${UI_PAD}${DM}     IP del nodo    :${CR} ${GR}$(_wgn_nodeip "$nidx")${CR}"
                 echo -e "${UI_PAD}${DM}     IP del VPS     :${CR} ${WH}$(_wgn_vpsip "$nidx")${CR}"
-                echo -e "${UI_PAD}${DM}   (opcion 3 te los repite cuando quieras)${CR}"
+                echo -e "${UI_PAD}${DM}   (DATOS PARA EL NODO te los repite cuando quieras)${CR}"
                 ui_pause ;;
-            6)  wghome_register_socks ;;
-            2)  wghome_assign_users ;;
+            2)  wghome_register_socks ;;
             3)  wghome_show_pubkey ;;
-            5)  wghome_fix_endpoint ;;
             4)  ui_blank
-                read -p "$(echo -e "${UI_PAD}${DM}Nombre del nodo a eliminar ${CY}»${CR} ")" dname
+                ui_prompt "Nombre del nodo a eliminar"; dname="$REPLY_UI"
                 _wgh_node_exists "$dname" || { ui_err "No existe ese nodo."; sleep 2; continue; }
                 if ui_confirm "¿Eliminar '${dname}'? Sus usuarios volveran a la IP del VPS" "n"; then
                     _wgh_nodes_del "$dname"
-                    _wgh_routing_is_active && _wgh_apply_user_routing
+                    { [ -f "$WGH_ROUTING_FLAG" ] || _wgh_routing_is_active; } && _wgh_apply_user_routing >/dev/null 2>&1
                     ui_ok "Nodo eliminado."
                 fi
                 ui_pause ;;
-            0)  break ;;
-            *)  ui_err "Opcion no valida."; sleep 1 ;;
+            0|"")  break ;;
+            *)  ui_err "Opción no válida."; sleep 1 ;;
         esac
     done
 }
 
-# =========================================================
-# ASIGNAR CADA USUARIO A SU NODO
-# =========================================================
-wghome_assign_users() {
-    while true; do
-        clear
-        print_title 2>/dev/null || true
-        ui_section "SALIDA POR USUARIO" "quien sale por que nodo"
-        ui_blank
-
-        if [ "$(_wgh_nodes_count)" -eq 0 ]; then
-            ui_err "Registra algun nodo primero."
-            ui_pause; return
-        fi
-
-        local -a us=()
-        local u n i=0
-        while IFS= read -r u; do
-            [ -z "$u" ] && continue
-            us+=("$u"); i=$((i+1))
-            n=$(_wgh_user_node "$u")
-            if [ -n "$n" ]; then
-                printf "${UI_PAD}${CY}[%2d]${CR} ${WH}%-16s${CR} ${DM}sale por${CR} ${GR}%s${CR}\n" "$i" "$u" "$n"
-            else
-                printf "${UI_PAD}${CY}[%2d]${CR} ${WH}%-16s${CR} ${DM}sale por${CR} ${DM}la IP del VPS${CR}\n" "$i" "$u"
-            fi
-        done < <(_wgh_get_client_users | cut -d: -f1)
-
-        [ ${#us[@]} -eq 0 ] && { ui_blank; ui_warn "No hay cuentas de cliente creadas."; ui_pause; return; }
-
-        ui_blank
-        ui_rule
-        echo -e "${UI_PAD}${DM}Nodos disponibles: ${WH}$(_wgh_nodes_names | tr '\n' ' ')${CR}"
-        echo -e "${UI_PAD}${DM}root y el SSH de administracion nunca se enrutan.${CR}"
-        ui_blank
-        ui_prompt "Numero del usuario a cambiar (0 = volver)"
-        local pick="$REPLY_UI"
-        [ "$pick" = "0" ] || [ -z "$pick" ] && return
-        echo "$pick" | grep -qE '^[0-9]+$' || { ui_err "No es un numero."; sleep 1; continue; }
-        [ "$pick" -ge 1 ] && [ "$pick" -le ${#us[@]} ] || { ui_err "Fuera de rango."; sleep 1; continue; }
-
-        local target="${us[$((pick-1))]}"
-        ui_blank
-        echo -e "${UI_PAD}${DM}Nodo para ${WH}${target}${DM}. Escribe su nombre,${CR}"
-        echo -e "${UI_PAD}${DM}o 'no' para que salga por la IP normal del VPS.${CR}"
-        ui_prompt "Nodo"
-        local nn="$REPLY_UI"
-        if [ "$nn" = "no" ] || [ -z "$nn" ]; then
-            _wgh_user_assign "$target" ""
-            ui_ok "${target} sale ahora por la IP del VPS."
-        elif _wgh_node_exists "$nn"; then
-            _wgh_user_assign "$target" "$nn"
-            ui_ok "${target} sale ahora por ${nn}."
-        else
-            ui_err "No existe el nodo '${nn}'."; sleep 2; continue
-        fi
-
-        # Aplicar en caliente: cambiar la asignacion y que no surta
-        # efecto hasta reactivar seria una trampa facil de pisar.
-        if _wgh_routing_is_active; then
-            _wgh_apply_user_routing
-            ui_ok "Cambio aplicado al instante."
-        else
-            ui_warn "La salida residencial esta apagada: se aplicara al encenderla."
-        fi
-        sleep 1
-    done
-}
 
 # =========================================================
 # 4. ACTIVAR TÚNEL WIREGUARD
@@ -2416,50 +2289,48 @@ wghome_assign_users() {
 wghome_tunnel_up() {
     clear
     print_title 2>/dev/null || true
-    echo -e "$SEP"
-    echo -e "${WH}     ACTIVAR TÚNEL WireGuard${CR}"
-    echo -e "$SEP"
+        ui_section "ACTIVAR TÚNEL WireGuard"
 
     if ! _wgh_is_installed; then
-        echo -e "  ${RD}[-]${CR} Gateway no instalado. Usa la opción 1."
+        ui_err "Gateway no instalado. Usa AVANZADO > INSTALAR."
         sleep 2; return
     fi
 
     _wgh_repair_conf_if_needed
 
     if ! grep -q "^\[Peer\]" "${WGH_CONF}" 2>/dev/null; then
-        echo -e "  ${RD}[-]${CR} No hay Peer registrado en ${WGH_CONF}."
-        echo -e "  ${YL}[!]${CR} Usa la opción 3 para registrar la clave del PC doméstico."
+        ui_err "No hay Peer registrado en ${WGH_CONF}."
+        ui_warn "Registra un nodo PC en NODOS."
         sleep 2; return
     fi
 
     if _wgh_is_up; then
-        echo -e "  ${YL}[!]${CR} El túnel ${WGH_IFACE} ya está activo."
+        ui_warn "El túnel ${WGH_IFACE} ya está activo."
         sleep 1; return
     fi
 
-    echo -e "  ${YL}[*]${CR} Verificando que SSH no se verá afectado..."
+    ui_info "Verificando que SSH no se verá afectado..."
     _wgh_verify_ssh_route || { sleep 2; return 1; }
 
-    echo -e "  ${YL}[*]${CR} Levantando wg-quick@${WGH_IFACE}..."
+    ui_info "Levantando wg-quick@${WGH_IFACE}..."
     systemctl start "wg-quick@${WGH_IFACE}" 2>/dev/null
     sleep 2
 
     if _wgh_is_up; then
-        echo -e "  ${GR}[+]${CR} Túnel ${WGH_IFACE} activo."
+        ui_ok "Túnel ${WGH_IFACE} activo."
         echo ""
         echo -e "  ${DM}Interfaz:${CR}"
         ip addr show "${WGH_IFACE}" 2>/dev/null | grep -E "inet|link" | sed 's/^/    /'
         echo ""
-        _wgh_verify_ssh_route && echo -e "  ${GR}[+]${CR} SSH protegido — tabla main intacta."
+        _wgh_verify_ssh_route && ui_ok "SSH protegido — tabla main intacta."
         _wgh_log "Túnel wg-home levantado"
     else
-        echo -e "  ${RD}[-]${CR} Error levantando túnel. Revisa: journalctl -u wg-quick@${WGH_IFACE} -n 20"
+        ui_err "Error levantando túnel. Revisa: journalctl -u wg-quick@${WGH_IFACE} -n 20"
         _wgh_log "ERROR al levantar túnel wg-home"
     fi
 
     echo ""
-    read -p "$(echo -e ${DM})Presiona Enter para continuar...$(echo -e ${CR})"
+    ui_pause
 }
 
 # =========================================================
@@ -2468,474 +2339,35 @@ wghome_tunnel_up() {
 wghome_tunnel_down() {
     clear
     print_title 2>/dev/null || true
-    echo -e "$SEP"
-    echo -e "${WH}     DESACTIVAR TÚNEL WireGuard${CR}"
-    echo -e "$SEP"
+        ui_section "DESACTIVAR TÚNEL WireGuard"
 
     if ! _wgh_is_up; then
-        echo -e "  ${YL}[!]${CR} El túnel ${WGH_IFACE} ya está inactivo."
+        ui_warn "El túnel ${WGH_IFACE} ya está inactivo."
         sleep 1; return
     fi
 
-    if _wgh_routing_is_active; then
-        echo -e "  ${YL}[*]${CR} Desactivando salida residencial primero para evitar rutas huérfanas..."
+    if _wgh_routing_is_active || [ -f "$WGH_ROUTING_FLAG" ]; then
+        ui_info "Desactivando salida residencial primero para evitar rutas huérfanas..."
+        _wgh_persist_off
         _wgh_routing_off_internal
     fi
 
-    echo -e "  ${YL}[*]${CR} Deteniendo wg-quick@${WGH_IFACE}..."
+    ui_info "Deteniendo wg-quick@${WGH_IFACE}..."
     systemctl stop "wg-quick@${WGH_IFACE}" 2>/dev/null
     sleep 1
 
     if ! _wgh_is_up; then
-        echo -e "  ${GR}[+]${CR} Túnel ${WGH_IFACE} desactivado."
-        _wgh_verify_ssh_route && echo -e "  ${GR}[+]${CR} SSH protegido — ruta por defecto intacta."
+        ui_ok "Túnel ${WGH_IFACE} desactivado."
+        _wgh_verify_ssh_route && ui_ok "SSH protegido — ruta por defecto intacta."
         _wgh_log "Túnel wg-home detenido"
     else
-        echo -e "  ${RD}[-]${CR} Error al detener el túnel."
+        ui_err "Error al detener el túnel."
     fi
 
     sleep 1
-    read -p "$(echo -e ${DM})Presiona Enter para continuar...$(echo -e ${CR})"
-}
-
-
-# =========================================================
-# 7. PROBAR CONECTIVIDAD CON PC DOMÉSTICO
-# =========================================================
-wghome_ping_peer() {
-    clear
-    print_title 2>/dev/null || true
-    echo -e "$SEP"
-    echo -e "${WH}     PROBAR CONECTIVIDAD — PC Doméstico${CR}"
-    echo -e "$SEP"
-    echo ""
-
-    if ! _wgh_is_up; then
-        echo -e "  ${RD}[-]${CR} El túnel ${WGH_IFACE} no está activo."
-        echo -e "  ${YL}[!]${CR} Activa el túnel primero (opción 4)."
-        sleep 2; return
-    fi
-
-    local _pip; _pip=$(_wgh_nodes_first_ip)
-    echo -e "  ${YL}[*]${CR} Haciendo ping a ${_pip} (nodo activo: $(_wgh_nodes_first_name))..."
-    echo ""
-    if ping -c 4 -W 2 "${_pip}" 2>/dev/null; then
-        echo ""
-        echo -e "  ${GR}[+] PC doméstico alcanzable vía WireGuard.${CR}"
-        local hs_sec
-        hs_sec=$(_wgh_handshake_seconds)
-        if [ "$hs_sec" != "never" ] && [ "$hs_sec" -lt 180 ]; then
-            echo -e "  ${GR}[+] Handshake WireGuard reciente (${hs_sec}s) — túnel saludable.${CR}"
-        else
-            echo -e "  ${YL}[!] Handshake no reciente. Verifica que PersistentKeepalive = 25 esté en el PC.${CR}"
-        fi
-    else
-        echo ""
-        echo -e "  ${RD}[-] No se pudo alcanzar el PC doméstico (10.77.77.2).${CR}"
-        echo -e "  ${DM}  Causas comunes:${CR}"
-        echo -e "  ${DM}  • El PC doméstico no está encendido o WireGuard está detenido en el PC.${CR}"
-        echo -e "  ${DM}  • La clave pública del PC en la Droplet no coincide con la del PC.${CR}"
-        echo -e "  ${DM}  • El firewall del PC bloquea ICMP o WireGuard.${CR}"
-    fi
-
-    echo ""
-    read -p "$(echo -e ${DM})Presiona Enter para continuar...$(echo -e ${CR})"
-}
-
-# =========================================================
-# CAMBIO 6: 8. ACTIVAR SALIDA RESIDENCIAL (CON VALIDACIONES COMPLETAS)
-# =========================================================
-wghome_routing_on() {
-    clear
-    print_title 2>/dev/null || true
-    echo -e "$SEP"
-    echo -e "${WH}     ACTIVAR SALIDA RESIDENCIAL (HTTP Injector)${CR}"
-    echo -e "$SEP"
-    echo ""
-
-    # VALIDACIÓN 1: Instalación
-    if ! _wgh_is_installed; then
-        echo -e "  ${RD}[-]${CR} Gateway no instalado. Usa la opción 1 primero."
-        sleep 2; return
-    fi
-
-    # Asegurar corrección de AllowedIPs y Table = off
-    _wgh_repair_conf_if_needed
-
-    # Cuantos nodos de cada tipo hay: las comprobaciones de tunel,
-    # handshake y ping solo tienen sentido si hay algun nodo WireGuard.
-    local wg_count socks_count
-    wg_count=$(_wgh_nodes_list | awk -F"|" '($4==""||$4=="wg"){c++}END{print c+0}')
-    socks_count=$(_wgh_nodes_list | awk -F"|" '$4=="socks"{c++}END{print c+0}')
-
-    # VALIDACIÓN 2: Túnel UP (solo si hay nodos WireGuard)
-    if [ "$wg_count" -gt 0 ] && ! _wgh_is_up; then
-        echo -e "  ${YL}[!]${CR} El túnel ${WGH_IFACE} no está activo."
-        read -p "$(echo -e ${DM})¿Deseas levantar el túnel ahora? (s/n) [s]: $(echo -e ${CR})" autoup
-        autoup=${autoup:-s}
-        if [[ "$autoup" == "s" || "$autoup" == "S" ]]; then
-            echo -e "  ${YL}[*]${CR} Levantando túnel wg-quick@${WGH_IFACE}..."
-            systemctl start "wg-quick@${WGH_IFACE}" 2>/dev/null
-            sleep 2
-            if ! _wgh_is_up; then
-                echo -e "  ${RD}[-]${CR} Error al iniciar el túnel. Revisa opción 4 y 6."
-                sleep 2; return
-            fi
-            echo -e "  ${GR}[+]${CR} Túnel ${WGH_IFACE} activo."
-        else
-            echo -e "  ${GR}[+]${CR} Operación cancelada."; sleep 1; return
-        fi
-    fi
-
-    # VALIDACIÓN 3: Idempotencia
-    if _wgh_routing_is_active; then
-        echo -e "  ${YL}[!]${CR} La salida residencial ya está activa."
-        echo ""
-        echo -e "  ${DM}Reglas actuales en ip rule:${CR}"
-        ip rule show | grep -E "homevpn|${WGH_RT_TABLE}" | sed 's/^/    /'
-        echo ""
-        read -p "$(echo -e ${DM})Presiona Enter para continuar...$(echo -e ${CR})"; return
-    fi
-
-    echo -e "  ${YL}[*]${CR} Ejecutando comprobaciones de seguridad pre-activación..."
-    echo ""
-
-    # VALIDACIÓN 4: Seguridad de ruta SSH
-    _wgh_verify_ssh_route || {
-        echo -e "  ${RD}[!]${CR} Abortando por seguridad SSH."
-        _wgh_log "Abortada activación: ruta SSH comprometida"
-        sleep 3; return
-    }
-
-    # VALIDACIÓN 5: Handshake WireGuard (solo si hay nodos WireGuard)
-    if [ "$wg_count" -gt 0 ] && ! _wgh_has_handshake; then
-        echo -e "  ${YL}[!] ADVERTENCIA: No se detecta handshake reciente en WireGuard.${CR}"
-        echo -e "  ${YL}[!] El PC doméstico puede no haber iniciado sesión aún.${CR}"
-        echo ""
-        read -p "$(echo -e ${DM})¿Continuar de todas formas? (s/n) [s]: $(echo -e ${CR})" resp
-        resp=${resp:-s}
-        if [[ "$resp" != "s" && "$resp" != "S" ]]; then
-            echo -e "  ${GR}[+]${CR} Operación cancelada."; sleep 1; return
-        fi
-    fi
-
-    # VALIDACIÓN 6: Conectividad ICMP al PC (solo con nodos WireGuard)
-    if [ "$wg_count" -gt 0 ]; then
-        local _aip; _aip=$(_wgh_nodes_first_ip)
-        echo -e "  ${YL}[*]${CR} Verificando ping a ${_aip}..."
-        if ! ping -c 2 -W 2 "${_aip}" &>/dev/null; then
-            echo -e "  ${YL}[!] El PC doméstico no respondió al ping.${CR}"
-            read -p "$(echo -e ${DM})¿Continuar aplicando configuración? (s/n) [s]: $(echo -e ${CR})" resp_ping
-            resp_ping=${resp_ping:-s}
-            if [[ "$resp_ping" != "s" && "$resp_ping" != "S" ]]; then
-                echo -e "  ${GR}[+]${CR} Operación cancelada."; sleep 1; return
-            fi
-        else
-            echo -e "  ${GR}[+]${CR} Conectividad con el nodo verificada [OK]."
-        fi
-    fi
-
-    # VALIDACIÓN 7: Usuarios HTTP Injector configurados
-    local -a conf_users=()
-    if [ -f "$WGH_USERS_CONF" ]; then
-        while IFS= read -r cu; do
-            [ -n "$cu" ] && conf_users+=("$cu")
-        done < <(_wgh_get_configured_users)
-    fi
-
-    if [ ${#conf_users[@]} -eq 0 ]; then
-        echo -e "  ${YL}[!] No hay usuarios HTTP Injector seleccionados en ${WGH_USERS_CONF}.${CR}"
-        echo -e "  ${DM}¿Deseas configurar los usuarios ahora? (s/n) [s]:${CR} "
-        read -p "  > " cfg_now
-        cfg_now=${cfg_now:-s}
-        if [[ "$cfg_now" == "s" || "$cfg_now" == "S" ]]; then
-            wghome_manage_users
-            while IFS= read -r cu; do
-                [ -n "$cu" ] && conf_users+=("$cu")
-            done < <(_wgh_get_configured_users)
-        fi
-        if [ ${#conf_users[@]} -eq 0 ]; then
-            echo -e "  ${YL}[!] Se activará el routing con regla de interfaz, pero añade usuarios en opción 12.${CR}"
-        fi
-    fi
-
-    # Crear backup de seguridad previo
-    local backup_path
-    backup_path=$(_wgh_backup)
-    echo -e "  ${GR}[+]${CR} Estado previo respaldado en: ${backup_path}"
-
-    # Aplicar Policy Routing e iptables
-    echo -e "  ${YL}[*]${CR} Instalando tabla 200 y reglas de enrutamiento por UID..."
-    _wgh_apply_user_routing
-
-    # Verificación post-activación
-    echo ""
-    echo -e "  ${YL}[*]${CR} Verificación final de seguridad SSH..."
-    _wgh_verify_ssh_route && echo -e "  ${GR}[+]${CR} SSH protegido — tabla main intacta [OK]."
-
-    echo ""
-    if _wgh_routing_is_active; then
-        echo -e "  ${GR}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${CR}"
-        echo -e "  ${GR}[✓] ¡SALIDA RESIDENCIAL ACTIVADA CON ÉXITO!${CR}"
-        echo -e "  ${GR}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${CR}"
-        echo -e "  ${DM}• Usuarios HTTP Injector enrutados : ${WH}${#conf_users[@]}${CR}"
-        echo -e "  ${DM}• Nodos activos                    : ${WH}${wg_count} wg + ${socks_count} movil${CR}"
-        echo -e "  ${DM}• SSH Administrativo / root        : ${GR}Protegido (IP VPS)${CR}"
-        echo -e "  ${DM}• Comprueba la IP residencial con la opción 10 del menú.${CR}"
-    else
-        echo -e "  ${RD}[-] Error: Las reglas no pudieron ser validadas en el kernel.${CR}"
-    fi
-
-    echo ""
-    read -p "$(echo -e ${DM})Presiona Enter para continuar...$(echo -e ${CR})"
-}
-
-# =========================================================
-# CAMBIO 7: 9. DESACTIVAR SALIDA RESIDENCIAL
-# =========================================================
-wghome_routing_off() {
-    clear
-    print_title 2>/dev/null || true
-    echo -e "$SEP"
-    echo -e "${WH}     DESACTIVAR SALIDA RESIDENCIAL${CR}"
-    echo -e "$SEP"
-    echo ""
-
-    if ! _wgh_routing_is_active; then
-        echo -e "  ${YL}[!]${CR} La salida residencial no está activa."
-        sleep 1; return
-    fi
-
-    echo -e "  ${YL}[*]${CR} Desactivando salida residencial de forma segura..."
-    _wgh_routing_off_internal
-
-    echo -e "  ${GR}[+]${CR} Reglas ip rule de tabla ${WGH_RT_NAME} eliminadas."
-    echo -e "  ${GR}[+]${CR} Marcas de firewall HOMEVPN removidas limpiamente."
-    echo -e "  ${GR}[+]${CR} Túnel ${WGH_IFACE} permanece activo."
-    echo -e "  ${GR}[+]${CR} Tabla main intacta — SSH administrativo seguro."
-    echo ""
-
-    sleep 1
-    read -p "$(echo -e ${DM})Presiona Enter para continuar...$(echo -e ${CR})"
-}
-
-# =========================================================
-# CAMBIO 8: 10. VER IP DE SALIDA (CORREGIDO SIN N/A)
-# =========================================================
-wghome_check_ip() {
-    clear
-    print_title 2>/dev/null || true
-    ui_section "IP DE SALIDA" "por donde sale cada quien, de verdad"
-    ui_blank
-
-    local ip_normal
-    ip_normal=$(_wgh_get_droplet_ip)
-    echo -e "${UI_PAD}$(ui_cell "IP del VPS" "${ip_normal:-desconocida}" 40 "$WH")"
-    echo -e "${UI_PAD}${DM}   Es la que ven los usuarios SIN nodo asignado.${CR}"
-    ui_blank
-    ui_rule
-    ui_blank
-
-    if [ "$(_wgh_nodes_count)" -eq 0 ]; then
-        ui_warn "No hay nodos registrados."
-        ui_pause; return
-    fi
-
-    if ! _wgh_routing_is_active; then
-        ui_warn "La salida residencial esta apagada."
-        echo -e "${UI_PAD}${DM}   Encendiendola, estas pruebas saldran por los nodos.${CR}"
-        ui_blank
-    fi
-
-    # La prueba de verdad es salir COMO el usuario: recorre
-    # exactamente el mismo camino que su trafico —su UID recibe la
-    # marca, la marca elige la tabla, la tabla el nodo—. Probar con
-    # 'curl --interface' solo demuestra que la interfaz existe, no
-    # que el reparto por usuario funcione.
-    local name key idx u probe ip_res
-    while IFS='|' read -r name key idx; do
-        [ -z "$idx" ] && continue
-        echo -e "${UI_PAD}${WH}Nodo ${name}${CR} ${DM}($(_wgn_iface "$idx"), $(_wgn_nodeip "$idx"))${CR}"
-
-        if ! _wgh_node_is_up "$idx"; then
-            echo -e "${UI_PAD}  ${RD}interfaz apagada${CR}"
-            ui_blank; continue
-        fi
-        if [ "$(_wgh_node_hs "$idx")" -lt 0 ] 2>/dev/null; then
-            echo -e "${UI_PAD}  ${RD}sin handshake: el nodo no ha conectado nunca${CR}"
-            ui_blank; continue
-        fi
-
-        probe=$(_wgh_node_users "$name" | head -1)
-        if [ -z "$probe" ]; then
-            echo -e "${UI_PAD}  ${YL}sin usuarios asignados${CR}"
-            echo -e "${UI_PAD}  ${DM}Asignale alguno para poder probar su salida.${CR}"
-            ui_blank; continue
-        fi
-
-        echo -e "${UI_PAD}  ${DM}Probando como '${probe}'...${CR}"
-        ip_res=$(runuser -u "$probe" -- curl -4 -s --max-time 12 https://api.ipify.org 2>/dev/null)
-        [ -z "$ip_res" ] && ip_res=$(runuser -u "$probe" -- curl -4 -s --max-time 12 https://ifconfig.me 2>/dev/null)
-
-        if [ -z "$ip_res" ]; then
-            echo -e "${UI_PAD}  ${RD}sin respuesta: el trafico no llega a Internet${CR}"
-            echo -e "${UI_PAD}  ${DM}Revisa en el nodo que el reenvio y el NAT esten puestos.${CR}"
-        elif [ "$ip_res" = "$ip_normal" ]; then
-            echo -e "${UI_PAD}  ${YL}${ip_res}${CR} ${RD}<- es la IP del VPS, no la del nodo${CR}"
-            echo -e "${UI_PAD}  ${DM}Su trafico no se esta desviando: comprueba que el${CR}"
-            echo -e "${UI_PAD}  ${DM}usuario tenga UID >= 1000 y la salida este encendida.${CR}"
-        else
-            echo -e "${UI_PAD}  ${GR}${ip_res}${CR} ${DM}<- sale por el nodo${CR}"
-        fi
-        ui_blank
-    done < <(_wgh_nodes_list)
-
-    ui_solid
-    read -p "$(echo -e ${DM})Presiona Enter para continuar...$(echo -e ${CR})"
-}
-
-# =========================================================
-# CAMBIO 9: 11. DIAGNÓSTICO COMPLETO ([OK], [WARN], [ERROR])
-# =========================================================
-wghome_diagnose() {
-    clear
-    print_title 2>/dev/null || true
-    ui_section "DIAGNOSTICO DEL GATEWAY" "solo prueba lo que tienes montado"
-    ui_blank
-
-    _wgh_repair_conf_if_needed
-
-    local wg_count socks_count
-    wg_count=$(_wgh_nodes_list | awk -F'|' '($4==""||$4=="wg"){c++}END{print c+0}')
-    socks_count=$(_wgh_nodes_list | awk -F'|' '$4=="socks"{c++}END{print c+0}')
-
-    if [ "$((wg_count+socks_count))" -eq 0 ]; then
-        ui_warn "No hay ningun nodo registrado. Registra uno en GESTIONAR NODOS."
-        ui_solid; ui_pause; return
-    fi
-
-    echo -e "${UI_PAD}${DM}Nodos: ${WH}${wg_count}${DM} WireGuard  +  ${WH}${socks_count}${DM} movil (SOCKS)${CR}"
-    ui_rule
-
-    # ---- COMUN: seguridad de la ruta SSH (vale para ambos metodos) ----
-    echo -e "${UI_PAD}${YL}[ COMUN ] Proteccion de la ruta SSH${CR}"
-    local def_main
-    def_main=$(ip route show table main 2>/dev/null | grep '^default' | head -1)
-    if echo "$def_main" | grep -q "wg-home"; then
-        echo -e "${UI_PAD}  ${RD}[ERROR]${CR} La ruta por defecto usa wg-home (SSH en riesgo): ${def_main}"
-    else
-        echo -e "${UI_PAD}  ${GR}[OK]${CR} Ruta por defecto intacta (SSH sale por la IP del VPS)"
-    fi
-    _wgh_routing_is_active && echo -e "${UI_PAD}  ${GR}[OK]${CR} Salida residencial: ACTIVA" \
-                           || echo -e "${UI_PAD}  ${YL}[!]${CR} Salida residencial: APAGADA (enciendela para enrutar)"
-    echo ""
-
-    # ================= WIREGUARD (solo si hay nodos wg) =================
-    if [ "$wg_count" -gt 0 ]; then
-        echo -e "${UI_PAD}${YL}[ WIREGUARD ] Tuneles y salida${CR}"
-        local name key idx type hs allowed
-        while IFS='|' read -r name key idx type; do
-            [ -z "$idx" ] && continue
-            [ "${type:-wg}" = "socks" ] && continue
-            if _wgh_node_is_up "$idx"; then
-                hs=$(_wgh_node_hs "$idx")
-                if [ "$hs" -ge 0 ] 2>/dev/null && [ "$hs" -lt 180 ]; then
-                    echo -e "${UI_PAD}  ${GR}[OK]${CR} ${WH}${name}${CR} ($(_wgn_iface "$idx")): UP, handshake ${hs}s"
-                else
-                    echo -e "${UI_PAD}  ${YL}[!]${CR} ${WH}${name}${CR} ($(_wgn_iface "$idx")): UP, sin handshake reciente"
-                fi
-                ip -o link show "$(_wgn_iface "$idx")" &>/dev/null && \
-                    ping -c1 -W2 "$(_wgn_nodeip "$idx")" &>/dev/null && \
-                    echo -e "${UI_PAD}     ${GR}[OK]${CR} Ping al nodo $(_wgn_nodeip "$idx"): responde" || \
-                    echo -e "${UI_PAD}     ${YL}[!]${CR} Ping al nodo $(_wgn_nodeip "$idx"): sin respuesta"
-            else
-                echo -e "${UI_PAD}  ${RD}[ERROR]${CR} ${WH}${name}${CR} ($(_wgn_iface "$idx")): DOWN"
-            fi
-        done < <(_wgh_nodes_list)
-        allowed=$(grep -E '^\s*AllowedIPs\s*=' "${WGH_CONF}" 2>/dev/null | head -1 | awk -F'=' '{print $2}' | xargs)
-        [ "$allowed" = "0.0.0.0/0" ] && echo -e "${UI_PAD}  ${GR}[OK]${CR} AllowedIPs 0.0.0.0/0 (gateway de Internet)" \
-                                     || echo -e "${UI_PAD}  ${YL}[!]${CR} AllowedIPs = ${allowed:-?} (deberia ser 0.0.0.0/0)"
-        echo ""
-    fi
-
-    # =================== SOCKS (solo si hay nodos movil) ===================
-    if [ "$socks_count" -gt 0 ]; then
-        echo -e "${UI_PAD}${YL}[ SOCKS / MOVIL ] Tunel inverso y salida${CR}"
-        local sname skey sidx stype
-        while IFS='|' read -r sname skey sidx stype; do
-            [ "${stype:-wg}" = "socks" ] || continue
-            local sport redport user hay_llave
-            sport=$(_wgn_socksport "$sidx"); redport=$(_wgn_redport "$sidx"); user=$(_wgn_socksuser "$sidx")
-            echo -e "${UI_PAD}  ${WH}${sname}${CR} ${DM}(usuario ${user}, SOCKS ${sport})${CR}"
-
-            # a) llave autorizada
-            [ -s "/var/lib/vpsservice/${user}/.ssh/authorized_keys" ] && hay_llave=si || hay_llave=no
-            [ "$hay_llave" = si ] && echo -e "${UI_PAD}     ${GR}[OK]${CR} Llave del nodo autorizada" \
-                                  || echo -e "${UI_PAD}     ${RD}[ERROR]${CR} Sin llave autorizada (registra la clave del nodo)"
-
-            # b) movil conectado (puerto inverso escuchando)
-            if _socks_reverse_up "$sidx"; then
-                echo -e "${UI_PAD}     ${GR}[OK]${CR} Movil conectado (SOCKS escuchando en 127.0.0.1:${sport})"
-            else
-                echo -e "${UI_PAD}     ${RD}[ERROR]${CR} Movil NO conectado (nadie escucha en ${sport})"
-                echo -e "${UI_PAD}        ${DM}En el celular: abre el nodo y conecta (ssh -R).${CR}"
-            fi
-
-            # c) redsocks vivo
-            if _socks_redsocks_up "$sidx"; then
-                echo -e "${UI_PAD}     ${GR}[OK]${CR} redsocks activo ($(_socks_redunit "$sidx"), escucha ${redport})"
-            else
-                echo -e "${UI_PAD}     ${RD}[ERROR]${CR} redsocks caido ($(_socks_redunit "$sidx"))"
-                local jerr
-                jerr=$(journalctl -u "$(_socks_redunit "$sidx")" -n 2 --no-pager 2>/dev/null | tail -1)
-                [ -n "$jerr" ] && echo -e "${UI_PAD}        ${DM}${jerr}${CR}"
-            fi
-
-            # d) regla de redireccion de la marca
-            if _socks_redirect_present "$sidx"; then
-                echo -e "${UI_PAD}     ${GR}[OK]${CR} Redireccion de la marca $(_wgn_mark "$sidx") -> redsocks activa"
-            else
-                echo -e "${UI_PAD}     ${YL}[!]${CR} Sin regla REDIRECT (enciende la salida residencial)"
-            fi
-
-            # e) usuarios asignados a este nodo
-            local nu
-            nu=$(_wgh_node_users "$sname" | tr '\n' ' ')
-            [ -n "$nu" ] && echo -e "${UI_PAD}     ${GR}[OK]${CR} Usuarios: ${WH}${nu}${CR}" \
-                         || echo -e "${UI_PAD}     ${YL}[!]${CR} Ningun usuario asignado a este nodo"
-
-            # f) PRUEBA EN VIVO: salir a Internet por el movil
-            if _socks_reverse_up "$sidx"; then
-                echo -e "${UI_PAD}     ${DM}Probando salida real por el movil...${CR}"
-                local exitip vpsip
-                exitip=$(_socks_probe_ip "$sidx"); vpsip=$(_wgh_get_droplet_ip)
-                if [ -z "$exitip" ]; then
-                    echo -e "${UI_PAD}     ${RD}[ERROR]${CR} El SOCKS del movil no dio salida a Internet."
-                    echo -e "${UI_PAD}        ${DM}El movil esta conectado pero su SOCKS no navega:${CR}"
-                    echo -e "${UI_PAD}        ${DM}revisa que el telefono tenga datos y que el nodo${CR}"
-                    echo -e "${UI_PAD}        ${DM}use reenvio dinamico (ssh -R sin destino).${CR}"
-                elif [ "$exitip" = "$vpsip" ]; then
-                    echo -e "${UI_PAD}     ${RD}[ERROR]${CR} La salida da la IP del VPS (${exitip}), no la del movil."
-                else
-                    echo -e "${UI_PAD}     ${GR}[OK]${CR} Salida por el movil: IP ${WH}${exitip}${CR} ${DM}(residencial)${CR}"
-                fi
-            fi
-            echo ""
-        done < <(_wgh_nodes_list)
-        echo -e "${UI_PAD}${DM}Nota: el SOCKS transporta solo TCP. El DNS (UDP) resuelve${CR}"
-        echo -e "${UI_PAD}${DM}en el VPS; las conexiones TCP salen por el movil.${CR}"
-        echo ""
-    fi
-
-    # ---- COMUN: usuarios configurados ----
-    local -a cusers=()
-    while IFS= read -r cu; do [ -n "$cu" ] && cusers+=("$cu"); done < <(_wgh_get_configured_users)
-    [ ${#cusers[@]} -gt 0 ] && echo -e "${UI_PAD}${GR}[OK]${CR} Usuarios enrutados en total: ${WH}${#cusers[@]}${CR}" \
-                            || echo -e "${UI_PAD}${YL}[!]${CR} Ningun usuario asignado a salir por un nodo"
-
-    ui_solid
     ui_pause
 }
+
 
 # =========================================================
 # 12. ELIMINAR CONFIGURACIÓN COMPLETA
@@ -2943,11 +2375,9 @@ wghome_diagnose() {
 wghome_remove() {
     clear
     print_title 2>/dev/null || true
-    echo -e "$SEP"
-    echo -e "${RD}     ⚠   ELIMINAR GATEWAY RESIDENCIAL   ⚠${CR}"
-    echo -e "$SEP"
+        ui_section "⚠   ELIMINAR GATEWAY RESIDENCIAL   ⚠"
     echo ""
-    echo -e "  ${YL}[!] Esta acción eliminará:${CR}"
+    ui_warn "Esta acción eliminará:"
     echo -e "  ${DM}  • /etc/wireguard/wg-home.conf${CR}"
     echo -e "  ${DM}  • /etc/wireguard/wghome_droplet_private.key${CR}"
     echo -e "  ${DM}  • /etc/wireguard/wghome_droplet_public.key${CR}"
@@ -2957,28 +2387,30 @@ wghome_remove() {
     echo -e "  ${DM}  • Reglas de tabla ${WGH_RT_NAME} (${WGH_RT_TABLE})${CR}"
     echo -e "  ${DM}  • Entrada en /etc/iproute2/rt_tables${CR}"
     echo ""
-    read -p "$(echo -e ${DM})¿Continuar? (s/n): $(echo -e ${CR})" resp
+    ui_prompt "¿Continuar? (s/n)"; resp="$REPLY_UI"
     if [[ "$resp" != "s" && "$resp" != "S" ]]; then
-        echo -e "  ${GR}[+] Operación cancelada.${CR}"; sleep 1; return
+        ui_info "Operación cancelada."; sleep 1; return
     fi
 
-    read -p "$(echo -e ${RD})Escribe ELIMINAR para confirmar: $(echo -e ${CR})" confirm
+    ui_prompt "Escribe ELIMINAR para confirmar"; confirm="$REPLY_UI"
     if [[ "$confirm" != "ELIMINAR" ]]; then
-        echo -e "  ${RD}[-] Texto incorrecto. Cancelado.${CR}"; sleep 2; return
+        ui_err "Texto incorrecto. Cancelado."; sleep 2; return
     fi
 
     echo ""
 
-    # 1. Desactivar enrutamiento
+    # 1. Desactivar enrutamiento, su restauracion al arrancar y el vigilante
+    _wgh_persist_off
     _wgh_routing_off_internal
+    _wgh_watchdog_is_on && _wgh_watchdog_disable
 
     # 2. Detener y deshabilitar servicio
-    echo -e "  ${YL}[*]${CR} Deteniendo servicio wg-quick@${WGH_IFACE}..."
+    ui_info "Deteniendo servicio wg-quick@${WGH_IFACE}..."
     systemctl stop "wg-quick@${WGH_IFACE}" 2>/dev/null
     systemctl disable "wg-quick@${WGH_IFACE}" 2>/dev/null
 
     # 3. Eliminar archivos
-    echo -e "  ${YL}[*]${CR} Eliminando archivos de configuración..."
+    ui_info "Eliminando archivos de configuración..."
     rm -f "${WGH_CONF}"
     rm -f "${WGH_PRIV_KEY}"
     rm -f "${WGH_PUB_KEY}"
@@ -2995,40 +2427,330 @@ wghome_remove() {
     _wgh_close_firewall
 
     # 6. Verificación de seguridad final
-    _wgh_verify_ssh_route && echo -e "  ${GR}[+]${CR} SSH protegido — tabla main intacta."
+    _wgh_verify_ssh_route && ui_ok "SSH protegido — tabla main intacta."
     _wgh_log "Gateway residencial desinstalado y eliminado completamente"
 
     echo ""
-    echo -e "$SEP"
-    echo -e "  ${GR}[+] Gateway residencial eliminado completamente.${CR}"
-    echo -e "$SEP"
+    ui_solid
+    ui_ok "Gateway residencial eliminado completamente."
+    ui_solid
     sleep 2
-    read -p "$(echo -e ${DM})Presiona Enter para continuar...$(echo -e ${CR})"
+    ui_pause
 }
 
 # =========================================================
-# CAMBIO 13: MENÚ PRINCIPAL DEL MÓDULO (14 OPCIONES)
-# =========================================================
-# =========================================================
-# ¿POR QUE NO HAY INTERNET?
+# SALIDA DE CADA USUARIO — piezas compartidas
 # ---------------------------------------------------------
-# Recorre la cadena entera, eslabon por eslabon, con datos
-# reales del sistema. La clave son los CONTADORES de las
-# reglas: una regla instalada por la que no ha pasado ni un
-# paquete dice que el trafico no llega hasta ella, y eso
-# senala el eslabon roto sin tener que adivinarlo.
+# Las usan ASIGNAR USUARIOS y el alta de una cuenta nueva, que
+# pregunta por donde va a salir el cliente. Una sola forma de
+# elegir, para que las dos pantallas no se contradigan.
+# =========================================================
+
+# Usuarios que salen por algun nodo (formato: usuario|nodo)
+_wgh_routed_users() {
+    local u n
+    while IFS= read -r u; do
+        [ -z "$u" ] && continue
+        n=$(_wgh_user_node "$u")
+        [ -n "$n" ] && echo "${u}|${n}"
+    done < <(_wgh_get_client_users | cut -d: -f1)
+}
+
+# Estado legible de un nodo, ya coloreado.
+_wgh_node_status() {
+    local name="$1" idx type hs
+    idx=$(_wgh_node_idx_of "$name"); type=$(_wgh_idx_type "$idx")
+    if [ -f "$WGH_ROUTING_FLAG" ] && [ "$(_wgh_health_of "$name")" = "down" ]; then
+        echo -e "${RD}caido${CR}"; return
+    fi
+    if [ "$type" = "socks" ]; then
+        if _socks_reverse_up "$idx"; then echo -e "${GR}conectado${CR}"
+        else echo -e "${RD}movil desconectado${CR}"; fi
+    else
+        if ! _wgh_node_is_up "$idx"; then echo -e "${RD}apagado${CR}"; return; fi
+        hs=$(_wgh_node_hs "$idx")
+        if [ "$hs" -ge 0 ] 2>/dev/null && [ "$hs" -lt 180 ]; then echo -e "${GR}conectado${CR}"
+        elif [ "$hs" -ge 0 ] 2>/dev/null; then echo -e "${YL}visto hace ${hs}s${CR}"
+        else echo -e "${YL}nunca conecto${CR}"; fi
+    fi
+}
+
+# Enciende la salida residencial sin preguntas: nodos, reglas,
+# arranque persistente y vigilante. Es lo que hace falta para
+# que el cliente no se quede sin servicio si un nodo cae.
+_wgh_routing_enable() {
+    _wgh_ensure_keys >/dev/null 2>&1
+    _wgh_backup >/dev/null 2>&1
+    _wgh_persist_on
+    _wgh_nodes_up_all >/dev/null 2>&1
+    _wgh_apply_user_routing >/dev/null 2>&1
+    _wgh_watchdog_is_on || _wgh_watchdog_enable
+}
+
+# Muestra los destinos posibles y deja la eleccion en PICK_NODE
+# ("" = IP del VPS). Devuelve 1 si el usuario cancela.
+#   _wgh_pick_exit [actual]
+_wgh_pick_exit() {
+    local actual="${1:-}" name key idx type i=0 mark tipo
+    local -a nombres=()
+    PICK_NODE=""
+    mark=""; [ -z "$actual" ] && mark=" ${GR}← actual${CR}"
+    echo -e "${UI_PAD}${CY}[0]${CR} ${DM}▸${CR} ${WH}IP del VPS${CR} ${DM}(salida normal, siempre disponible)${CR}${mark}"
+    while IFS='|' read -r name key idx type _; do
+        [ -z "$idx" ] && continue
+        i=$((i+1)); nombres+=("$name")
+        [ "${type:-wg}" = "socks" ] && tipo="movil" || tipo="PC"
+        mark=""; [ "$name" = "$actual" ] && mark=" ${GR}← actual${CR}"
+        printf "${UI_PAD}${CY}[%s]${CR} ${DM}▸${CR} ${WH}%-14s${CR} ${DM}%-6s${CR} %b%b\n" \
+            "$i" "$name" "$tipo" "$(_wgh_node_status "$name")" "$mark"
+    done < <(_wgh_nodes_list)
+    ui_blank
+    while true; do
+        ui_prompt "¿Por dónde sale a Internet? [0-${i}] (Enter = IP del VPS, c = cancelar)"
+        case "$REPLY_UI" in
+            ""|0) PICK_NODE=""; return 0 ;;
+            c|C)  return 1 ;;
+        esac
+        if [[ "$REPLY_UI" =~ ^[0-9]+$ ]] && [ "$REPLY_UI" -ge 1 ] && [ "$REPLY_UI" -le "$i" ]; then
+            PICK_NODE="${nombres[$((REPLY_UI-1))]}"; return 0
+        fi
+        # Tambien vale escribir el nombre del nodo
+        if _wgh_node_exists "$REPLY_UI"; then PICK_NODE="$REPLY_UI"; return 0; fi
+        ui_err "Opción no válida."
+    done
+}
+
+# Asigna la salida y la deja funcionando. Si la salida residencial
+# esta apagada, ofrece encenderla: asignar un nodo y que no surta
+# efecto seria una trampa facil de pisar.
+#   _wgh_set_user_exit <usuario> <nodo|"">
+_wgh_set_user_exit() {
+    local u="$1" node="$2"
+    _wgh_user_assign "$u" "$node"
+    if [ -f "$WGH_ROUTING_FLAG" ] || _wgh_routing_is_active; then
+        _wgh_apply_user_routing >/dev/null 2>&1
+    elif [ -n "$node" ]; then
+        ui_warn "La salida residencial está apagada."
+        if ui_confirm "¿Encenderla ahora para que ${u} salga por ${node}?" "s"; then
+            ui_info "Encendiendo la salida residencial..."
+            _wgh_routing_enable
+        else
+            ui_warn "${u} saldrá por ${node} cuando la enciendas. Mientras, usa la IP del VPS."
+            return 0
+        fi
+    fi
+    if [ -n "$node" ]; then
+        ui_ok "${WH}${u}${CR} sale por ${GR}${node}${CR}."
+        local bk; bk=$(_wgh_node_backup_of "$node")
+        echo -e "${UI_PAD}${DM}    Si ${node} cae: ${bk:+pasa a ${bk}, y si también cae: }la IP del VPS. Nunca se queda sin Internet.${CR}"
+    else
+        ui_ok "${WH}${u}${CR} sale por la IP del VPS."
+    fi
+}
+
+# =========================================================
+# ASIGNAR CADA USUARIO A SU NODO
+# =========================================================
+wghome_assign_users() {
+    while true; do
+        clear
+        print_title 2>/dev/null || true
+        ui_section "SALIDA POR USUARIO" "quién sale por qué nodo"
+        ui_blank
+
+        if [ "$(_wgh_nodes_count)" -eq 0 ]; then
+            ui_warn "Aún no hay nodos: todos los usuarios salen por la IP del VPS."
+            echo -e "${UI_PAD}${DM}Registra uno en GATEWAY RESIDENCIAL > NODOS.${CR}"
+            ui_pause; return
+        fi
+
+        local -a us=()
+        local u n i=0
+        while IFS= read -r u; do
+            [ -z "$u" ] && continue
+            us+=("$u"); i=$((i+1))
+            n=$(_wgh_user_node "$u")
+            if [ -n "$n" ]; then
+                printf "${UI_PAD}${CY}[%2d]${CR} ${WH}%-16s${CR} ${DM}sale por${CR} ${GR}%-14s${CR} %b\n" "$i" "$u" "$n" "$(_wgh_node_status "$n")"
+            else
+                printf "${UI_PAD}${CY}[%2d]${CR} ${WH}%-16s${CR} ${DM}sale por la IP del VPS${CR}\n" "$i" "$u"
+            fi
+        done < <(_wgh_get_client_users | cut -d: -f1)
+
+        [ ${#us[@]} -eq 0 ] && { ui_blank; ui_warn "No hay cuentas de cliente creadas."; ui_pause; return; }
+
+        ui_blank
+        ui_rule
+        echo -e "${UI_PAD}${DM}root y el SSH de administración nunca se enrutan.${CR}"
+        ui_prompt "Número del usuario a cambiar (Enter = volver)"
+        local pick="$REPLY_UI"
+        [ "$pick" = "0" ] || [ -z "$pick" ] && return
+        if ! [[ "$pick" =~ ^[0-9]+$ ]] || [ "$pick" -lt 1 ] || [ "$pick" -gt ${#us[@]} ]; then
+            ui_err "Fuera de rango."; sleep 1; continue
+        fi
+
+        local target="${us[$((pick-1))]}"
+        ui_blank
+        echo -e "${UI_PAD}${WH}Salida para ${target}${CR}"
+        _wgh_pick_exit "$(_wgh_user_node "$target")" || continue
+        _wgh_set_user_exit "$target" "$PICK_NODE"
+        sleep 2
+    done
+}
+
+# =========================================================
+# ENCENDER / APAGAR LA SALIDA RESIDENCIAL
+# =========================================================
+wghome_routing_on() {
+    clear
+    print_title 2>/dev/null || true
+    ui_section "ENCENDER SALIDA RESIDENCIAL" "cada usuario sale por su nodo"
+    ui_blank
+
+    if [ "$(_wgh_nodes_count)" -eq 0 ]; then
+        ui_err "No hay nodos registrados. Registra uno en NODOS."
+        ui_pause; return
+    fi
+    _wgh_repair_conf_if_needed
+    if ! _wgh_verify_ssh_route; then
+        ui_err "Abortado: la ruta por defecto no es segura para el SSH."
+        _wgh_log "Abortada activacion: ruta SSH comprometida"
+        ui_pause; return
+    fi
+
+    local nu
+    nu=$(_wgh_routed_users | wc -l)
+    [ "$nu" -eq 0 ] && ui_warn "Aún no hay usuarios asignados a un nodo. Asígnalos en ASIGNAR USUARIOS."
+
+    ui_info "Levantando nodos y aplicando reglas..."
+    _wgh_routing_enable
+
+    ui_blank
+    if _wgh_routing_is_active; then
+        ui_ok "Salida residencial ENCENDIDA (${nu} usuario(s) enrutado(s))."
+        ui_ok "Vigilante activo: si un nodo cae, sus usuarios pasan a su respaldo o a la IP del VPS."
+        ui_ok "Se restaurará sola si el VPS se reinicia."
+        ui_ok "El SSH de administración sigue saliendo por la IP del VPS."
+    else
+        ui_err "Las reglas no se pudieron validar en el kernel. Revisa el DIAGNÓSTICO."
+    fi
+    ui_pause
+}
+
+wghome_routing_off() {
+    clear
+    print_title 2>/dev/null || true
+    ui_section "APAGAR SALIDA RESIDENCIAL"
+    ui_blank
+    ui_warn "Todos los usuarios pasarán a salir por la IP del VPS."
+    ui_blank
+    ui_confirm "¿Apagar la salida residencial?" "n" || return
+    _wgh_persist_off
+    _wgh_routing_off_internal >/dev/null
+    ui_ok "Apagada. Los nodos siguen conectados y las asignaciones se conservan."
+    ui_pause
+}
+
+# =========================================================
+# QUE NADIE SE QUEDE SIN INTERNET — vigilante y respaldos
+# =========================================================
+wghome_configure_fallback() {
+    while true; do
+        clear
+        print_title 2>/dev/null || true
+        ui_section "QUE NADIE SE QUEDE SIN INTERNET" "conmutación automática"
+        ui_blank
+
+        local tag
+        _wgh_watchdog_is_on && tag="$(ui_tag_str on)" || tag="$(ui_tag_str off)"
+        echo -e "${UI_PAD}$(ui_cell "Vigilante" "" 22)${tag}"
+        ui_blank
+        echo -e "${UI_PAD}${DM}Si un nodo deja de responder, sus usuarios pasan solos a:${CR}"
+        echo -e "${UI_PAD}  ${WH}nodo preferido${CR} ${DM}->${CR} ${WH}nodo de respaldo${CR} ${DM}->${CR} ${GR}IP del VPS${CR}"
+        echo -e "${UI_PAD}${DM}y vuelven cuando el nodo se recupera. Un nodo PC se da por${CR}"
+        echo -e "${UI_PAD}${DM}caído en 20-60 s; un móvil en unos 30 s.${CR}"
+        ui_rule
+
+        local -a nombres=()
+        local name key idx tipo bk i=0
+        printf "${UI_PAD}${DM}     %-14s %-7s %-14s %s${CR}\n" "NODO" "TIPO" "RESPALDO" "ESTADO"
+        while IFS='|' read -r name key idx tipo bk _; do
+            [ -z "$idx" ] && continue
+            i=$((i+1)); nombres+=("$name")
+            [ "${tipo:-wg}" = "socks" ] && tipo="movil" || tipo="PC"
+            printf "${UI_PAD}${CY}[%d]${CR}  ${WH}%-14s${CR} ${DM}%-7s${CR} ${CY}%-14s${CR} %b\n" \
+                "$i" "$name" "$tipo" "${bk:-IP del VPS}" "$(_wgh_node_status "$name")"
+        done < <(_wgh_nodes_list)
+        [ "$i" -eq 0 ] && echo -e "${UI_PAD}${DM}No hay nodos registrados.${CR}"
+
+        ui_blank
+        ui_solid
+        if _wgh_watchdog_is_on; then ui_opt "1" "DESACTIVAR VIGILANTE" "no recomendado"
+        else ui_opt "1" "ACTIVAR VIGILANTE" "conmutar solo"; fi
+        ui_opt "2" "FIJAR RESPALDO" "de un nodo"
+        ui_opt "0" "VOLVER"
+        ui_solid
+        ui_prompt "Elige una opción [0-2]"
+
+        case "$REPLY_UI" in
+            1)  if _wgh_watchdog_is_on; then
+                    ui_warn "Sin vigilante, si un nodo cae sus usuarios se quedan sin Internet."
+                    if ui_confirm "¿Desactivarlo igualmente?" "n"; then
+                        _wgh_watchdog_disable; ui_ok "Vigilante apagado y rutas restauradas."
+                    fi
+                else
+                    _wgh_watchdog_enable
+                    _wgh_watchdog_is_on && ui_ok "Vigilante activo." || ui_err "No se pudo activar."
+                fi; sleep 2 ;;
+            2)  [ "$i" -eq 0 ] && { ui_err "No hay nodos."; sleep 1; continue; }
+                ui_prompt "Número del nodo a configurar"
+                local p1="$REPLY_UI" n1
+                [[ "$p1" =~ ^[0-9]+$ ]] && [ "$p1" -ge 1 ] && [ "$p1" -le "$i" ] || { ui_err "Fuera de rango."; sleep 1; continue; }
+                n1="${nombres[$((p1-1))]}"
+                ui_blank
+                echo -e "${UI_PAD}${DM}Respaldo de ${WH}${n1}${DM}: número de otro nodo, o 0 para que caiga${CR}"
+                echo -e "${UI_PAD}${DM}directo a la IP del VPS.${CR}"
+                ui_prompt "Respaldo"
+                local p2="$REPLY_UI" n2=""
+                if [ "$p2" != "0" ] && [ -n "$p2" ]; then
+                    [[ "$p2" =~ ^[0-9]+$ ]] && [ "$p2" -ge 1 ] && [ "$p2" -le "$i" ] || { ui_err "Fuera de rango."; sleep 1; continue; }
+                    n2="${nombres[$((p2-1))]}"
+                    [ "$n2" = "$n1" ] && { ui_err "Un nodo no puede ser su propio respaldo."; sleep 2; continue; }
+                fi
+                _wgh_node_set_backup "$n1" "$n2"
+                if [ -n "$n2" ]; then ui_ok "Si '${n1}' cae, sus usuarios pasan a '${n2}'."
+                else ui_ok "Si '${n1}' cae, sus usuarios pasan a la IP del VPS."; fi
+                [ -f "$WGH_ROUTING_FLAG" ] && _wgh_apply_user_routing >/dev/null 2>&1
+                sleep 2 ;;
+            0|"") break ;;
+            *)  ui_err "Opción no válida."; sleep 1 ;;
+        esac
+    done
+}
+
+# =========================================================
+# DIAGNOSTICO — la cadena completa, eslabón a eslabón
+# ---------------------------------------------------------
+# Antes habia cuatro pantallas (diagnostico, ping, IP de salida
+# y "por que no hay Internet") que se solapaban, y la ultima
+# trataba a los nodos movil como WireGuard y los daba siempre
+# por apagados. Ahora es una sola y entiende los dos tipos.
+#
+# La clave son los CONTADORES de las reglas: una regla por la
+# que no ha pasado ni un paquete dice que el trafico no llega
+# hasta ella, y eso señala el eslabón roto sin adivinar.
 # =========================================================
 _wgh_rule_pkts() {
-    # Paquetes que han cruzado una regla, buscada por comentario.
+    # Paquetes que han cruzado una regla, buscada por patron.
     local tabla="$1" cadena="$2" patron="$3"
     iptables -t "$tabla" -L "$cadena" -v -n -x 2>/dev/null \
         | grep -- "$patron" | awk '{s+=$1} END{print s+0}'
 }
 
-wghome_why_no_internet() {
+wghome_diagnose() {
     clear
     print_title 2>/dev/null || true
-    ui_section "POR QUE NO HAY INTERNET" "la cadena completa, eslabon a eslabon"
+    ui_section "DIAGNÓSTICO DEL GATEWAY" "la cadena completa, eslabón a eslabón"
     ui_blank
 
     local problemas=0
@@ -3038,212 +2760,289 @@ wghome_why_no_internet() {
 
     # --- 1. Nodos ---
     echo -e "${UI_PAD}${YL}1 · Nodos${CR}"
-    local total idx name key
+    local total name key idx type hs user sport vivos=0
     total=$(_wgh_nodes_count)
     if [ "${total:-0}" -eq 0 ]; then
-        _p "No hay ningun nodo registrado." "GESTIONAR NODOS > REGISTRAR NODO"
+        _p "No hay ningún nodo registrado." "GATEWAY RESIDENCIAL > NODOS"
         ui_solid; ui_pause; return
     fi
-    _v "${total} nodo(s) registrado(s)."
-    local vivos=0
-    while IFS='|' read -r name key idx; do
+    while IFS='|' read -r name key idx type _; do
         [ -z "$idx" ] && continue
-        if ! _wgh_node_is_up "$idx"; then
-            _p "'${name}': su interfaz $(_wgn_iface "$idx") esta apagada." "Se levanta sola al aplicar la salida residencial."
-        elif [ "$(_wgh_node_hs "$idx")" -lt 0 ] 2>/dev/null; then
-            _p "'${name}': nunca ha conectado." "El aparato no esta llamando al VPS. Revisalo alli."
+        if [ "${type:-wg}" = "socks" ]; then
+            user=$(_wgn_socksuser "$idx"); sport=$(_wgn_socksport "$idx")
+            if [ ! -s "/var/lib/vpsservice/${user}/.ssh/authorized_keys" ]; then
+                _p "'${name}' (móvil): sin llave autorizada." "NODOS > REGISTRAR NODO MÓVIL con el mismo nombre y pega su clave."
+            elif ! _socks_reverse_up "$idx"; then
+                _p "'${name}' (móvil): no está conectado (nadie escucha en ${sport})." "En el celular: abre el nodo y conecta."
+            elif ! _socks_redsocks_up "$idx"; then
+                _p "'${name}' (móvil): redsocks caído." "$(journalctl -u "$(_socks_redunit "$idx")" -n 1 --no-pager 2>/dev/null | tail -1)"
+            else
+                _v "'${name}' (móvil): conectado."; vivos=$((vivos+1))
+            fi
         else
-            _v "'${name}': conectado hace $(_wgh_node_hs "$idx")s."
-            vivos=$((vivos+1))
+            if ! _wgh_node_is_up "$idx"; then
+                _p "'${name}' (PC): su interfaz $(_wgn_iface "$idx") está apagada." "Se levanta sola al encender la salida residencial."
+            else
+                hs=$(_wgh_node_hs "$idx")
+                if [ "$hs" -lt 0 ] 2>/dev/null; then
+                    _p "'${name}' (PC): nunca ha conectado." "El equipo no está llamando al VPS. Revisa allí clave, Endpoint y puerto $(_wgn_port "$idx")."
+                elif [ "$hs" -ge 180 ]; then
+                    _p "'${name}' (PC): último contacto hace ${hs}s." "Comprueba que el equipo esté encendido y con PersistentKeepalive = 25."
+                else
+                    _v "'${name}' (PC): conectado (handshake hace ${hs}s)."; vivos=$((vivos+1))
+                    ping -c1 -W2 "$(_wgn_nodeip "$idx")" &>/dev/null \
+                        && _i "responde al ping en $(_wgn_nodeip "$idx")" \
+                        || _i "no responde al ping (no es grave si su firewall bloquea ICMP)"
+                fi
+            fi
+        fi
+        if [ -f "$WGH_ROUTING_FLAG" ] && [ "$(_wgh_health_of "$name")" = "down" ]; then
+            _i "el vigilante lo tiene por CAÍDO: sus usuarios salen por $(_wgh_node_backup_of "$name" | sed 's/^$/la IP del VPS/')"
         fi
     done < <(_wgh_nodes_list)
-    [ "$vivos" -eq 0 ] && { ui_blank; _p "Ningun nodo esta conectado: no hay por donde salir."; ui_solid; ui_pause; return; }
+    [ "$vivos" -eq 0 ] && _p "Ningún nodo está conectado: los usuarios asignados salen por la IP del VPS."
     ui_blank
 
-    # --- 2. Ajustes del kernel ---
+    # --- 2. Kernel ---
     echo -e "${UI_PAD}${YL}2 · Kernel${CR}"
     local fwd rpf
     fwd=$(sysctl -n net.ipv4.ip_forward 2>/dev/null)
-    [ "$fwd" = "1" ] && _v "ip_forward activo." || _p "ip_forward apagado." "sysctl -w net.ipv4.ip_forward=1"
+    [ "$fwd" = "1" ] && _v "ip_forward activo." || _p "ip_forward apagado." "Se corrige al encender la salida residencial."
     rpf=$(sysctl -n net.ipv4.conf.all.rp_filter 2>/dev/null)
     if [ "$rpf" = "1" ]; then
-        _p "rp_filter = 1 (estricto)." "Descarta TODAS las respuestas que vuelven por el tunel."
-        _i "Se corrige al activar la salida residencial."
+        _p "rp_filter = 1 (estricto)." "Descarta las respuestas que vuelven por el túnel. Se corrige al encender la salida."
     else
-        _v "rp_filter = ${rpf} (no descarta el retorno)."
+        _v "rp_filter = ${rpf:-?} (no descarta el retorno)."
+    fi
+    local def_main
+    def_main=$(ip route show table main 2>/dev/null | grep '^default' | head -1)
+    if echo "$def_main" | grep -q "wg-home"; then
+        _p "La ruta por defecto del VPS usa wg-home: el SSH está en riesgo." "$def_main"
+    else
+        _v "Ruta por defecto intacta: el SSH sale por la IP del VPS."
     fi
     ui_blank
 
-    # --- 3. Usuarios asignados ---
+    # --- 3. Usuarios ---
     echo -e "${UI_PAD}${YL}3 · Usuarios${CR}"
     local u uid asign=0
     while IFS= read -r u; do
         [ -z "$u" ] && continue
-        name=$(_wgh_user_node "$u")
-        uid=$(id -u "$u" 2>/dev/null)
-        if [ -z "$name" ]; then
-            _i "${u} (UID ${uid}): sale por la IP del VPS"
-        elif [ -z "$uid" ] || [ "$uid" -lt 1000 ] 2>/dev/null; then
-            _p "${u} esta asignado a '${name}' pero su UID es ${uid:-?}." "Solo se enruta UID >= 1000. Esa cuenta nunca saldra por el nodo."
+        name=$(_wgh_user_node "$u"); uid=$(id -u "$u" 2>/dev/null)
+        [ -z "$name" ] && continue
+        if [ -z "$uid" ] || [ "$uid" -lt 1000 ] 2>/dev/null; then
+            _p "${u} está asignado a '${name}' pero su UID es ${uid:-?}." "Solo se enruta UID >= 1000."
         else
-            _v "${u} (UID ${uid}) -> ${name}"
-            asign=$((asign+1))
+            _v "${u} -> ${name}"; asign=$((asign+1))
         fi
     done < <(_wgh_get_client_users | cut -d: -f1)
-    if [ "$asign" -eq 0 ]; then
-        ui_blank
-        _p "Ningun usuario esta asignado a un nodo." "GESTIONAR NODOS > ASIGNAR USUARIOS. Sin esto no se desvia nada."
-        ui_solid; ui_pause; return
-    fi
+    [ "$asign" -eq 0 ] && _i "Nadie asignado a un nodo: todos salen por la IP del VPS."
     ui_blank
 
-    # --- 4. Reglas y contadores ---
+    # --- 4. Reglas ---
     echo -e "${UI_PAD}${YL}4 · Reglas aplicadas${CR}"
     if ! _wgh_routing_is_active; then
-        _p "La salida residencial esta APAGADA." "Enciendela con la opcion 3 del menu."
-        ui_solid; ui_pause; return
-    fi
-    _v "Salida residencial encendida."
-
-    local marcados
-    marcados=$(_wgh_rule_pkts mangle OUTPUT HOMEVPN_MARK)
-    if [ "${marcados:-0}" -eq 0 ]; then
-        _p "Ni un solo paquete ha sido marcado todavia." \
-           "O el cliente no esta navegando, o su trafico no sale con su UID."
-        _i "Conecta el cliente, navega un poco y vuelve a mirar."
+        _p "La salida residencial está APAGADA." "Enciéndela con la opción 3 del menú del gateway."
     else
-        _v "${marcados} paquetes marcados: el trafico del cliente SI se esta desviando."
-    fi
-
-    while IFS='|' read -r name key idx; do
-        [ -z "$idx" ] && continue
-        local mark tbl ifc ruta natp
-        mark=$(_wgn_mark "$idx"); tbl=$(_wgn_table "$idx"); ifc=$(_wgn_iface "$idx")
-        echo -e "${UI_PAD}  ${WH}${name}${CR} ${DM}(marca ${mark}, tabla ${tbl})${CR}"
-        ip rule show | grep -q "fwmark ${mark} lookup ${tbl}" \
-            && _v "  regla fwmark -> tabla ${tbl}" \
-            || _p "  falta la regla fwmark ${mark} -> tabla ${tbl}"
-        ruta=$(ip route show table "$tbl" 2>/dev/null | grep '^default')
-        [ -n "$ruta" ] && _v "  ${ruta}" || _p "  la tabla ${tbl} no tiene ruta por defecto"
-        natp=$(_wgh_rule_pkts nat POSTROUTING "$ifc")
-        if [ "${natp:-0}" -eq 0 ]; then
-            _p "  el NAT de ${ifc} no ha traducido ningun paquete" \
-               "Marcado pero no enrutado: revisa la ruta de arriba."
-        else
-            _v "  NAT: ${natp} paquetes traducidos hacia el nodo"
+        _v "Salida residencial encendida."
+        local marcados
+        marcados=$(_wgh_rule_pkts mangle OUTPUT HOMEVPN_MARK)
+        if [ "$asign" -gt 0 ] && [ "${marcados:-0}" -eq 0 ]; then
+            _p "Ni un paquete marcado todavía." "O el cliente no está navegando, o su tráfico no sale con su UID."
+        elif [ "$asign" -gt 0 ]; then
+            _v "${marcados} paquetes marcados: el tráfico de los clientes SÍ se desvía."
         fi
-    done < <(_wgh_nodes_list)
+        local mark tbl ifc ruta natp redport
+        while IFS='|' read -r name key idx type _; do
+            [ -z "$idx" ] && continue
+            mark=$(_wgn_mark "$idx")
+            echo -e "${UI_PAD}  ${WH}${name}${CR} ${DM}(marca ${mark})${CR}"
+            if [ "${type:-wg}" = "socks" ]; then
+                redport=$(_wgn_redport "$idx")
+                if _socks_redirect_present "$idx"; then
+                    _v "  desvío TCP -> redsocks :${redport} ($(_wgh_rule_pkts nat OUTPUT "redir ports ${redport}") paquetes)"
+                elif [ "$(_wgh_health_of "$name")" = "down" ]; then
+                    _i "  desvío retirado por el vigilante (nodo caído)"
+                else
+                    _p "  falta el desvío hacia redsocks"
+                fi
+            else
+                tbl=$(_wgn_table "$idx"); ifc=$(_wgn_iface "$idx")
+                ip rule show | grep -q "fwmark ${mark} lookup" \
+                    && _v "  regla fwmark -> tabla ${tbl}" \
+                    || _p "  falta la regla fwmark ${mark} -> tabla ${tbl}"
+                ruta=$(ip route show table "$tbl" 2>/dev/null | grep '^default')
+                if [ -n "$ruta" ]; then _v "  ${ruta}"
+                elif [ "$(_wgh_health_of "$name")" = "down" ]; then _i "  ruta retirada por el vigilante (nodo caído)"
+                else _p "  la tabla ${tbl} no tiene ruta por defecto"; fi
+                natp=$(_wgh_rule_pkts nat POSTROUTING "$ifc")
+                [ "${natp:-0}" -gt 0 ] && _v "  NAT: ${natp} paquetes traducidos hacia el nodo" \
+                                       || _i "  NAT: aún sin tráfico hacia este nodo"
+            fi
+        done < <(_wgh_nodes_list)
+    fi
     ui_blank
 
-    # --- 5. La prueba definitiva ---
-    echo -e "${UI_PAD}${YL}5 · Salida real${CR}"
+    # --- 5. Protección contra caídas ---
+    echo -e "${UI_PAD}${YL}5 · Protección contra caídas${CR}"
+    _wgh_watchdog_is_on && systemctl is-active --quiet homevpn-watchdog 2>/dev/null \
+        && _v "Vigilante activo y funcionando." \
+        || _p "Vigilante apagado o detenido." "Sin él, si un nodo cae sus usuarios se quedan sin Internet. Opción 4."
+    if _wgh_routing_is_active; then
+        [ -f "$WGH_ROUTING_FLAG" ] && systemctl is-enabled --quiet homevpn-rules 2>/dev/null \
+            && _v "Se restaurará sola si el VPS se reinicia." \
+            || _p "No se restaurará tras un reinicio." "Apaga y enciende la salida residencial para registrarla."
+    fi
+    ui_blank
+
+    # --- 6. Salida real ---
+    echo -e "${UI_PAD}${YL}6 · Salida real a Internet${CR}"
     local ip_normal probe res
     ip_normal=$(_wgh_get_droplet_ip)
-    while IFS='|' read -r name key idx; do
+    _i "IP del VPS: ${ip_normal:-desconocida}"
+    while IFS='|' read -r name key idx type _; do
         [ -z "$idx" ] && continue
         probe=$(_wgh_node_users "$name" | head -1)
-        [ -z "$probe" ] && continue
-        _i "Saliendo como '${probe}' por '${name}'..."
-        res=$(runuser -u "$probe" -- curl -4 -s --max-time 15 https://api.ipify.org 2>/dev/null)
-        if [ -z "$res" ]; then
-            _p "  sin respuesta: el trafico sale del VPS pero no vuelve" \
-               "El nodo recibe y no reenvia. Revisa ALLI el reenvio y el NAT."
-        elif [ "$res" = "$ip_normal" ]; then
-            _p "  ${res} — es la IP del VPS, no la del nodo" \
-               "El desvio no se esta aplicando a ese usuario."
-        else
-            _v "  ${res} — ¡sale por el nodo!"
+        if [ -n "$probe" ] && _wgh_routing_is_active; then
+            _i "Saliendo como '${probe}' por '${name}'..."
+            res=$(runuser -u "$probe" -- curl -4 -s --max-time 15 https://api.ipify.org 2>/dev/null)
+            if [ -z "$res" ]; then
+                _p "  ${name}: sin respuesta." "El tráfico sale del VPS pero no vuelve: revisa en el nodo el reenvío y el NAT."
+            elif [ "$res" = "$ip_normal" ]; then
+                [ "$(_wgh_health_of "$name")" = "down" ] \
+                    && _i "  ${name}: sale por la IP del VPS (el nodo está caído: es lo esperado)" \
+                    || _p "  ${name}: ${res} es la IP del VPS, no la del nodo." "El desvío no se aplica a ese usuario."
+            else
+                _v "  ${name}: sale por ${res}"
+            fi
+        elif [ "${type:-wg}" = "socks" ] && _socks_reverse_up "$idx"; then
+            _i "Probando el SOCKS de '${name}'..."
+            res=$(_socks_probe_ip "$idx")
+            [ -n "$res" ] && _v "  ${name}: el móvil da salida por ${res}" \
+                          || _p "  ${name}: el móvil está conectado pero no navega." "Revisa que el teléfono tenga datos."
         fi
     done < <(_wgh_nodes_list)
 
     ui_blank; ui_rule
     if [ "$problemas" -eq 0 ]; then
-        echo -e "${UI_PAD}${GR}Todo correcto: el gateway esta dando Internet.${CR}"
+        echo -e "${UI_PAD}${GR}Todo correcto: el gateway está dando Internet.${CR}"
     else
-        echo -e "${UI_PAD}${RD}${problemas} problema(s). El primero de la lista es el que hay que arreglar:${CR}"
+        echo -e "${UI_PAD}${RD}${problemas} problema(s). Arregla primero el de más arriba:${CR}"
         echo -e "${UI_PAD}${DM}los de abajo suelen ser consecuencia suya.${CR}"
     fi
     ui_solid
-    read -p "$(echo -e ${DM})Presiona Enter para continuar...$(echo -e ${CR})"
+    ui_pause
 }
 
+# =========================================================
+# AVANZADO — lo que se toca una vez o nunca
+# =========================================================
+wghome_advanced_menu() {
+    while true; do
+        clear
+        print_title 2>/dev/null || true
+        ui_section "GATEWAY · AVANZADO"
+        ui_blank
+        local TAG_TUNNEL
+        _wgh_is_up && TAG_TUNNEL="$(ui_tag_str on)" || TAG_TUNNEL="$(ui_tag_str off)"
+        ui_opt "1" "INSTALAR / RECONFIG"  "asistente"
+        ui_opt "2" "TÚNEL WG-HOME"        "encender/apagar" "$TAG_TUNNEL"
+        ui_opt "3" "DIRECCIÓN PÚBLICA"    "endpoint del VPS"
+        ui_opt "4" "CLAVE PÚBLICA DEL VPS" "y datos de nodos"
+        ui_blank
+        ui_opt_danger "5" "ELIMINAR CONFIGURACIÓN" "borra el gateway"
+        ui_opt "0" "VOLVER"
+        ui_solid
+        ui_prompt "Elige una opción [0-5]"
+        case "$REPLY_UI" in
+            1) wghome_install ;;
+            2) if _wgh_is_up; then wghome_tunnel_down; else wghome_tunnel_up; fi ;;
+            3) wghome_fix_endpoint ;;
+            4) wghome_show_pubkey ;;
+            5) wghome_remove ;;
+            0|"") break ;;
+            *) ui_err "Opción no válida."; sleep 1 ;;
+        esac
+    done
+}
+
+# =========================================================
+# MENU DEL GATEWAY RESIDENCIAL
+# ---------------------------------------------------------
+# Antes: 13 opciones, numeradas 1..11, 13, 12; cuatro de
+# diagnostico y dos pantallas distintas para asignar usuarios
+# (una de ellas, al pulsar "todos", borraba las asignaciones
+# por nodo). Ahora: lo de uso diario arriba y lo de una sola
+# vez en AVANZADO.
+# =========================================================
 wghome_menu() {
-    # Reparar configuración existente en background si faltaba Table=off o AllowedIPs=0.0.0.0/0
     _wgh_repair_conf_if_needed
 
     while true; do
         clear
         print_title 2>/dev/null || true
-        ui_section "GATEWAY RESIDENCIAL" "salida por WireGuard hacia tu casa"
+        ui_section "GATEWAY RESIDENCIAL" "cada usuario sale por el nodo que le asignes"
         ui_blank
 
-        # Estado actual
-        local TAG_INST TAG_TUNNEL TAG_ROUTING TAG_FB u_count
-        _wgh_is_installed      && TAG_INST="${GR}[ INSTALADO ]${CR}" || TAG_INST="${RD}[ NO INSTALADO ]${CR}"
-        _wgh_is_up             && TAG_TUNNEL="$(ui_tag_str on)"      || TAG_TUNNEL="$(ui_tag_str off)"
-        _wgh_routing_is_active && TAG_ROUTING="$(ui_tag_str on)"     || TAG_ROUTING="$(ui_tag_str off)"
-        _wgh_watchdog_is_on && TAG_FB="$(ui_tag_str on)" || TAG_FB="$(ui_tag_str off)"
-
-        u_count=0
-        [ -f "$WGH_USERS_CONF" ] && u_count=$(_wgh_get_configured_users | wc -l)
-
-        echo -e "${UI_PAD}$(ui_cell "Instalación" "" 22)${TAG_INST}"
-        echo -e "${UI_PAD}$(ui_cell "Usuarios enrutados" "$u_count" 22 "$CY")"
-        local n_count n_conn i
+        local TAG_ROUTING TAG_FB n_count n_ok n_down u_count name
+        _wgh_routing_is_active && TAG_ROUTING="$(ui_tag_str on)" || TAG_ROUTING="$(ui_tag_str off)"
+        _wgh_watchdog_is_on    && TAG_FB="$(ui_tag_str on)"      || TAG_FB="$(ui_tag_str off)"
         n_count=$(_wgh_nodes_count 2>/dev/null || echo 0)
-        n_conn=0
-        for i in $(_wgh_nodes_list 2>/dev/null | cut -d'|' -f3); do
-            _wgh_node_is_up "$i" && [ "$(_wgh_node_hs "$i")" -ge 0 ] 2>/dev/null && n_conn=$((n_conn+1))
-        done
-        echo -e "${UI_PAD}$(ui_cell "Nodos registrados" "${n_count:-0}" 22 "$CY")"
-        echo -e "${UI_PAD}$(ui_cell "Nodos conectados" "${n_conn}" 22 "$GR")"
+        n_ok=0; n_down=0
+        local st
+        while IFS= read -r name; do
+            [ -z "$name" ] && continue
+            st=$(_wgh_node_status "$name")
+            if [[ "$st" == *conectado* && "$st" != *desconectado* ]]; then n_ok=$((n_ok+1)); else n_down=$((n_down+1)); fi
+        done < <(_wgh_nodes_names)
+        u_count=$(_wgh_routed_users | wc -l)
+
+        echo -e "${UI_PAD}$(ui_cell "Nodos" "${n_count:-0}" 14 "$CY")${DM}▸${CR} $(ui_cell "Conectados" "$n_ok" 17 "$GR")${DM}▸${CR} $(ui_cell "Caídos" "$n_down" 14 "$RD")"
+        echo -e "${UI_PAD}$(ui_cell "Usuarios que salen por un nodo" "$u_count" 40 "$CY")"
+        if _wgh_routing_is_active && ! _wgh_watchdog_is_on; then
+            ui_warn "Vigilante apagado: si un nodo cae, sus usuarios se quedan sin Internet."
+        fi
         ui_rule
         ui_blank
 
-        echo -e "${UI_PAD}${YL}── TÚNEL ──${CR}"
-        ui_opt "1" "INSTALAR / RECONFIG"  "asistente"
-        ui_opt "2" "TÚNEL WG-HOME"        "activar/apagar"  "$TAG_TUNNEL"
-        ui_opt "3" "SALIDA RESIDENCIAL"   "activar/apagar"  "$TAG_ROUTING"
-        ui_opt "4" "NUNCA SIN INTERNET"   "conmuta solo"    "$TAG_FB"
+        ui_opt "1" "NODOS"              "registrar · datos"
+        ui_opt "2" "ASIGNAR USUARIOS"   "quién sale por dónde"
+        ui_opt "3" "SALIDA RESIDENCIAL" "encender/apagar" "$TAG_ROUTING"
+        ui_opt "4" "NUNCA SIN INTERNET" "respaldos"       "$TAG_FB"
+        ui_opt "5" "DIAGNÓSTICO"        "cadena completa"
         ui_blank
-        echo -e "${UI_PAD}${YL}── CLAVES ──${CR}"
-        ui_opt "5" "CLAVE PÚBLICA DEL VPS" "para el PC"
-        ui_opt "6" "GESTIONAR NODOS"      "y salida x usuario"
-        ui_blank
-        echo -e "${UI_PAD}${YL}── USUARIOS ──${CR}"
-        ui_opt "7" "VER ENRUTADOS"        "quién sale por casa"
-        ui_opt "8" "CONFIGURAR USUARIOS"  "asignar salida"
-        ui_blank
-        echo -e "${UI_PAD}${YL}── DIAGNÓSTICO ──${CR}"
-        ui_opt "9"  "DIAGNÓSTICO COMPLETO" "5 comprobaciones"
-        ui_opt "10" "PROBAR CONEXIÓN"      "ping al PC"
-        ui_opt "11" "VER IP DE SALIDA"     "normal vs casa"
-        ui_blank
-        ui_opt "13" "¿POR QUE NO HAY NET?" "cadena completa"
-        ui_blank
-        ui_opt_danger "12" "ELIMINAR CONFIGURACIÓN" "borra el gateway"
+        ui_opt "9" "AVANZADO"           "túnel · endpoint"
         ui_opt "0" "VOLVER"
         ui_solid
-        ui_prompt "Elige una opción [0-13]"
+        ui_prompt "Elige una opción [0-5 | 9]"
 
         case "$REPLY_UI" in
-            # Los pares activar/desactivar eran cuatro entradas de menu para dos
-            # estados: ahora cada uno es un interruptor que alterna segun el tag.
-            1)  wghome_install ;;
-            2)  if _wgh_is_up; then wghome_tunnel_down; else wghome_tunnel_up; fi ;;
-            3)  if _wgh_routing_is_active; then wghome_routing_off; else wghome_routing_on; fi ;;
-            4)  wghome_configure_fallback ;;
-            5)  wghome_show_pubkey ;;
-            6)  wghome_manage_nodes ;;
-            7)  wghome_view_users ;;
-            8)  wghome_manage_users ;;
-            9)  wghome_diagnose ;;
-            10) wghome_ping_peer ;;
-            11) wghome_check_ip ;;
-            13) wghome_why_no_internet ;;
-            12) wghome_remove ;;
-            0)  break ;;
-            *)  ui_err "Opción no válida."; sleep 1 ;;
+            1) wghome_manage_nodes ;;
+            2) wghome_assign_users ;;
+            3) if _wgh_routing_is_active; then wghome_routing_off; else wghome_routing_on; fi ;;
+            4) wghome_configure_fallback ;;
+            5) wghome_diagnose ;;
+            9) wghome_advanced_menu ;;
+            0|"") break ;;
+            *) ui_err "Opción no válida."; sleep 1 ;;
         esac
     done
 }
+
+# =========================================================
+# EJECUCION DIRECTA (servicios de systemd y guardian)
+#   wg_home.sh --watchdog        el vigilante (homevpn-watchdog)
+#   wg_home.sh --restore         rehace la salida tras un reinicio
+#   wg_home.sh --check-restore   la rehace solo si falta algo
+# Antes el servicio llamaba a '--watchdog' pero el script no
+# leia ese argumento: cargaba sus funciones y terminaba, systemd
+# lo relanzaba cada 5 s, y el vigilante no vigilaba nada.
+# =========================================================
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    case "${1:-}" in
+        --watchdog)      wghome_watchdog_loop ;;
+        --restore)       wghome_restore ;;
+        --check-restore) wghome_check_restore ;;
+        *)               echo "Uso: $0 --watchdog | --restore | --check-restore" >&2; exit 2 ;;
+    esac
+fi

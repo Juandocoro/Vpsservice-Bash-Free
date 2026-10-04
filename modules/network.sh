@@ -37,7 +37,12 @@ function extract_port() { _port_of tcp "$1"; }
 function refresh_ports() {
     _ss_snapshot
 
-    PORT_SSH=$(_port_of tcp "sshd")
+    # Se ignora lo que escucha solo en 127.0.0.1: tras cambiar el puerto
+    # SSH se deja el 22 en local para stunnel y WebSocket, y ese no es el
+    # puerto que hay que dar a los clientes.
+    PORT_SSH=$(echo "$_SS_TCP" | grep -iE "sshd" | awk '{print $4}' | grep -v '^127\.' \
+        | awk -F':' '{print $NF}' | grep -E '^[0-9]+$' | sort -un | head -n1)
+    [ -z "$PORT_SSH" ] && PORT_SSH=$(_port_of tcp "sshd")
     PORT_SSL=$(_port_of tcp "stunnel")
     PORT_DROPBEAR=$(_port_of tcp "dropbear")
     PORT_SQUID=$(_port_of tcp "squid")
@@ -95,57 +100,183 @@ function refresh_ports() {
 # =========================================================
 # PROTECCIÓN Y SINCRONIZACIÓN DEL CORTAFUEGOS (UFW)
 # =========================================================
+# Puertos que los servicios tienen CONFIGURADOS, esten corriendo o no.
+# Se leen de sus ficheros: si el cortafuegos solo abriera lo que escucha
+# en ese instante, un servicio que se estuviera reiniciando quedaria
+# bloqueado al volver, y sus clientes sin conexion hasta que alguien
+# sincronizara otra vez a mano.
+#   salida: una linea "puerto/proto" por regla
+_configured_ports() {
+    local p
+    p=$(grep -E '^\s*accept\s*=' /etc/stunnel/stunnel.conf 2>/dev/null | grep -oE '[0-9]+$')
+    [ -n "$p" ] && echo "$p/tcp"
+    p=$(grep -oE 'WS_PORT=[0-9]+' /etc/systemd/system/websocket_proxy.service 2>/dev/null | cut -d= -f2)
+    [ -n "$p" ] && echo "$p/tcp"
+    p=$(sed -n 's/^DROPBEAR_PORT=//p' /etc/default/dropbear 2>/dev/null | grep -oE '[0-9]+' | head -1)
+    [ -n "$p" ] && echo "$p/tcp"
+    p=$(grep -E '^\s*http_port' /etc/squid/squid.conf 2>/dev/null | grep -oE '[0-9]+' | head -1)
+    [ -n "$p" ] && echo "$p/tcp"
+    p=$(grep '"port"' /usr/local/etc/v2ray/config.json 2>/dev/null | head -1 | grep -oE '[0-9]+')
+    [ -n "$p" ] && echo "$p/tcp"
+    p=$(grep '"server_port"' /etc/shadowsocks-libev/config.json 2>/dev/null | grep -oE '[0-9]+')
+    [ -n "$p" ] && { echo "$p/tcp"; echo "$p/udp"; }
+    p=$(grep -E '^port ' /etc/openvpn/server.conf 2>/dev/null | awk '{print $2}')
+    if [ -n "$p" ]; then
+        local proto
+        proto=$(grep -E '^proto ' /etc/openvpn/server.conf 2>/dev/null | awk '{print $2}' | grep -oE 'tcp|udp')
+        echo "$p/${proto:-udp}"
+    fi
+    p=$(grep -E 'ListenPort' /etc/wireguard/wg0.conf 2>/dev/null | grep -oE '[0-9]+')
+    [ -n "$p" ] && echo "$p/udp"
+    if systemctl is-enabled --quiet slowdns 2>/dev/null; then echo "5300/udp"; echo "53/udp"; fi
+    # Nodos residenciales: cada nodo WireGuard escucha en su propio puerto.
+    local f
+    for f in /etc/wireguard/wg-home*.conf; do
+        [ -f "$f" ] || continue
+        p=$(grep -E 'ListenPort' "$f" 2>/dev/null | grep -oE '[0-9]+')
+        [ -n "$p" ] && echo "$p/udp"
+    done
+}
+
 function sync_firewall() {
-    echo -e "  ${YL}[*] Analizando puertos y aplicando reglas del cortafuegos (UFW)...${CR}"
-    
+    ui_info "Analizando puertos y aplicando reglas del cortafuegos (UFW)..."
+
     # 1. Asegurar instalación de UFW
     if ! command -v ufw &>/dev/null; then
-        echo -e "  ${YL}[*] Instalando UFW...${CR}"
+        ui_info "Instalando UFW..."
         apt-get update -y &>/dev/null
         apt-get install ufw -y &>/dev/null
     fi
+    command -v ufw &>/dev/null || { ui_err "No se pudo instalar UFW."; sleep 2; return 1; }
 
-    # Refrescar las variables de puertos actuales
     refresh_ports
 
-    # 2. Resetear el cortafuegos para limpieza absoluta (borra reglas externas)
-    echo "y" | ufw reset &>/dev/null
-    
-    # 3. Políticas Base
+    # 2. Sin 'ufw reset'. Antes se borraba todo y se reabria solo lo que
+    # escuchaba en ese momento: un servicio reiniciandose, los puertos de
+    # los nodos 2..N o el 'allow in on wg-homeN' se quedaban fuera, y con
+    # ellos sus clientes. Ahora solo se AÑADEN reglas; 'ufw allow' es
+    # idempotente, asi que repetirlo no duplica nada.
     ufw default deny incoming &>/dev/null
     ufw default allow outgoing &>/dev/null
-    
-    # 4. Reglas Inquebrantables (SSH, Web básica)
-    # Protegemos el puerto 22, pero también leemos si hay un puerto custom SSH ($PORT_SSH)
-    ufw allow 22/tcp &>/dev/null
-    ufw allow 80/tcp &>/dev/null
-    ufw allow 443/tcp &>/dev/null
-    
-    # 5. Escaneo dinámico: Habilitamos solo lo que esté activo en el script
-    [ -n "$PORT_SSH" ]          && ufw allow "$PORT_SSH"/tcp          &>/dev/null
-    [ -n "$PORT_SSL" ]          && ufw allow "$PORT_SSL"/tcp          &>/dev/null
-    [ -n "$PORT_UDPCUSTOM" ]    && ufw allow "$PORT_UDPCUSTOM"/udp    &>/dev/null
-    [ -n "$PORT_UDPCUSTOM" ]    && ufw allow "$PORT_UDPCUSTOM"/tcp    &>/dev/null
-    [ -n "$PORT_WS" ]           && ufw allow "$PORT_WS"/tcp           &>/dev/null
-    [ -n "$PORT_DROPBEAR" ]     && ufw allow "$PORT_DROPBEAR"/tcp     &>/dev/null
-    [ -n "$PORT_SQUID" ]        && ufw allow "$PORT_SQUID"/tcp        &>/dev/null
-    [ -n "$PORT_V2RAY" ]        && ufw allow "$PORT_V2RAY"/tcp        &>/dev/null
-    [ -n "$PORT_SS" ]           && ufw allow "$PORT_SS"/tcp           &>/dev/null
-    [ -n "$PORT_OVPN" ]         && ufw allow "$PORT_OVPN"/udp         &>/dev/null
-    [ -n "$PORT_WG" ]           && ufw allow "$PORT_WG"/udp           &>/dev/null
-    # FIX: SlowDNS necesita su puerto UDP y el 53 (DNS). Sin estas reglas el
-    # 'ufw reset' de arriba cerraba el tunel DNS en cada sincronizacion.
-    if [ -n "$PORT_SLOWDNS" ]; then
-        ufw allow "$PORT_SLOWDNS"/udp &>/dev/null
-        ufw allow 53/udp              &>/dev/null
-    fi
-    # wg-home — Gateway Residencial: solo abrir si está activa
-    [ -n "$PORT_WGHOME" ]       && ufw allow "$PORT_WGHOME"/udp       &>/dev/null
-    
-    # 6. Activar definitivamente
+
+    local -a reglas=("22/tcp" "80/tcp" "443/tcp")
+    [ -n "$PORT_SSH" ]       && reglas+=("$PORT_SSH/tcp")
+    [ -n "$PORT_SSL" ]       && reglas+=("$PORT_SSL/tcp")
+    [ -n "$PORT_UDPCUSTOM" ] && reglas+=("$PORT_UDPCUSTOM/udp" "$PORT_UDPCUSTOM/tcp")
+    [ -n "$PORT_WS" ]        && reglas+=("$PORT_WS/tcp")
+    [ -n "$PORT_DROPBEAR" ]  && reglas+=("$PORT_DROPBEAR/tcp")
+    [ -n "$PORT_SQUID" ]     && reglas+=("$PORT_SQUID/tcp")
+    [ -n "$PORT_V2RAY" ]     && reglas+=("$PORT_V2RAY/tcp")
+    [ -n "$PORT_SS" ]        && reglas+=("$PORT_SS/tcp")
+    [ -n "$PORT_OVPN" ]      && reglas+=("$PORT_OVPN/udp")
+    [ -n "$PORT_WG" ]        && reglas+=("$PORT_WG/udp")
+    [ -n "$PORT_SLOWDNS" ]   && reglas+=("$PORT_SLOWDNS/udp" "53/udp")
+    [ -n "$PORT_WGHOME" ]    && reglas+=("$PORT_WGHOME/udp")
+    local r
+    while read -r r; do [ -n "$r" ] && reglas+=("$r"); done < <(_configured_ports)
+
+    for r in $(printf '%s\n' "${reglas[@]}" | sort -u); do
+        ufw allow "$r" &>/dev/null
+    done
+
+    # La entrada POR el tunel de cada nodo (pings de prueba, trafico que
+    # inicia el nodo). Solo abre su interfaz, no Internet.
+    local ifc
+    for ifc in $(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | grep -E '^wg-home[0-9]*$'); do
+        ufw allow in on "$ifc" &>/dev/null
+    done
+
     echo "y" | ufw enable &>/dev/null
-    echo -e "  ${GR}[+] Cortafuegos seguro activado.${CR}"
+    ui_ok "Cortafuegos activo. Reglas existentes conservadas."
     sleep 2
+}
+
+# =========================================================
+# ESTADO DE LOS SERVICIOS
+# ---------------------------------------------------------
+# Distinguir "no instalado" de "instalado pero caido" es lo que
+# de verdad necesita el admin: lo segundo deja clientes sin
+# servicio y hay que saberlo nada mas abrir el panel.
+# =========================================================
+# Servicios del panel: unidad|nombre visible
+VPS_SERVICES=(
+    "stunnel4|SSL"
+    "dropbear|Dropbear"
+    "websocket_proxy|WebSocket"
+    "badvpn|BadVPN"
+    "udp-custom|UDP Custom"
+    "slowdns|SlowDNS"
+    "squid|Squid"
+    "v2ray|V2Ray"
+    "shadowsocks-libev|Shadowsocks"
+    "openvpn@server|OpenVPN"
+    "wg-quick@wg0|WireGuard"
+)
+
+# Servicios SysV: systemd no sabe si "estan habilitados", asi que se
+# deduce de que el instalador del panel dejo su configuracion.
+_svc_installed() {
+    case "$1" in
+        stunnel4) [ -f /etc/stunnel/stunnel.conf ] ;;
+        dropbear) grep -q '^NO_START=0' /etc/default/dropbear 2>/dev/null ;;
+        *)        systemctl is-enabled --quiet "$1" 2>/dev/null ;;
+    esac
+}
+
+# _svc_state <unidad> -> on | down | off
+_svc_state() {
+    if systemctl is-active --quiet "$1" 2>/dev/null; then echo on
+    elif systemctl is-enabled --quiet "$1" 2>/dev/null || _svc_installed "$1"; then echo down
+    else echo off; fi
+}
+
+# Etiqueta para la fabrica de protocolos
+ui_tag_svc() {
+    local port="$1" unit="$2"
+    if [ -n "$port" ]; then echo -e "${GR}[ ON  ]${CR}"
+    elif [ "$(_svc_state "$unit")" = "down" ]; then echo -e "${RD}[CAIDO]${CR}"
+    else echo -e "${DM}[ OFF ]${CR}"; fi
+}
+
+# Nombres de los servicios instalados que estan caidos ahora mismo.
+# Dos llamadas a systemctl para todos (imprime un estado por unidad,
+# en orden), no dos por servicio: esto se pinta en cada redibujado.
+_services_down() {
+    command -v systemctl &>/dev/null || return 0
+    local -a units=()
+    local e
+    for e in "${VPS_SERVICES[@]}"; do units+=("${e%%|*}.service"); done
+    # 'show' devuelve un bloque por unidad aunque no exista (is-enabled,
+    # en cambio, no imprime nada para una unidad inexistente y descuadraria
+    # la lista).
+    systemctl show -p Id -p ActiveState -p UnitFileState "${units[@]}" 2>/dev/null \
+        | _parse_services_down
+}
+
+# Lee la salida de 'systemctl show' y saca los nombres visibles de los
+# servicios habilitados que no estan activos. Separada para poder probarla.
+_parse_services_down() {
+    local line id="" act="" ufs="" e
+    _emit() {
+        # Los servicios con script SysV (stunnel4, dropbear en algunas
+        # versiones) salen como 'generated': se miran por su config.
+        [ "$ufs" = "generated" ] && _svc_installed "${id%.service}" && ufs="enabled"
+        if [ -n "$id" ] && [ "$ufs" = "enabled" ] && [ "$act" != "active" ] && [ "$act" != "activating" ] && [ "$act" != "reloading" ]; then
+            for e in "${VPS_SERVICES[@]}"; do
+                [ "${e%%|*}.service" = "$id" ] && echo "${e#*|}"
+            done
+        fi
+        id=""; act=""; ufs=""
+    }
+    while IFS= read -r line; do
+        case "$line" in
+            Id=*)            id="${line#Id=}" ;;
+            ActiveState=*)   act="${line#ActiveState=}" ;;
+            UnitFileState=*) ufs="${line#UnitFileState=}" ;;
+            "")              _emit ;;
+        esac
+    done
+    _emit
 }
 
 
@@ -186,7 +317,7 @@ _uptime_short() {
 _port_grid() {
     local entries=("$@")
     local total=${#entries[@]}
-    [ "$total" -eq 0 ] && { echo -e "${UI_PAD}${RD}Sin protocolos activos — instala uno desde la opcion [2]${CR}"; return; }
+    [ "$total" -eq 0 ] && { echo -e "${UI_PAD}${RD}Sin protocolos activos — instala uno en CONFIGURACIÓN > FÁBRICA${CR}"; return; }
 
     local w=$(( (UI_W - 4) / 3 ))
     local i=0
@@ -278,4 +409,41 @@ function show_network_status() {
     [ -n "$PORT_WGHOME" ]     && entries+=("WG-Home|$PORT_WGHOME")
 
     _port_grid "${entries[@]}"
+
+    _show_alerts
+}
+
+# =========================================================
+# ALERTAS — lo que deja o puede dejar clientes sin servicio
+# ---------------------------------------------------------
+# Se pinta en el tablero para que se vea nada mas abrir el
+# panel, sin tener que ir a buscarlo a cada submenu.
+# =========================================================
+_alert_lines() {
+    local caidos nodos n
+    caidos=$(_services_down | paste -sd',' - | sed 's/,/, /g')
+    [ -n "$caidos" ] && echo "${RD}✗ Caído:${CR} ${caidos} ${DM}(el guardián lo reintenta cada minuto)${CR}"
+
+    if [ -f /etc/wireguard/homevpn-routing.on ]; then
+        nodos=$(grep '=down$' /run/homevpn-health 2>/dev/null | cut -d= -f1 | paste -sd',' - | sed 's/,/, /g')
+        [ -n "$nodos" ] && echo "${YL}! Nodo caído:${CR} ${nodos} ${DM}(sus usuarios usan el respaldo)${CR}"
+        systemctl is-active --quiet homevpn-watchdog 2>/dev/null || \
+            echo "${RD}✗ Vigilante de nodos detenido:${CR} ${DM}si un nodo cae, sus usuarios se quedan sin Internet${CR}"
+    fi
+
+    n="${USR_VENCEN_HOY:-0}"
+    [ "$n" -gt 0 ] 2>/dev/null && echo "${YL}! ${n} cuenta(s) vencen hoy${CR}"
+    n="${USR_VENCIDAS:-0}"
+    [ "$n" -gt 0 ] 2>/dev/null && echo "${DM}· ${n} cuenta(s) vencida(s): renuévalas o elimínalas${CR}"
+}
+
+_show_alerts() {
+    local lines l
+    lines=$(_alert_lines)
+    ui_rule
+    if [ -z "$lines" ]; then
+        echo -e "${UI_PAD}${GR}✓ Todo funcionando${CR}"
+    else
+        while IFS= read -r l; do echo -e "${UI_PAD}${l}"; done <<<"$lines"
+    fi
 }

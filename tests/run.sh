@@ -54,6 +54,14 @@ done <<<"$USED"
 if [ -z "$MISSING" ]; then ok "todas las funciones internas existen"
 else bad "hay funciones sin definir" "$MISSING"; fi
 
+# Una funcion definida dos veces no da error: gana la ULTIMA en
+# silencio, y un menu viejo puede tapar al nuevo sin que se note.
+# shellcheck disable=SC2086
+DUP=$(for f in main.sh modules/*.sh modules/installers/wg_home.sh; do
+        grep -oE '^(function )?[a-zA-Z_][a-zA-Z0-9_]*\(\)' "$f"; done | sed 's/function //' | sort | uniq -d)
+if [ -z "$DUP" ]; then ok "ninguna funcion definida dos veces"
+else bad "funciones definidas dos veces" "$DUP"; fi
+
 # =========================================================
 group "Direcciones fijas en el codigo"
 # ---------------------------------------------------------
@@ -192,6 +200,137 @@ is "sin respaldo definido, vacio"   "$(_wgh_node_backup_of pc)"    ""
 _wgh_node_down() { :; }
 _wgh_nodes_del pc
 is "el respaldo huerfano se limpia" "$(_wgh_node_backup_of movil)" ""
+
+# =========================================================
+group "El vigilante arranca de verdad"
+# ---------------------------------------------------------
+# El servicio llamaba a 'wg_home.sh --watchdog' y el script no
+# leia el argumento: cargaba funciones y terminaba. El panel
+# decia [ON] y no se vigilaba nada.
+# =========================================================
+grep -qE -- '--watchdog\)\s+wghome_watchdog_loop' modules/installers/wg_home.sh \
+    && ok "--watchdog lanza el bucle del vigilante" || bad "--watchdog no lanza el vigilante"
+grep -qE -- '--restore\)\s+wghome_restore' modules/installers/wg_home.sh \
+    && ok "--restore rehace la salida tras un reinicio" || bad "falta --restore"
+bash modules/installers/wg_home.sh --nada >/dev/null 2>&1; rc=$?
+is "un argumento desconocido no se ignora en silencio" "$rc" "2"
+grep -q 'wg_home.sh --watchdog' modules/installers/wg_home.sh \
+    && ok "la unidad de systemd usa ese argumento" || bad "la unidad no llama a --watchdog"
+
+# =========================================================
+group "Registro con respaldo (5 campos)"
+# ---------------------------------------------------------
+# Al fijar un respaldo todas las lineas pasan a tener 5 campos.
+# Un 'read nombre clave idx tipo' metia "socks|" en el tipo y un
+# movil se trataba como WireGuard en todas partes.
+# =========================================================
+: > "$WGH_NODES_CONF"
+_wgh_nodes_add pc    "$K1" wg    >/dev/null
+_wgh_nodes_add movil "$K2" socks >/dev/null
+_wgh_node_set_backup pc movil
+is "el tipo se lee por indice (wg)"     "$(_wgh_idx_type 1)" "wg"
+is "el tipo se lee por indice (socks)"  "$(_wgh_idx_type 2)" "socks"
+tipos=$(while IFS='|' read -r n k i t _; do echo "$t"; done < <(_wgh_nodes_list) | paste -sd, -)
+is "leer el registro no arrastra el 5o campo al tipo" "$tipos" "wg,socks"
+if grep -nE "IFS='\|' read -r [a-z ]+; do" modules/installers/wg_home.sh | grep -vE ' (_|bk); do' >/dev/null; then
+    bad "queda algun 'read' del registro sin variable de cola"
+else
+    ok "todas las lecturas del registro toleran campos de mas"
+fi
+
+group "Desvio al respaldo"
+is "respaldo PC: regla de la marca del caido a la tabla del respaldo" \
+   "$(_wgh_backup_cmd 2 1 wg)" "ip rule add fwmark 0x772 table 200 priority 1402"
+is "respaldo movil: REDIRECT de la marca del caido a su redsocks" \
+   "$(_wgh_backup_cmd 1 2 socks)" \
+   "iptables -t nat -A OUTPUT -p tcp -m mark --mark 0x77 -m comment --comment HOMEVPN_SOCKS_BK -j REDIRECT --to-ports 12302"
+
+# Reconciliar: se registran las llamadas en vez de tocar el sistema.
+LLAMADAS=""
+_wgh_node_path_on()  { LLAMADAS="$LLAMADAS on$1"; }
+_wgh_node_path_off() { LLAMADAS="$LLAMADAS off$1"; }
+_wgh_backup_on()     { LLAMADAS="$LLAMADAS bkon$1"; }
+_wgh_backup_off()    { LLAMADAS="$LLAMADAS bkoff$1"; }
+WGH_ROUTING_FLAG="$TMP/routing.on"; touch "$WGH_ROUTING_FLAG"
+declare -A EST=([pc]=down [movil]=up)
+_wgh_reconcile EST
+is "nodo caido con respaldo vivo: se cierra y se desvia" "$LLAMADAS" " off1 bkon1 on2 bkoff2"
+LLAMADAS=""; EST[movil]=down
+_wgh_reconcile EST
+is "si el respaldo tambien cae: a la IP del VPS" "$LLAMADAS" " off1 bkoff1 off2 bkoff2"
+LLAMADAS=""; EST=([pc]=up [movil]=up)
+_wgh_reconcile EST
+is "al recuperarse vuelve a su nodo y se quita el desvio" "$LLAMADAS" " on1 bkoff1 on2 bkoff2"
+rm -f "$WGH_ROUTING_FLAG"; LLAMADAS=""
+_wgh_reconcile EST
+is "con la salida apagada no se toca nada" "$LLAMADAS" ""
+
+group "Keepalive 'off' del VPS"
+# El VPS tiene PersistentKeepalive = 0 y el kernel lo escribe 'off'.
+# Antes eso daba 12s de margen con nodos que hablan cada 25s.
+is "'off' se trata como 25s -> 55s de margen" "$(_wgh_silence_for off)" "55"
+_wgh_measure_calc 500 off 1030 500 1000
+is "30s de silencio con keepalive 'off': sigue vivo" "$MED_OK" "1"
+_wgh_measure_calc 500 off 1030 500 1000 20
+is "si contesta a la sonda, a los 20s se da por caido" "$MED_OK" "0"
+_wgh_measure_calc 501 off 1030 500 1000 20
+is "bytes nuevos: vivo, y se apunta la hora" "$MED_OK $MED_TS" "1 1030"
+
+# =========================================================
+group "Selector de salida (alta de cuentas)"
+# =========================================================
+_socks_reverse_up() { return 1; }; _wgh_node_is_up() { return 1; }
+_wgh_pick_exit "" <<<"" >/dev/null 2>&1;  is "Enter = IP del VPS"      "$PICK_NODE" ""
+_wgh_pick_exit "" <<<"2" >/dev/null 2>&1; is "por numero elige el nodo" "$PICK_NODE" "movil"
+_wgh_pick_exit "" <<<"pc" >/dev/null 2>&1; is "tambien por nombre"     "$PICK_NODE" "pc"
+_wgh_pick_exit "" <<<$'9\n1' >/dev/null 2>&1; is "un numero fuera de rango se vuelve a pedir" "$PICK_NODE" "pc"
+_wgh_pick_exit "" <<<"c" >/dev/null 2>&1 && bad "cancelar no cancela" || ok "c cancela"
+
+# =========================================================
+group "Auto-killer: solo cierra lo que sobra"
+# ---------------------------------------------------------
+# Antes, al pasarse del limite, se cerraban TODAS las sesiones:
+# una sesion fantasma + la reconexion = cliente cortado en bucle.
+# =========================================================
+source modules/killer.sh
+SES=$'500 111\n5 222\n90 333'
+is "limite 1: se cierran las dos mas antiguas"  "$(_killer_pick 1 <<<"$SES" | sort | paste -sd, -)" "111,333"
+is "limite 2: solo la mas antigua"              "$(_killer_pick 2 <<<"$SES")" "111"
+is "dentro del limite no se cierra nada"        "$(_killer_pick 3 <<<"$SES")" ""
+grep -q 'grep -v "127' modules/killer.sh && bad "vuelve a ignorar las conexiones locales (WS/SSL)" \
+    || ok "cuenta tambien las conexiones de WebSocket y SSL"
+
+# =========================================================
+group "Servicios caidos"
+# =========================================================
+source modules/network.sh
+SHOW=$'Id=stunnel4.service\nActiveState=active\nUnitFileState=generated\n\nId=websocket_proxy.service\nActiveState=failed\nUnitFileState=enabled\n\nId=squid.service\nActiveState=inactive\nUnitFileState=disabled\n\nId=v2ray.service\nActiveState=inactive\nUnitFileState=\n'
+is "detecta el habilitado y parado, ignora el resto" "$(_parse_services_down <<<"$SHOW")" "WebSocket"
+
+group "Lo que podia dejar a los clientes sin servicio"
+grep -vE '^\s*#' modules/network.sh | grep -q 'ufw reset' && bad "sync_firewall vuelve a hacer 'ufw reset'" \
+    || ok "el cortafuegos ya no borra reglas ajenas"
+sed -n '/--cron/,/exit 0/p' modules/optimize.sh | grep -qE 'swapoff|drop_caches' \
+    && bad "la limpieza automatica vacia swap o cache" || ok "la limpieza automatica no toca swap ni cache"
+sed -n '/^ssh_restart()/,/^}/p' modules/system.sh | grep -q 'sshd -t' \
+    && ok "sshd no se reinicia sin validar su configuracion" || bad "ssh_restart no valida con sshd -t"
+grep -q 'ListenAddress 127.0.0.1:22' modules/system.sh \
+    && ok "al cambiar el puerto SSH, el 22 local sigue para SSL y WebSocket" || bad "cambiar el puerto SSH deja fuera a SSL/WS"
+_socks_sshd_conf | grep -q 'ClientAliveInterval' \
+    && ok "un movil sin cobertura se desconecta y libera su puerto" || bad "falta ClientAlive en los nodos movil"
+
+# =========================================================
+group "Renovar suma, no resta"
+# =========================================================
+source modules/users.sh 2>/dev/null
+is "cuenta vigente: los dias se suman a su fecha" "$(_fecha_renovada 2026-10-10 30 2026-10-04)" "2026-11-09"
+is "cuenta vencida: los dias cuentan desde hoy"   "$(_fecha_renovada 2026-09-01 30 2026-10-04)" "2026-11-03"
+is "sin caducidad: desde hoy"                     "$(_fecha_renovada never 30 2026-10-04)"      "2026-11-03"
+is "vence hoy: se suma a hoy"                     "$(_fecha_renovada 2026-10-04 1 2026-10-04)"  "2026-10-05"
+
+group "Nombres de cuenta"
+for n in cliente1 juan_p a-b; do _usuario_valido "$n" && ok "acepta '$n'" || bad "rechaza '$n'"; done
+for n in Cliente 1abc ab "con espacio" 'x;rm'; do _usuario_valido "$n" && bad "acepta '$n'" || ok "rechaza '$n'"; done
 
 # =========================================================
 group "Resolucion de cuentas"

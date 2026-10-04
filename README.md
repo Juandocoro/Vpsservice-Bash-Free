@@ -43,28 +43,48 @@ menu
 ────────────────────────────────────────────────────────────────
   ▪ SSH: 22           ▸ ▪ Dropbear: 442     ▸ ▪ SSL: 443
   ▪ WebSocket: 80     ▸ ▪ BadVPN: 7300      ▸ ▪ V2Ray: 8080
+────────────────────────────────────────────────────────────────
+  ✓ Todo funcionando
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  [1] ▸ ADMINISTRAR CUENTAS     │ crear · editar · monitor
-  [2] ▸ CONFIGURACIÓN DEL VPS   │ protocolos · sistema
+  [1] ▸ CREAR CUENTA            │ usuario nuevo
+  [2] ▸ RENOVAR CUENTA          │ sumar días
+  [3] ▸ CONECTADOS AHORA        │ monitor
+  [4] ▸ DATOS DE CONEXIÓN       │ para el cliente
+
+  [5] ▸ ADMINISTRAR CUENTAS     │ clave · salida · borrar
+  [6] ▸ CONFIGURACIÓN           │ protocolos · sistema
 
   [0] ▸ SALIR
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Digita una acción [0-2] »
+  Digita una acción [0-6] »
 ```
 
-El menú principal solo tiene dos destinos: las cuentas, que es el uso diario,
-y la configuración, que agrupa el resto en tres bloques —**protocolos**,
-**sistema** y **panel**:
+Lo que se hace a diario está a un toque desde el menú principal. Debajo del
+tablero, una línea de **alertas** avisa de lo que puede dejar a un cliente sin
+servicio: un protocolo instalado que está caído, un nodo residencial caído, el
+vigilante detenido o cuentas que vencen hoy.
+
+Al **crear una cuenta** el panel pide nombre, contraseña (Enter genera una),
+días (30 por defecto) y dispositivos (1 por defecto), y pregunta **por dónde va
+a salir a Internet**: la IP del VPS o uno de los nodos residenciales. Al
+terminar muestra una ficha con todo lo que hay que mandarle al cliente.
+**Renovar** suma los días a lo que le queda a la cuenta, no los cuenta desde hoy.
+
+La configuración agrupa el resto en tres bloques —**protocolos**, **sistema**
+y **panel**:
 
 ```
 ── PROTOCOLOS ──          ── SISTEMA ──             ── PANEL ──
  Fábrica de túneles        Acceso root               Actualizar script
- Datos de conexión         Puerto SSH                Arranque automático
- Gateway residencial       Cortafuegos UFW           Reiniciar servidor
+ Gateway residencial       Puerto SSH                Arranque automático
+                           Cortafuegos UFW           Reiniciar servidor
                            Zona horaria              Desinstalar panel
                            Optimizar servidor
 ```
+
+En la fábrica, cada protocolo muestra `[ ON ]`, `[ OFF ]` (no instalado) o
+`[CAIDO]` (instalado pero parado).
 
 Todo el aspecto gráfico vive en un único módulo, `modules/ui.sh`: paleta,
 marcos, celdas alineadas, barras de carga y etiquetas `[ ON ]` / `[ OFF ]`.
@@ -85,6 +105,7 @@ modules/
   users.sh                  Alta, baja y monitor de cuentas
   optimize.sh               Limpieza de RAM, swap, caché y logs
   killer.sh                 Auto-killer de cuotas (cron, cada minuto)
+  guardian.sh               Reinicia los servicios caídos (cron, cada minuto)
   installers/               Un script por protocolo (11 en total)
 ```
 
@@ -133,7 +154,7 @@ pegando su clave pública. El nodo (proyecto
 [`Vpsservice-Node-Gateway`](../Vpsservice-Node-Gateway), modo SOCKS) genera su
 par SSH y muestra su clave; el panel la autoriza.
 
-1. En el panel: **Gateway residencial → Gestionar nodos → Registrar nodo móvil**.
+1. En el panel: **Gateway residencial → Nodos → Registrar nodo móvil**.
    Reserva el nodo y te muestra los datos a configurar en el celular (host,
    puerto SSH, usuario `snodeN` y puerto SOCKS).
 2. En el celular (Android, sin root): instala **Termux** y el nodo, ejecuta
@@ -146,6 +167,43 @@ El usuario del nodo es una cuenta de sistema (uid&lt;1000) **sin contraseña**
 (solo entra con su llave), restringida a solo reenvío remoto, así que no aparece
 en la lista de cuentas ni puede abrir una shell. El DNS (UDP) sigue
 resolviéndose en el VPS; las conexiones TCP salen por el celular.
+
+---
+
+### Que nadie se quede sin Internet
+
+Al encender la salida residencial se activa también el **vigilante**
+(`homevpn-watchdog`). Si un nodo deja de responder, sus usuarios pasan solos a
+su nodo de **respaldo** (si se le ha fijado uno y está vivo) y, si no, a la IP
+del VPS. Cuando el nodo vuelve, regresan a él.
+
+```
+nodo preferido  ->  nodo de respaldo  ->  IP del VPS
+```
+
+- Un nodo PC se da por caído en 20-60 s y un móvil en unos 30 s.
+- La salida residencial se restaura sola si el VPS se reinicia
+  (`homevpn-rules`).
+- El guardián comprueba cada minuto que las reglas sigan puestas y que los
+  servicios instalados estén vivos, y los levanta si no.
+- Los respaldos se fijan en **Gateway residencial → Nunca sin Internet**.
+- **Gateway residencial → Diagnóstico** recorre la cadena entera y dice en qué
+  eslabón se corta.
+
+---
+
+## Protección del servicio
+
+| Riesgo | Qué hace el panel |
+|---|---|
+| Se cae un protocolo (stunnel, WebSocket, Dropbear…) | El guardián lo reinicia en menos de un minuto y lo anota en `/var/log/vpsservice-guardian.log` |
+| Un cliente supera su límite de dispositivos | El auto-killer cierra solo las sesiones que sobran, las más antiguas |
+| Sesiones fantasma (el móvil perdió la señal) | `ClientAliveInterval` las cierra en unos 2 minutos |
+| Un cambio rompe la configuración de SSH | Se valida con `sshd -t` antes de aplicarla y, si falla, se vuelve a la anterior |
+| Se cambia el puerto SSH | El 22 sigue escuchando en local para que SSL y WebSocket no se caigan |
+| Sincronizar el cortafuegos | Solo añade reglas: no borra las de los nodos ni las del admin |
+| Optimización automática | Solo limpia disco: no vacía la swap ni la caché |
+| Una actualización con errores | Se valida con `bash -n` antes de instalarla, y se puede volver a la versión anterior |
 
 ---
 

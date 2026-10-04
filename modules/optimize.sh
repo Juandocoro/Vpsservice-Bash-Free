@@ -1,21 +1,45 @@
 #!/bin/bash
 # Módulo de Optimización de VPS — vpsservice Script FREE
 
+# =========================================================
+# LIMPIEZA SEGURA
+# ---------------------------------------------------------
+# Lo que NO se hace en automatico, y por que:
+#  - swapoff -a: en un VPS de 1 GB con swap ocupada obliga al kernel
+#    a meter todo en RAM de golpe; si no cabe, el OOM-killer mata
+#    procesos, y los primeros suelen ser los sshd y proxies de los
+#    clientes. Una "optimizacion" que corta conexiones.
+#  - drop_caches cada hora: vacia la cache de disco y el servidor
+#    va mas lento justo despues. Linux ya libera esa memoria solo
+#    cuando un programa la pide.
+# =========================================================
+
+# Vaciar la swap solo si cabe holgada en la RAM libre.
+_swap_flush_safe() {
+    local swap_used avail
+    swap_used=$(free -m | awk '/Swap:/ {print $3}')
+    avail=$(free -m | awk '/Mem:/ {print $7}')
+    [ "${swap_used:-0}" -gt 0 ] || return 0
+    if [ "${avail:-0}" -gt $(( swap_used * 2 + 100 )) ]; then
+        swapoff -a && swapon -a
+        return 0
+    fi
+    return 1
+}
+
+_clean_disk() {
+    apt-get clean -y >/dev/null 2>&1
+    apt-get autoremove -y >/dev/null 2>&1
+    find /var/log -type f -name "*.gz" -delete >/dev/null 2>&1
+    find /var/log -type f -name "*.[0-9]" -delete >/dev/null 2>&1
+    # 3 dias / 200 MB: suficiente para diagnosticar una caida de ayer.
+    journalctl --vacuum-time=3d --vacuum-size=200M >/dev/null 2>&1
+}
+
 # Si el script se ejecuta directamente (ej: por cron)
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    # Ejecución en segundo plano (silenciosa)
-    if [ "$1" == "--cron" ]; then
-        sync; echo 3 > /proc/sys/vm/drop_caches
-        if [ "$(swapon --show 2>/dev/null | wc -l)" -gt 0 ]; then
-            swapoff -a && swapon -a
-        fi
-        apt-get clean -y >/dev/null 2>&1
-        apt-get autoremove -y >/dev/null 2>&1
-        find /var/log -type f -name "*.gz" -delete >/dev/null 2>&1
-        find /var/log -type f -name "*.[0-9]" -delete >/dev/null 2>&1
-        journalctl --vacuum-time=1d >/dev/null 2>&1
-        exit 0
-    fi
+    # En automatico solo se limpia disco: nada que pueda cortar sesiones.
+    [ "$1" == "--cron" ] && _clean_disk
     exit 0
 fi
 
@@ -26,22 +50,18 @@ _OPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 source "$_OPT_DIR/ui.sh"
 
 do_optimize() {
-    ui_info "Limpiando caché de RAM (PageCache, Dentries, Inodes)..."
-    sync; echo 3 > /proc/sys/vm/drop_caches
+    ui_info "Liberando caché de RAM (una sola vez)..."
+    sync; echo 1 > /proc/sys/vm/drop_caches
 
-    ui_info "Vaciando memoria SWAP (puede demorar unos segundos)..."
-    if [ "$(swapon --show 2>/dev/null | wc -l)" -gt 0 ]; then
-        swapoff -a && swapon -a
+    ui_info "Revisando la memoria SWAP..."
+    if _swap_flush_safe; then
+        ui_ok "SWAP revisada."
+    else
+        ui_warn "La SWAP no cabe en la RAM libre: se deja como está para no cortar sesiones."
     fi
 
-    ui_info "Limpiando caché de APT y paquetes huérfanos..."
-    apt-get clean -y >/dev/null 2>&1
-    apt-get autoremove -y >/dev/null 2>&1
-
-    ui_info "Limpiando logs antiguos para liberar disco..."
-    find /var/log -type f -name "*.gz" -delete >/dev/null 2>&1
-    find /var/log -type f -name "*.[0-9]" -delete >/dev/null 2>&1
-    journalctl --vacuum-time=1d >/dev/null 2>&1
+    ui_info "Limpiando caché de APT, paquetes huérfanos y logs antiguos..."
+    _clean_disk
 
     ui_ok "¡Servidor optimizado con éxito!"
 }
@@ -82,7 +102,7 @@ optimize_menu() {
         ui_blank
 
         ui_opt "1" "OPTIMIZAR AHORA"    "manual"
-        ui_opt "2" "PROGRAMAR LIMPIEZA" "automática"  "$ESTADO_AUTO"
+        ui_opt "2" "PROGRAMAR LIMPIEZA" "solo disco"  "$ESTADO_AUTO"
         ui_opt "3" "DESACTIVAR AUTO"    "quitar cron"
         ui_blank
         ui_opt "0" "VOLVER"

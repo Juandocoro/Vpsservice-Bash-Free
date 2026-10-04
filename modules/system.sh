@@ -27,8 +27,51 @@ ssh_set() {
     fi
 }
 
+# ---------------------------------------------------------
+# Copia de seguridad y vuelta atras de la configuracion de sshd.
+# Un sshd_config roto no avisa hasta el reinicio, y entonces ya
+# es tarde: SSH cae para TODOS los clientes y para el admin. Por
+# eso cada cambio se hace sobre una copia y se valida antes.
+# ---------------------------------------------------------
+SSHD_SNAP="/var/lib/vpsservice/sshd-backup"
+
+ssh_snapshot() {
+    mkdir -p "$SSHD_SNAP" 2>/dev/null || return 0
+    rm -rf "${SSHD_SNAP:?}/"* 2>/dev/null
+    cp -p "$SSHD_CONF" "$SSHD_SNAP/sshd_config" 2>/dev/null
+    [ -d /etc/ssh/sshd_config.d ] && cp -rp /etc/ssh/sshd_config.d "$SSHD_SNAP/" 2>/dev/null
+    return 0
+}
+
+ssh_rollback() {
+    [ -f "$SSHD_SNAP/sshd_config" ] || return 1
+    cp -p "$SSHD_SNAP/sshd_config" "$SSHD_CONF"
+    if [ -d "$SSHD_SNAP/sshd_config.d" ]; then
+        rm -rf /etc/ssh/sshd_config.d
+        cp -rp "$SSHD_SNAP/sshd_config.d" /etc/ssh/
+    fi
+}
+
+# Huella de la configuracion efectiva: si no cambia, no hay que
+# tocar el servicio.
+ssh_conf_sum() {
+    cat "$SSHD_CONF" /etc/ssh/sshd_config.d/*.conf 2>/dev/null | md5sum | cut -d' ' -f1
+}
+
+# Reinicia sshd SOLO si la configuracion es valida. Si no lo es,
+# deshace el cambio y deja el servicio como estaba. Se usa reload:
+# sshd se re-ejecuta y las sesiones abiertas no se tocan.
 ssh_restart() {
-    systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null
+    local err
+    if command -v sshd &>/dev/null && ! err=$(sshd -t 2>&1); then
+        echo -e "${UI_PAD:-  }${RD:-}[-]${CR:-} Configuracion SSH invalida: ${err}" >&2
+        if ssh_rollback && sshd -t &>/dev/null; then
+            echo -e "${UI_PAD:-  }${YL:-}[!]${CR:-} Se ha vuelto a la configuracion anterior. SSH sigue funcionando." >&2
+        fi
+        return 1
+    fi
+    systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || \
+        systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null
 }
 
 # =========================================================
@@ -38,7 +81,9 @@ ssh_restart() {
 # stunnel_installer.sh, con el riesgo de que se desincronizaran.
 # =========================================================
 ssh_apply_tunnel_config() {
-    local new_user="${1:-}"
+    local new_user="${1:-}" before
+    before=$(ssh_conf_sum)
+    ssh_snapshot
 
     # CAPA 1 — sshd_config principal
     ssh_set "$SSHD_CONF" "UsePAM"                          "yes"
@@ -71,20 +116,35 @@ ssh_apply_tunnel_config() {
         fi
     fi
 
-    # CAPA 4 — drop-in propio, que gana sobre el resto
+    # CAPA 4 — drop-in propio, que gana sobre el resto. Se conservan
+    # las lineas que ponen otras opciones del panel (Port, ListenAddress,
+    # PermitRootLogin): reescribirlo a ciegas deshacia esos cambios.
     if [ -d /etc/ssh/sshd_config.d ]; then
         rm -f /etc/ssh/sshd_config.d/99-vpsservice.conf 2>/dev/null
-        cat > "$SSHD_DROPIN" <<'SSHEOF'
+        local keep
+        keep=$(grep -E '^(Port|ListenAddress|PermitRootLogin) ' "$SSHD_DROPIN" 2>/dev/null)
+        {
+            cat <<'SSHEOF'
 PasswordAuthentication yes
 KbdInteractiveAuthentication yes
 ChallengeResponseAuthentication yes
 AllowTcpForwarding yes
 GatewayPorts no
 X11Forwarding no
+# Sesiones fantasma: si el movil del cliente pierde la senal, sin
+# esto la sesion sigue contando para su limite durante horas y el
+# auto-killer le corta al reconectar. Asi se cierra en ~2 minutos.
+ClientAliveInterval 30
+ClientAliveCountMax 4
 SSHEOF
+            [ -n "$keep" ] && echo "$keep"
+        } > "$SSHD_DROPIN"
     fi
 
-    ssh_restart
+    # Solo se recarga sshd si de verdad cambio algo. Antes se reiniciaba
+    # en cada alta de cuenta sin motivo.
+    [ "$(ssh_conf_sum)" != "$before" ] && ssh_restart
+    return 0
 }
 
 # =========================================================
@@ -146,6 +206,7 @@ _root_enable() {
     local pass="$REPLY_UI"
     if [ -z "$pass" ]; then ui_err "Contraseña vacía. Operación cancelada."; sleep 2; return; fi
 
+    ssh_snapshot
     echo "root:$pass" | chpasswd
     # Un hash con prefijo '!' deja la cuenta bloqueada aunque tenga contraseña.
     passwd -u root &>/dev/null
@@ -167,6 +228,7 @@ _root_enable() {
         sed -i 's|^.*command="echo .Please login as the user.*ssh-|ssh-|' /root/.ssh/authorized_keys
         sed -i 's|^no-port-forwarding,[^ ]* ||' /root/.ssh/authorized_keys
     fi
+    sed -i '/^PermitRootLogin/d' "$SSHD_DROPIN" 2>/dev/null
     echo "PermitRootLogin yes" >> "$SSHD_DROPIN" 2>/dev/null
 
     ssh_restart
@@ -200,6 +262,7 @@ _root_disable() {
     ui_prompt "¿Continuar? (s/n)"
     [[ "$REPLY_UI" != "s" && "$REPLY_UI" != "S" ]] && { ui_info "Cancelado."; sleep 1; return; }
 
+    ssh_snapshot
     ssh_set "$SSHD_CONF" "PermitRootLogin" "no"
     sed -i '/^PermitRootLogin/d' "$SSHD_DROPIN" 2>/dev/null
     ssh_restart
@@ -210,7 +273,29 @@ _root_disable() {
 
 # =========================================================
 # PUERTO SSH
+# ---------------------------------------------------------
+# Stunnel (SSL) y el proxy WebSocket entregan el trafico de los
+# clientes a 127.0.0.1:22. Si el puerto publico cambia y el 22
+# deja de escuchar, todos esos clientes se caen a la vez. Por eso
+# el 22 se mantiene SOLO en la interfaz local: los tuneles siguen
+# funcionando y desde fuera el SSH ya solo entra por el puerto nuevo.
 # =========================================================
+_ssh_listen_lines() {
+    local port="$1"
+    [ -d /etc/ssh/sshd_config.d ] || return 0
+    sed -i -E '/^(Port|ListenAddress) /d' "$SSHD_DROPIN" 2>/dev/null
+    echo "Port $port" >> "$SSHD_DROPIN"
+    if [ "$port" != "22" ]; then
+        {
+            echo "ListenAddress 0.0.0.0:${port}"
+            # IPv6 solo si el sistema lo tiene: un bind fallido no tumba sshd,
+            # pero ensucia el log en cada arranque.
+            [ -f /proc/net/if_inet6 ] && echo "ListenAddress [::]:${port}"
+            echo "ListenAddress 127.0.0.1:22"
+        } >> "$SSHD_DROPIN"
+    fi
+}
+
 ssh_port_config() {
     clear
     print_title 2>/dev/null || true
@@ -236,20 +321,27 @@ ssh_port_config() {
     # cambio, la proxima conexion queda fuera y hay que entrar por consola.
     command -v ufw &>/dev/null && ufw allow "$nuevo"/tcp &>/dev/null
 
+    ssh_snapshot
     ssh_set "$SSHD_CONF" "Port" "$nuevo"
-    if [ -d /etc/ssh/sshd_config.d ]; then
-        sed -i '/^Port /d' "$SSHD_DROPIN" 2>/dev/null
-        echo "Port $nuevo" >> "$SSHD_DROPIN"
-    fi
+    _ssh_listen_lines "$nuevo"
+
     # Ubuntu 22.10+ arranca sshd por socket: sin esto el puerto no cambia.
     if systemctl is-enabled ssh.socket &>/dev/null; then
         mkdir -p /etc/systemd/system/ssh.socket.d
-        printf '[Socket]\nListenStream=\nListenStream=%s\n' "$nuevo" \
-            > /etc/systemd/system/ssh.socket.d/port.conf
+        if [ "$nuevo" = "22" ]; then
+            printf '[Socket]\nListenStream=\nListenStream=22\n' \
+                > /etc/systemd/system/ssh.socket.d/port.conf
+        else
+            printf '[Socket]\nListenStream=\nListenStream=%s\nListenStream=127.0.0.1:22\n' "$nuevo" \
+                > /etc/systemd/system/ssh.socket.d/port.conf
+        fi
         systemctl daemon-reload
         systemctl restart ssh.socket 2>/dev/null
     fi
-    ssh_restart
+    if ! ssh_restart; then
+        ui_err "El cambio no se aplicó: SSH sigue en el puerto ${actual}."
+        ui_pause; return
+    fi
 
     ui_blank
     local ahora
