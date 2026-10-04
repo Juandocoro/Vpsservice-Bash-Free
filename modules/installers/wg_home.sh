@@ -1576,6 +1576,9 @@ wghome_restore() {
 # ¿Sigue montada? Barato: lo llama el guardian cada minuto.
 _wgh_rules_present() {
     iptables -t mangle -S OUTPUT 2>/dev/null | grep -q "HOMEVPN_EXCLUDE" || return 1
+    # Instalaciones anteriores no tenian el bloqueo IPv6: asi el guardian
+    # lo pone solo en menos de un minuto.
+    if _wgh_has_ipv6 && ! _wgh_v6_present; then return 1; fi
     local name key idx type
     while IFS='|' read -r name key idx type _; do
         [ -z "$idx" ] && continue
@@ -1746,6 +1749,70 @@ _wgh_get_client_users() {
 
 
 # =========================================================
+# FUGA POR IPv6
+# ---------------------------------------------------------
+# Todo el desvio a los nodos (marcas, tablas, REDIRECT) es de
+# iptables, o sea IPv4. Cuando un cliente navega, quien abre la
+# conexion es el sshd del VPS, y si el VPS tiene IPv6 lo prueba
+# PRIMERO con los sitios que lo tienen (Google, YouTube,
+# Facebook, Cloudflare...). Esas conexiones salian directas con
+# la IP del VPS y el nodo solo veia una parte del trafico. Y el
+# diagnostico, que probaba con 'curl -4', decia que todo iba bien.
+#
+# Arreglo: a los usuarios que salen por un nodo se les RECHAZA el
+# TCP por IPv6 con un reset. sshd recibe el rechazo al instante y
+# prueba la siguiente direccion del destino, la IPv4, que si pasa
+# por el nodo. No se pierde ninguna conexion, solo cambia la familia.
+#
+# Lo que nunca se toca: el loopback y las respuestas de la propia
+# sesion SSH del cliente (si entro al VPS por IPv6, su tunel sigue).
+# =========================================================
+WGH_V6_CHAIN="HOMEVPN6"
+
+_wgh_has_ipv6() {
+    command -v ip6tables &>/dev/null || return 1
+    ip -6 addr show scope global 2>/dev/null | grep -q 'inet6'
+}
+
+# Reglas de la cadena, una por linea (funcion pura, se prueba sin root).
+#   _wgh_v6_rules "<uids>" "<puertos_origen_excluidos>"
+_wgh_v6_rules() {
+    local uids="$1" sports="$2" p u
+    echo "-A ${WGH_V6_CHAIN} -d ::1/128 -j RETURN"
+    for p in $sports; do
+        echo "-A ${WGH_V6_CHAIN} -p tcp --sport ${p} -j RETURN"
+    done
+    for u in $uids; do
+        echo "-A ${WGH_V6_CHAIN} -p tcp -m owner --uid-owner ${u} -j REJECT --reject-with tcp-reset"
+    done
+}
+
+# Rehace la cadena con los usuarios enrutados ahora mismo.
+_wgh_v6_apply() {
+    local uids="$1" sports="$2" r
+    command -v ip6tables &>/dev/null || return 0
+    ip6tables -N "$WGH_V6_CHAIN" 2>/dev/null
+    ip6tables -F "$WGH_V6_CHAIN" 2>/dev/null || return 0
+    while IFS= read -r r; do
+        # shellcheck disable=SC2086
+        [ -n "$r" ] && ip6tables $r 2>/dev/null
+    done < <(_wgh_v6_rules "$uids" "$sports")
+    ip6tables -C OUTPUT -j "$WGH_V6_CHAIN" 2>/dev/null || \
+        ip6tables -I OUTPUT 1 -j "$WGH_V6_CHAIN" 2>/dev/null
+}
+
+_wgh_v6_off() {
+    command -v ip6tables &>/dev/null || return 0
+    while ip6tables -D OUTPUT -j "$WGH_V6_CHAIN" 2>/dev/null; do :; done
+    ip6tables -F "$WGH_V6_CHAIN" 2>/dev/null
+    ip6tables -X "$WGH_V6_CHAIN" 2>/dev/null
+}
+
+_wgh_v6_present() {
+    ip6tables -C OUTPUT -j "$WGH_V6_CHAIN" 2>/dev/null
+}
+
+# =========================================================
 # CAMBIO 4 & 5: APLICACIÓN Y REMOCIÓN DE REGLAS DE ENRUTAMIENTO
 # =========================================================
 
@@ -1790,6 +1857,7 @@ _wgh_apply_user_routing() {
     # pueden salir por sitios distintos al mismo tiempo.
     local name key idx type ifc mark tbl nodeip redport total_users=0
     local -A want=()
+    local v6uids=""
     while IFS='|' read -r name key idx type _; do
         [ -z "$idx" ] && continue
         mark=$(_wgn_mark "$idx")
@@ -1842,6 +1910,7 @@ _wgh_apply_user_routing() {
             iptables -t mangle -C OUTPUT -m owner --uid-owner "$uid" -m comment --comment "HOMEVPN_MARK" -j MARK --set-mark "${mark}" 2>/dev/null || \
                 iptables -t mangle -A OUTPUT -m owner --uid-owner "$uid" -m comment --comment "HOMEVPN_MARK" -j MARK --set-mark "${mark}" 2>/dev/null || true
             want["${uid}|${mark}"]=1
+            v6uids="${v6uids} ${uid}"
             n=$((n+1))
         done < <(_wgh_node_users "$name")
         total_users=$(( total_users + n ))
@@ -1864,6 +1933,14 @@ _wgh_apply_user_routing() {
     done < <(iptables -t mangle -S OUTPUT 2>/dev/null | grep "HOMEVPN_MARK")
 
     _wgh_isolate_on
+
+    # IPv6: que los usuarios enrutados no se salten el nodo por la otra
+    # familia. Se excluyen las respuestas de los puertos por los que entran.
+    local v6sports="22" p
+    for p in "$PORT_SSH" "$PORT_SSL" "$PORT_WS" "$PORT_DROPBEAR"; do
+        [ -n "$p" ] && [[ " $v6sports " != *" $p "* ]] && v6sports="$v6sports $p"
+    done
+    _wgh_v6_apply "$v6uids" "$v6sports"
 
     # Lo de arriba abre el camino de TODOS los nodos. Si el vigilante
     # tiene alguno por caido, se respeta: si no, al reasignar un usuario
@@ -1929,6 +2006,7 @@ _wgh_routing_off_internal() {
         iptables $rule 2>/dev/null || break
     done
     _wgh_isolate_off
+    _wgh_v6_off
 
     _wgh_verify_ssh_route
     _wgh_log "Desactivacion completada"
@@ -2543,6 +2621,7 @@ _wgh_set_user_exit() {
         ui_ok "${WH}${u}${CR} sale por ${GR}${node}${CR}."
         local bk; bk=$(_wgh_node_backup_of "$node")
         echo -e "${UI_PAD}${DM}    Si ${node} cae: ${bk:+pasa a ${bk}, y si también cae: }la IP del VPS. Nunca se queda sin Internet.${CR}"
+        echo -e "${UI_PAD}${DM}    Por el nodo va su TCP (web y apps); el UDP sale por el VPS.${CR}"
     else
         ui_ok "${WH}${u}${CR} sale por la IP del VPS."
     fi
@@ -2837,6 +2916,9 @@ wghome_diagnose() {
         fi
     done < <(_wgh_get_client_users | cut -d: -f1)
     [ "$asign" -eq 0 ] && _i "Nadie asignado a un nodo: todos salen por la IP del VPS."
+    _i "Por el nodo pasa el TCP de las sesiones OpenSSH (directas, SSL y WebSocket)."
+    _i "El UDP (BadVPN, llamadas, juegos) sale siempre por la IP del VPS."
+    [ -n "${PORT_DROPBEAR:-}" ] && _i "Dropbear abre las conexiones como root: sus clientes pueden salir por el VPS."
     ui_blank
 
     # --- 4. Reglas ---
@@ -2914,6 +2996,17 @@ wghome_diagnose() {
                     || _p "  ${name}: ${res} es la IP del VPS, no la del nodo." "El desvío no se aplica a ese usuario."
             else
                 _v "  ${name}: sale por ${res}"
+            fi
+            # La prueba que faltaba: con 'curl -4' todo parecia correcto
+            # mientras el trafico IPv6 salia por el VPS.
+            if _wgh_has_ipv6; then
+                local res6
+                res6=$(runuser -u "$probe" -- curl -6 -s --max-time 8 https://api64.ipify.org 2>/dev/null)
+                if [ -n "$res6" ]; then
+                    _p "  ${name}: por IPv6 sale con ${res6}, la del VPS." "Falta el bloqueo IPv6: apaga y enciende la salida residencial."
+                else
+                    _v "  ${name}: IPv6 bloqueado para sus usuarios (sin fuga)"
+                fi
             fi
         elif [ "${type:-wg}" = "socks" ] && _socks_reverse_up "$idx"; then
             _i "Probando el SOCKS de '${name}'..."

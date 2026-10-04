@@ -45,7 +45,7 @@ ALL_SH=$(find . -name '*.sh' -not -path './.git/*' -not -path './tests/*')
 DEF=$(_defined $ALL_SH | sort -u)
 # Se descartan las coincidencias que forman parte de una ruta
 # (/etc/wireguard/wghome_droplet_private.key no es una llamada).
-USED=$(grep -rhoP '(?<![\w/])(_wgh?[a-z0-9_]+|wghome_[a-z0-9_]+|ui_[a-z0-9_]+)(?![\w./])' $ALL_SH | sort -u)
+USED=$(grep -rhoP '(?<![\w/])(_wgh?[a-z0-9_]+|wghome_[a-z0-9_]+|_mbeta_[a-z0-9_]+|mobile_beta_[a-z0-9_]+|ui_[a-z0-9_]+)(?![\w./])' $ALL_SH | sort -u)
 MISSING=""
 while read -r fn; do
     [ -z "$fn" ] && continue
@@ -57,7 +57,7 @@ else bad "hay funciones sin definir" "$MISSING"; fi
 # Una funcion definida dos veces no da error: gana la ULTIMA en
 # silencio, y un menu viejo puede tapar al nuevo sin que se note.
 # shellcheck disable=SC2086
-DUP=$(for f in main.sh modules/*.sh modules/installers/wg_home.sh; do
+DUP=$(for f in main.sh modules/*.sh modules/installers/wg_home.sh modules/installers/mobile_beta.sh; do
         grep -oE '^(function )?[a-zA-Z_][a-zA-Z0-9_]*\(\)' "$f"; done | sed 's/function //' | sort | uniq -d)
 if [ -z "$DUP" ]; then ok "ninguna funcion definida dos veces"
 else bad "funciones definidas dos veces" "$DUP"; fi
@@ -275,6 +275,44 @@ _wgh_measure_calc 500 off 1030 500 1000 20
 is "si contesta a la sonda, a los 20s se da por caido" "$MED_OK" "0"
 _wgh_measure_calc 501 off 1030 500 1000 20
 is "bytes nuevos: vivo, y se apunta la hora" "$MED_OK $MED_TS" "1 1030"
+
+# =========================================================
+group "Fuga por IPv6"
+# ---------------------------------------------------------
+# Todo el desvio es IPv4. Si el VPS tiene IPv6, sshd conectaba
+# primero por IPv6 y ese trafico salia con la IP del VPS.
+# =========================================================
+V6=$(_wgh_v6_rules "1001 1002" "22 443")
+grep -q -- '-d ::1/128 -j RETURN' <<<"$V6" && ok "el loopback IPv6 no se toca" || bad "falta excluir ::1"
+grep -q -- '-p tcp --sport 22 -j RETURN' <<<"$V6" && grep -q -- '--sport 443 -j RETURN' <<<"$V6" \
+    && ok "las respuestas de la sesion SSH del cliente siguen por IPv6" || bad "se cortaria el tunel de un cliente IPv6"
+is "se rechaza el TCP IPv6 de cada usuario enrutado" \
+   "$(grep -c -- '-p tcp -m owner --uid-owner 100[12] -j REJECT --reject-with tcp-reset' <<<"$V6")" "2"
+first_reject=$(grep -n REJECT <<<"$V6" | head -1 | cut -d: -f1)
+last_return=$(grep -n RETURN <<<"$V6" | tail -1 | cut -d: -f1)
+[ "$last_return" -lt "$first_reject" ] && ok "las excepciones van antes que los rechazos" || bad "un rechazo tapa una excepcion"
+grep -q '_wgh_v6_apply "\$v6uids"' modules/installers/wg_home.sh && ok "se aplica junto al resto de reglas" || bad "el bloqueo IPv6 no se aplica"
+grep -q '_wgh_v6_off' modules/installers/wg_home.sh && ok "y se retira al apagar la salida" || bad "el bloqueo IPv6 no se retira"
+grep -q 'curl -6' modules/installers/wg_home.sh && ok "el diagnostico prueba tambien IPv6" || bad "el diagnostico solo mira IPv4"
+
+# =========================================================
+group "Movil sin root (beta)"
+# =========================================================
+source modules/installers/mobile_beta.sh
+SCRIPT=$(_mbeta_phone_script vps.ejemplo 2222 snode3 11083)
+grep -q -- '-R 127.0.0.1:11083 snode3@vps.ejemplo' <<<"$SCRIPT" && ok "publica su SOCKS en el puerto que le toca" || bad "puerto o usuario equivocados"
+grep -q -- '-p 2222' <<<"$SCRIPT" && ok "usa el puerto SSH del VPS" || bad "no usa el puerto SSH"
+grep -q 'ServerAliveInterval=10' <<<"$SCRIPT" && ok "detecta una red caida en ~30 s" || bad "deteccion lenta"
+grep -q 'ExitOnForwardFailure=yes' <<<"$SCRIPT" && ok "si el puerto esta ocupado, reintenta en vez de quedarse colgado" || bad "falta ExitOnForwardFailure"
+grep -q '^while true' <<<"$SCRIPT" && ok "se reconecta solo, sin fin" || bad "no reconecta"
+grep -q 'termux-wake-lock' <<<"$SCRIPT" && ok "pide wake lock para que Android no lo duerma" || bad "sin wake lock"
+bash -n <(echo "$SCRIPT") && ok "el script del celular es bash valido" || bad "el script del celular no compila"
+is "la llave solo puede abrir SU puerto" "$(_mbeta_ak_line 11083 'ssh-ed25519 AAAA x')" \
+   'restrict,port-forwarding,permitlisten="127.0.0.1:11083" ssh-ed25519 AAAA x'
+CMD=$(_mbeta_paste_cmd "S0VZ" "$(echo "$SCRIPT" | base64 -w0)")
+[ "$(wc -l <<<"$CMD")" = "1" ] && ok "el bloque de Termux es una sola linea" || bad "el bloque de Termux se parte"
+echo "$SCRIPT" | base64 -w0 | base64 -d | cmp -s - <(echo "$SCRIPT") && ok "el script llega intacto en base64" || bad "base64 corrompe el script"
+is "duracion legible" "$(_mbeta_dur 3725)" "1h 02m"
 
 # =========================================================
 group "Selector de salida (alta de cuentas)"

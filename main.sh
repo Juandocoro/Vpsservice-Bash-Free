@@ -15,6 +15,7 @@ source "$DIR/modules/users.sh"
 source "$DIR/modules/optimize.sh"
 source "$DIR/modules/system.sh"
 source "$DIR/modules/installers/wg_home.sh"
+source "$DIR/modules/installers/mobile_beta.sh"
 
 VPS_VERSION="v1.0"
 
@@ -371,6 +372,7 @@ function uninstall_panel() {
     ui_ok "Comando eliminado."
 
     ui_info "Eliminando estado y directorio del panel..."
+    rm -f /root/movil-*.txt 2>/dev/null
     rm -rf "$STATE_DIR" 2>/dev/null
     rm -rf /opt/vpsservice-free 2>/dev/null
     ui_ok "Directorio eliminado."
@@ -408,6 +410,7 @@ function config_menu() {
         echo -e "${UI_PAD}${YL}── PROTOCOLOS ──${CR}"
         ui_opt "1" "FÁBRICA DE TÚNELES"  "11 protocolos"
         ui_opt "2" "GATEWAY RESIDENCIAL" "IP de casa/móvil" "$WGH_TAG"
+        ui_opt "B" "MÓVIL SIN ROOT"      "beta · su IP"
         ui_blank
         echo -e "${UI_PAD}${YL}── SISTEMA ──${CR}"
         ui_opt "3" "ACCESO ROOT"         "clave y login"  "$ROOT_TAG"
@@ -424,11 +427,12 @@ function config_menu() {
         ui_blank
         ui_opt "0" "VOLVER"
         ui_solid
-        ui_prompt "Elige una opción [0-11]"
+        ui_prompt "Elige una opción [0-11 | B]"
 
         case "$REPLY_UI" in
             1)  sub_menu_installers ;;
             2)  wghome_menu ;;
+            [Bb]) mobile_beta_menu ;;
             3)  root_access_menu ;;
             4)  ssh_port_config ;;
             5)  clear; print_title; ui_section "CORTAFUEGOS UFW"; ui_blank; sync_firewall ;;

@@ -170,6 +170,31 @@ resolviéndose en el VPS; las conexiones TCP salen por el celular.
 
 ---
 
+### Móvil sin root · BETA
+
+**Configuración del VPS → [B] Móvil sin root** es la forma rápida de que un
+celular Android **sin root** preste su IP a los usuarios que elijas. No hace
+falta instalar el proyecto del nodo:
+
+1. **Añadir celular**: el VPS crea el nodo, genera su llave (limitada con
+   `permitlisten` a su propio puerto) y te pregunta qué usuarios saldrán por él.
+2. Pega en **Termux** (de F-Droid) el bloque que te muestra el panel. Instala
+   OpenSSH, deja un script que se reconecta solo y lo registra en Termux:Boot.
+3. **Probar** comprueba la IP del celular, la que verá el cliente (IPv4 e IPv6)
+   y, si quieres, la velocidad real.
+
+Es posible, pero con límites que no dependen del código: solo TCP (web y apps;
+el UDP sale por el VPS), la velocidad máxima es la **subida** del celular, cada
+MB del cliente gasta 2 MB del plan, y Android puede dormir Termux si no se
+sigue la **Guía Android** del menú. Pensado para pocos usuarios por celular.
+
+### IPv6
+
+Si el VPS tiene IPv6, a los usuarios que salen por un nodo se les rechaza el TCP
+por IPv6: sin esto, `sshd` abría primero por IPv6 las conexiones a Google,
+YouTube o Cloudflare y salían con la IP del VPS. Al rechazarlo, `sshd` usa al
+instante la IPv4, que sí pasa por el nodo. El diagnóstico prueba las dos familias.
+
 ### Que nadie se quede sin Internet
 
 Al encender la salida residencial se activa también el **vigilante**
