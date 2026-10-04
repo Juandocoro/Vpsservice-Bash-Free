@@ -55,8 +55,12 @@ ui_line() {
     echo -e "${color}${out}${CR}"
 }
 
-ui_rule()  { ui_line "$DM" "─"; }   # divisor suave, dentro de un bloque
-ui_solid() { ui_line "$YL" "━"; }   # divisor fuerte, entre bloques
+# Los dos divisores se usan decenas de veces por pantalla: se construyen
+# una sola vez al cargar en lugar de caracter a caracter en cada uso.
+_UI_RULE="$(ui_line "$DM" "─")"
+_UI_SOLID="$(ui_line "$YL" "━")"
+ui_rule()  { echo "$_UI_RULE"; }    # divisor suave, dentro de un bloque
+ui_solid() { echo "$_UI_SOLID"; }   # divisor fuerte, entre bloques
 
 ui_blank() { echo ""; }
 
@@ -198,20 +202,23 @@ ui_warn() { echo -e "${UI_PAD}${YL}[!]${CR} $1"; }
 
 # Prompt de entrada consistente
 # ui_prompt "texto"  -> deja la respuesta en $REPLY_UI
+# -r: sin el, una barra invertida se trataba como escape y desaparecia.
+# Una contraseña como 'ab\c1' se guardaba como 'abc1' y el cliente no
+# podia entrar con la que se le habia dado.
 ui_prompt() {
-    read -p "$(echo -e "${UI_PAD}${DM}$1 ${CY}»${CR} ")" REPLY_UI
+    read -r -p "$(echo -e "${UI_PAD}${DM}$1 ${CY}»${CR} ")" REPLY_UI
 }
 
 ui_pause() {
     echo ""
-    read -p "$(echo -e "${UI_PAD}${DM}Presiona Enter para continuar...${CR}")"
+    read -r -p "$(echo -e "${UI_PAD}${DM}Presiona Enter para continuar...${CR}")"
 }
 
 # Confirmacion si/no con valor por defecto. Devuelve 0 si acepta.
 # ui_confirm "¿Borrar la cuenta?" n
 ui_confirm() {
     local q="$1" def="${2:-s}" r
-    read -p "$(echo -e "${UI_PAD}${DM}${q} (s/n) [${WH}${def}${DM}] ${CY}»${CR} ")" r
+    read -r -p "$(echo -e "${UI_PAD}${DM}${q} (s/n) [${WH}${def}${DM}] ${CY}»${CR} ")" r
     r="${r:-$def}"
     [[ "$r" == "s" || "$r" == "S" ]]
 }

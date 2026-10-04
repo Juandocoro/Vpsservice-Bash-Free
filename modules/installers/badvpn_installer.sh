@@ -1,81 +1,44 @@
 #!/bin/bash
-
-if [ "$EUID" -ne 0 ]; then
-  echo "Error: Ejecutar como root."
-  exit 1
-fi
-
-# Lenguaje visual compartido del panel
+# Instalador BadVPN udpgw — UDP (juegos, llamadas) dentro del tunel SSH
 _INST_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-source "$_INST_DIR/../ui.sh"
+source "$_INST_DIR/_common.sh"
+inst_root
 
-CR="\033[0m"; GR="\033[1;32m"; RD="\033[0;31m"
-YL="\033[0;33m"; CY="\033[1;36m"; WH="\033[1;37m"; DM="\033[2;37m"
+BIN=/usr/local/bin/badvpn-udpgw
+UNIT=/etc/systemd/system/badvpn.service
 
+inst_header "BADVPN UDPGW" "UDP de juegos y llamadas por dentro del túnel SSH"
+echo -e "${UI_PAD}${DM}Escucha solo en 127.0.0.1: el cliente lo usa a través de su${CR}"
+echo -e "${UI_PAD}${DM}sesión SSH. No es un túnel por sí mismo.${CR}"
+ui_blank
 
-clear
-echo -e "${YL}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${CR}"
-echo -e "${WH}        BadVPN — Gateway UDP para SSH             ${CR}"
-echo -e "${YL}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${CR}"
-echo ""
-echo -e "  ${DM}BadVPN permite tunnelizar tráfico UDP (juegos,${CR}"
-echo -e "  ${DM}llamadas VoIP) a través del túnel SSH activo.${CR}"
-echo -e "  ${DM}Se usa junto con SSH — NO es un túnel directo.${CR}"
-echo ""
+actual=$(grep -o '\-\-listen-addr [^ ]*' "$UNIT" 2>/dev/null | awk -F':' '{print $NF}')
+inst_ask_port "Puerto local de BadVPN" "${actual:-7300}" tcp badvpn || exit 0
+bvpn_port="$INST_PORT"
 
-ui_prompt "$(echo -e ${DM})¿Instalar BadVPN UDP Gateway? (s/n): $(echo -e ${CR})"; auth="$REPLY_UI"
-if [[ "$auth" != "s" && "$auth" != "S" ]]; then exit 0; fi
-
-echo ""
-
-# ── obtener binario ────────────────────────────────────────────────────────────
-BINARY_SOURCES=(
-    "https://raw.githubusercontent.com/daybreakersx/premscript/master/badvpn-udpgw64"
-    "https://github.com/Kurosaki-io/BadVPN-UDPGateway/releases/download/1.0/badvpn-udpgw"
-)
-
-BINARY_OK=false
-if [ -f "/usr/local/bin/badvpn-udpgw" ] && file /usr/local/bin/badvpn-udpgw 2>/dev/null | grep -q "ELF"; then
-    _ok "Binario ya existe. Reutilizando."; BINARY_OK=true
+# Solo desde el codigo oficial. Antes se descargaba primero un binario
+# precompilado de repositorios de terceros y se ejecutaba como root: quien
+# controlara esos repos controlaba el VPS. Compilar tarda un minuto.
+# Un binario que no compilo el panel (las versiones anteriores lo bajaban
+# de terceros) se sustituye por el oficial.
+if [ -x "$BIN" ] && [ -f "$BIN.oficial" ]; then
+    ui_ok "Binario oficial ya compilado: se reutiliza."
+else
+    ui_info "Compilando BadVPN desde el código oficial (1-2 minutos)..."
+    inst_apt cmake build-essential git file || { ui_err "No se pudieron instalar las herramientas de compilación."; ui_pause; exit 1; }
+    src=$(mktemp -d)
+    if git clone --depth 1 https://github.com/ambrop72/badvpn.git "$src/badvpn" &>/dev/null \
+       && mkdir -p "$src/badvpn/build" && cd "$src/badvpn/build" \
+       && cmake .. -DBUILD_NOTHING_BY_DEFAULT=1 -DBUILD_UDPGW=1 &>/dev/null \
+       && make -j"$(nproc)" install &>/dev/null; then
+        ui_ok "Compilado e instalado."
+        touch "$BIN.oficial"
+    fi
+    cd / && rm -rf "$src"
+    [ -f "$BIN.oficial" ] || { ui_err "La compilación falló: el servicio actual sigue como estaba."; ui_pause; exit 1; }
 fi
 
-if [ "$BINARY_OK" = false ]; then
-    for URL in "${BINARY_SOURCES[@]}"; do
-        _info "Descargando binario..."
-        if wget -q --timeout=20 -O /tmp/badvpn-tmp "$URL" 2>/dev/null && \
-           file /tmp/badvpn-tmp 2>/dev/null | grep -q "ELF"; then
-            mv /tmp/badvpn-tmp /usr/local/bin/badvpn-udpgw
-            chmod +x /usr/local/bin/badvpn-udpgw
-            _ok "Binario descargado."; BINARY_OK=true; break
-        fi
-        rm -f /tmp/badvpn-tmp
-    done
-fi
-
-if [ "$BINARY_OK" = false ]; then
-    _info "Compilando desde fuente..."
-    apt-get install -y cmake build-essential gcc git &>/dev/null
-    cd /tmp && rm -rf badvpn
-    git clone https://github.com/ambrop72/badvpn.git &>/dev/null
-    cd badvpn && mkdir -p build && cd build
-    cmake .. -DBUILD_NOTHING_BY_DEFAULT=1 -DBUILD_UDPGW=1 &>/dev/null && make install &>/dev/null
-    [ -f "/usr/local/bin/badvpn-udpgw" ] && BINARY_OK=true
-fi
-
-if [ "$BINARY_OK" = false ]; then
-    _err "No se pudo obtener el binario. Abortando."; sleep 3; exit 1
-fi
-
-# ── puerto ─────────────────────────────────────────────────────────────────────
-CURRENT=$(grep -o '\-\-listen-addr [^ ]*' /etc/systemd/system/badvpn.service 2>/dev/null | awk -F':' '{print $NF}')
-[ -n "$CURRENT" ] && echo -e "  ${DM}Puerto actual: ${CY}$CURRENT${CR}"
-ui_prompt "$(echo -e ${DM})Puerto BadVPN (Defecto: 7300): $(echo -e ${CR})"; bvpn_port="$REPLY_UI"
-[ -z "$bvpn_port" ] && bvpn_port=${CURRENT:-7300}
-[[ ! "$bvpn_port" =~ ^[0-9]+$ ]] && bvpn_port=7300
-
-# ── servicio systemd ───────────────────────────────────────────────────────────
-# BadVPN escucha solo en 127.0.0.1 (local) — se usa junto con SSH
-cat > /etc/systemd/system/badvpn.service <<EOF
+cat > "$UNIT" <<EOF
 [Unit]
 Description=BadVPN UDP Gateway (para llamadas y juegos via SSH)
 After=network.target
@@ -83,12 +46,10 @@ After=network.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/root
-ExecStart=/usr/local/bin/badvpn-udpgw --listen-addr 127.0.0.1:${bvpn_port} --max-clients 500 --max-connections-for-client 10 --client-socket-sndbuf 10000
+ExecStart=$BIN --listen-addr 127.0.0.1:${bvpn_port} --max-clients 500 --max-connections-for-client 10 --client-socket-sndbuf 10000
 Restart=always
 RestartSec=5
-StandardOutput=journal
-StandardError=journal
+LimitNOFILE=65535
 
 [Install]
 WantedBy=multi-user.target
@@ -96,23 +57,14 @@ EOF
 
 systemctl daemon-reload
 systemctl enable badvpn &>/dev/null
-systemctl stop badvpn &>/dev/null; sleep 1
-systemctl start badvpn; sleep 2
+systemctl restart badvpn &>/dev/null
+inst_mark badvpn
 
-echo ""
-echo -e "${YL}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${CR}"
-if systemctl is-active --quiet badvpn; then
-    _ok "BadVPN activo en ${CY}127.0.0.1:$bvpn_port${CR}"
-    echo ""
-    echo -e "  ${YL}━━━ CONFIGURACION UDP GATEWAY ━━━${CR}"
-    echo -e "  ${DM}1. Conéctate primero por SSH${CR}"
-    echo -e "  ${DM}2. Settings → UDP Custom → Enable${CR}"
-    echo -e "  ${DM}3. UDP Host: ${CR}${WH}127.0.0.1${CR}"
-    echo -e "  ${DM}4. UDP Port: ${CR}${CY}$bvpn_port${CR}"
-    echo -e "  ${DM}   El tráfico de juegos/llamadas pasa por el túnel.${CR}"
-else
-    _err "BadVPN no arrancó."
-    journalctl -u badvpn -n 10 --no-pager 2>/dev/null | sed 's/^/  /'
+ui_blank
+ui_solid
+if inst_check_service badvpn "BadVPN"; then
+    echo -e "${UI_PAD}${DM}En la app: conecta por SSH y activa UDP Gateway con${CR}"
+    echo -e "${UI_PAD}${WH}127.0.0.1:${bvpn_port}${CR}"
 fi
-echo -e "${YL}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${CR}"
-sleep 2
+ui_solid
+ui_pause

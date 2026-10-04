@@ -1,62 +1,56 @@
 #!/bin/bash
-
-if [ "$EUID" -ne 0 ]; then
-  echo "Error: Ejecutar como root."
-  exit 1
-fi
-
-# Lenguaje visual compartido del panel
+# Instalador Squid — proxy HTTP para entrar al SSH del VPS
 _INST_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-source "$_INST_DIR/../ui.sh"
+source "$_INST_DIR/_common.sh"
+inst_root
 
-clear
+inst_header "SQUID HTTP PROXY" "entrada por proxy HTTP hacia el SSH del VPS"
+echo -e "${UI_PAD}${DM}Los inyectores HTTP se conectan a Squid y piden un CONNECT${CR}"
+echo -e "${UI_PAD}${DM}hacia el SSH de este mismo servidor.${CR}"
+ui_blank
 
-ui_header "FREE · INSTALADOR"
-ui_section "SQUID HTTP PROXY"
-echo -e "${UI_PAD}${DM}Squid es un proxy HTTP/HTTPS de alto rendimiento.${CR}"
-echo -e "${UI_PAD}${DM}Permite a los clientes navegar a través del VPS.${CR}"
-echo ""
-
-ui_prompt "Puerto para Squid (Enter = 3128 · 0 = cancelar)"; squid_port="$REPLY_UI"
-[ "$squid_port" = "0" ] && exit 0
-[ -z "$squid_port" ] && squid_port=3128
+actual=$(grep -E '^\s*http_port' /etc/squid/squid.conf 2>/dev/null | grep -oE '[0-9]+' | head -1)
+inst_ask_port "Puerto para Squid" "${actual:-3128}" tcp squid || exit 0
+squid_port="$INST_PORT"
 
 ui_info "Instalando Squid..."
-apt-get install -yq squid &>/dev/null
+inst_apt squid || { ui_err "No se pudo instalar squid."; ui_pause; exit 1; }
 
-ui_info "Escribiendo configuración /etc/squid/squid.conf..."
-cat <<EOF > /etc/squid/squid.conf
-# vpsservice Script FREE - Squid Config
+# Destinos permitidos: SOLO este servidor. Antes era 'http_access
+# allow all' sin contraseña: un proxy abierto a todo Internet. Los
+# bots lo encuentran en horas, lo usan para spam y ataques, la IP
+# acaba en listas negras o el proveedor suspende el VPS, y entonces
+# se quedan sin servicio TODOS los clientes, no solo los de Squid.
+local_ips="127.0.0.1"
+for ip in $(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1) "$(_public_ip)"; do
+    [[ "$ip" =~ ^[0-9.]+$ ]] && [[ " $local_ips " != *" $ip "* ]] && local_ips="$local_ips $ip"
+done
+
+ui_info "Escribiendo /etc/squid/squid.conf..."
+cat > /etc/squid/squid.conf <<EOF
+# VPSService - Squid: solo da paso hacia este mismo servidor.
 http_port $squid_port
 
-# ACL - Permitir acceso total
-# NOTA: 'all' es una ACL predefinida desde Squid 3.1. Redefinirla provoca
-# un error fatal de parseo y el servicio no arranca, por eso solo se usa.
-http_access allow all
+acl este_vps dst $local_ips
 
-# Respuesta de bienvenida (para inyectores HTTP)
+http_access allow este_vps
+http_access deny all
+
 visible_hostname vpsservice
-
-# Rendimiento
 cache deny all
-dns_v4_first on
-
-# Silenciar logs innecesarios
 access_log none
-cache_log /dev/null
 EOF
 
 systemctl enable squid &>/dev/null
 systemctl restart squid &>/dev/null
+inst_ufw_allow "$squid_port/tcp"
+inst_mark squid
 
-if command -v ufw &>/dev/null; then
-    ufw allow "$squid_port"/tcp &>/dev/null
-fi
-
-echo ""
+ui_blank
 ui_solid
-ui_ok "Squid HTTP Proxy activo."
+inst_check_service squid "Squid"
 echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Puerto" "$squid_port/TCP" 34)"
-echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Acceso" "Abierto (sin auth)" 34)"
+echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Destinos" "solo este VPS" 34)"
+echo -e "${UI_PAD}${DM}Payload típico: CONNECT 127.0.0.1:22 HTTP/1.1${CR}"
 ui_solid
 ui_pause

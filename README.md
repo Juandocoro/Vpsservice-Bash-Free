@@ -130,6 +130,21 @@ modules/
 | Proxy | SlowDNS, Squid |
 | VPN | V2Ray (VMess+WS), Shadowsocks, OpenVPN, WireGuard |
 
+Todos los instaladores validan que el puerto esté libre, comprueban que el
+servicio arrancó (y si no, enseñan su registro) y se pueden volver a ejecutar
+sin romper lo que ya funciona.
+
+| Protocolo | Cuentas | Notas |
+|---|---|---|
+| SSH, SSL, WebSocket, Dropbear | las del panel | |
+| UDP Custom | las del panel (PAM) | formato `IP:1-65535@usuario:clave`; no toca el UDP de WireGuard, los nodos, OpenVPN ni SlowDNS |
+| OpenVPN | las del panel (PAM) | un solo `.ovpn` para todos; caduca con la cuenta; reinstalar conserva la PKI |
+| SlowDNS | las del panel | protocolo dnstt (el de las apps SlowDNS); necesita un dominio con registro NS |
+| Squid | — | solo da paso hacia este VPS: no es un proxy abierto |
+| WireGuard | clientes propios | cada uno con su `.conf` y código QR; reinstalar conserva las claves |
+| V2Ray, Shadowsocks | propias | reinstalar V2Ray conserva los usuarios; Shadowsocks genera clave y enlace `ss://` |
+| BadVPN | — | compilado desde el código oficial |
+
 ---
 
 ## Nodos de salida residencial

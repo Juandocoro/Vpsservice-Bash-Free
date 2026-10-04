@@ -1,55 +1,50 @@
 #!/bin/bash
-
-if [ "$EUID" -ne 0 ]; then
-  echo "Error: Ejecutar como root."
-  exit 1
-fi
-
-# Lenguaje visual compartido del panel
+# Instalador Dropbear — servidor SSH ligero en un puerto extra
 _INST_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-source "$_INST_DIR/../ui.sh"
+source "$_INST_DIR/_common.sh"
+inst_root
 
-clear
+inst_header "DROPBEAR SSH" "servidor SSH ligero en un puerto extra"
+echo -e "${UI_PAD}${DM}Dropbear acepta las mismas cuentas que el panel. Útil como${CR}"
+echo -e "${UI_PAD}${DM}puerto alternativo cuando el operador bloquea el de OpenSSH.${CR}"
+ui_blank
 
-ui_header "FREE · INSTALADOR"
-ui_section "DROPBEAR SSH"
-echo -e "${UI_PAD}${DM}Dropbear es un servidor SSH alternativo, ligero${CR}"
-echo -e "${UI_PAD}${DM}y eficiente. Ideal para correr en puertos extra.${CR}"
-echo ""
-
-ui_prompt "¿Puerto para Dropbear (Enter = 442 · 0 = cancelar)"; db_port="$REPLY_UI"
-[ "$db_port" = "0" ] && exit 0
-[ -z "$db_port" ] && db_port=442
+actual=$(sed -n 's/^DROPBEAR_PORT=//p' /etc/default/dropbear 2>/dev/null | grep -oE '[0-9]+' | head -1)
+inst_ask_port "Puerto para Dropbear" "${actual:-442}" tcp dropbear || exit 0
+db_port="$INST_PORT"
+[ "$db_port" = "22" ] && { ui_err "El 22 es de OpenSSH: elige otro."; sleep 2; exit 1; }
 
 ui_info "Instalando Dropbear..."
-apt-get install -yq dropbear &>/dev/null
+inst_apt dropbear || { ui_err "No se pudo instalar dropbear."; ui_pause; exit 1; }
 
-ui_info "Configurando puerto $db_port..."
-sed -i "s/^DROPBEAR_PORT=.*/DROPBEAR_PORT=$db_port/" /etc/default/dropbear 2>/dev/null
-sed -i "s/^NO_START=.*/NO_START=0/" /etc/default/dropbear 2>/dev/null
-
-# Si no existe la línea, la agregamos
-if ! grep -q "^DROPBEAR_PORT" /etc/default/dropbear 2>/dev/null; then
-    echo "DROPBEAR_PORT=$db_port" >> /etc/default/dropbear
-    echo "NO_START=0" >> /etc/default/dropbear
-fi
-
-# Asegurarse que no colisione con OpenSSH
-if [ "$db_port" == "22" ]; then
-    ui_warn "Advertencia: El puerto 22 es usado por OpenSSH. Se recomienda usar otro."
-fi
-
+# El formato de /etc/default/dropbear cambia entre versiones de Ubuntu
+# (NO_START existe en unas y no en otras), y con el de serie Dropbear
+# intentaba arrancar en el 22, chocaba con OpenSSH y quedaba caido.
+# Un override de systemd fija el arranque igual en todas.
+ui_info "Configurando el puerto $db_port..."
+touch /etc/default/dropbear
+sed -i '/^DROPBEAR_PORT=/d; /^NO_START=/d' /etc/default/dropbear
+printf 'DROPBEAR_PORT=%s\nNO_START=0\n' "$db_port" >> /etc/default/dropbear
+mkdir -p /etc/systemd/system/dropbear.service.d
+cat > /etc/systemd/system/dropbear.service.d/vpsservice.conf <<EOF
+# Generado por VPSService: Dropbear en primer plano, en su puerto.
+# -W 65536: ventana de recepcion mayor, mas caudal por tunel.
+[Service]
+Type=simple
+ExecStart=
+ExecStart=/usr/sbin/dropbear -EF -p ${db_port} -W 65536
+Restart=always
+RestartSec=3
+EOF
+systemctl daemon-reload
 systemctl enable dropbear &>/dev/null
 systemctl restart dropbear &>/dev/null
+inst_ufw_allow "$db_port/tcp"
+inst_mark dropbear
 
-# Abrir en firewall si aplica
-if command -v ufw &>/dev/null; then
-    ufw allow "$db_port"/tcp &>/dev/null
-fi
-
-echo ""
+ui_blank
 ui_solid
-ui_ok "Dropbear SSH instalado y activo."
+inst_check_service dropbear "Dropbear"
 echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Puerto" "$db_port/TCP" 34)"
 ui_solid
 ui_pause

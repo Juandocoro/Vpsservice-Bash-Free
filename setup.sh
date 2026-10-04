@@ -94,7 +94,10 @@ fi
 # =========================================================
 echo -e "\033[0;33m[*]\033[0m Instalando dependencias base..."
 apt-get update -yq &>/dev/null
-apt-get install -yq curl stunnel4 openssl dropbear net-tools cmake build-essential python3 python3-pip &>/dev/null
+# Dropbear ya no se instala de serie: en Ubuntu reciente arranca solo en el
+# 22, choca con OpenSSH y queda como servicio fallido. Su instalador lo pone
+# cuando el admin lo elige.
+DEBIAN_FRONTEND=noninteractive apt-get install -yq curl stunnel4 openssl net-tools cmake build-essential python3 file &>/dev/null
 systemctl stop stunnel4 &>/dev/null
 systemctl disable stunnel4 &>/dev/null
 

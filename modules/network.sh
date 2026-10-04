@@ -48,10 +48,13 @@ function refresh_ports() {
     PORT_SQUID=$(_port_of tcp "squid")
 
     # UDP Custom — Hysteria2 (escucha en UDP, publico, sin SSH)
-    PORT_UDPCUSTOM=$(_port_of udp "hysteria")
-    if [ -z "$PORT_UDPCUSTOM" ] && systemctl is-active --quiet hysteria-server 2>/dev/null; then
-        PORT_UDPCUSTOM=$(grep '^listen:' /etc/hysteria/config.yaml 2>/dev/null | awk -F: '{print $NF}' | tr -d ' ')
+    # El proceso se llama udp-custom (antes se buscaba "hysteria" y el
+    # panel nunca lo detectaba: salia OFF aunque estuviera funcionando).
+    PORT_UDPCUSTOM=$(_port_of udp "udp-custom")
+    if [ -z "$PORT_UDPCUSTOM" ] && systemctl is-active --quiet udp-custom 2>/dev/null; then
+        PORT_UDPCUSTOM=$(grep -oE '"listen": *":[0-9]+' /root/udp/config.json 2>/dev/null | grep -oE '[0-9]+$')
     fi
+    [ -z "$PORT_UDPCUSTOM" ] && PORT_UDPCUSTOM=$(_port_of udp "hysteria")
     # Compatibilidad: PORT_UDP apunta a UDP Custom para no romper logica existente
     PORT_UDP="$PORT_UDPCUSTOM"
 
@@ -127,6 +130,8 @@ _configured_ports() {
         echo "$p/${proto:-udp}"
     fi
     p=$(grep -E 'ListenPort' /etc/wireguard/wg0.conf 2>/dev/null | grep -oE '[0-9]+')
+    [ -n "$p" ] && echo "$p/udp"
+    p=$(grep -oE '"listen": *":[0-9]+' /root/udp/config.json 2>/dev/null | grep -oE '[0-9]+$')
     [ -n "$p" ] && echo "$p/udp"
     if systemctl is-enabled --quiet slowdns 2>/dev/null; then echo "5300/udp"; echo "53/udp"; fi
     # Nodos residenciales: cada nodo WireGuard escucha en su propio puerto.
@@ -215,10 +220,17 @@ VPS_SERVICES=(
 
 # Servicios SysV: systemd no sabe si "estan habilitados", asi que se
 # deduce de que el instalador del panel dejo su configuracion.
+# Los instaladores dejan una marca en /var/lib/vpsservice/proto. Asi un
+# Dropbear que llego como dependencia (setup.sh lo instala y en Ubuntu
+# recientes queda habilitado en el 22, donde choca con OpenSSH) no sale
+# como "caido" ni el guardian lo reinicia sin parar.
 _svc_installed() {
+    [ -f "/var/lib/vpsservice/proto/$1" ] && return 0
     case "$1" in
         stunnel4) [ -f /etc/stunnel/stunnel.conf ] ;;
-        dropbear) grep -q '^NO_START=0' /etc/default/dropbear 2>/dev/null ;;
+        dropbear) [ -f /etc/systemd/system/dropbear.service.d/vpsservice.conf ] || \
+                  { grep -q '^NO_START=0' /etc/default/dropbear 2>/dev/null && \
+                    ! grep -qE '^DROPBEAR_PORT=22$' /etc/default/dropbear 2>/dev/null; } ;;
         *)        systemctl is-enabled --quiet "$1" 2>/dev/null ;;
     esac
 }
@@ -260,7 +272,11 @@ _parse_services_down() {
     _emit() {
         # Los servicios con script SysV (stunnel4, dropbear en algunas
         # versiones) salen como 'generated': se miran por su config.
-        [ "$ufs" = "generated" ] && _svc_installed "${id%.service}" && ufs="enabled"
+        case "${id%.service}" in
+            # Estos dos se juzgan por la marca del panel, no por systemd.
+            stunnel4|dropbear) _svc_installed "${id%.service}" && ufs="enabled" || ufs="disabled" ;;
+            *) [ "$ufs" = "generated" ] && _svc_installed "${id%.service}" && ufs="enabled" ;;
+        esac
         if [ -n "$id" ] && [ "$ufs" = "enabled" ] && [ "$act" != "active" ] && [ "$act" != "activating" ] && [ "$act" != "reloading" ]; then
             for e in "${VPS_SERVICES[@]}"; do
                 [ "${e%%|*}.service" = "$id" ] && echo "${e#*|}"

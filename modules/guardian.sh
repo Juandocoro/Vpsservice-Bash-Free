@@ -62,6 +62,13 @@ _guard_run() {
     done
     _guard_unit homevpn-watchdog.service
 
+    # UDP Custom pone su propia regla para TODO el UDP: su cadena de
+    # proteccion tiene que seguir por encima o se lleva los demas
+    # servicios UDP (nodos del gateway, WireGuard, OpenVPN, SlowDNS).
+    if systemctl is-active --quiet udp-custom 2>/dev/null; then
+        bash "$_GDIR/installers/udp_installer.sh" --protect-check 2>/dev/null
+    fi
+
     # 4. Salida residencial: si estaba encendida y sus reglas han
     #    desaparecido (un reinicio de red, alguien vacio iptables...),
     #    se vuelven a poner. Sin esto los usuarios saldrian por la IP

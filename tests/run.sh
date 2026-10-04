@@ -426,6 +426,65 @@ SIN_ACCION=$(sed 's/function //g; s/() *{//g' <<<"$SIN_ACCION")
 [ -z "$SIN_ACCION" ] && ok "todas las opciones visibles hacen algo" || bad "opciones sin accion" "$SIN_ACCION"
 
 # =========================================================
+group "Instaladores: lo que podia tumbar el servicio"
+# =========================================================
+INST=modules/installers
+grep -lE 'daybreakersx|Kurosaki|noobconner21' $INST/*.sh >/dev/null && bad "se descargan binarios de terceros" \
+    || ok "ningun binario de repositorios de terceros"
+grep -lE 'install[^#]*iptables-persistent|netfilter-persistent save|> */etc/iptables/rules' $INST/*.sh modules/*.sh >/dev/null \
+    && bad "se usa iptables-persistent (choca con UFW)" || ok "sin iptables-persistent: no puede llevarse UFW por delante"
+grep -q 'http_access allow all' $INST/squid_installer.sh && bad "Squid es un proxy abierto" || ok "Squid solo da paso hacia este VPS"
+grep -v '^\s*#' $INST/shadowsocks_installer.sh | grep -q 'vpsservice2024' && bad "Shadowsocks con clave fija" || ok "Shadowsocks sin clave por defecto conocida"
+grep -v '^\s*#' $INST/slowdns_installer.sh | grep -q 'riza/slowdns' && bad "SlowDNS apunta a un repo que no existe" || ok "SlowDNS ya no usa un repositorio inexistente"
+grep -q 'bamsoftware.com/git/dnstt' $INST/slowdns_installer.sh && ok "SlowDNS se compila desde dnstt (lo que usan las apps)" || bad "SlowDNS sin dnstt"
+grep -q 'ExecStart=$BIN server' $INST/udp_installer.sh && ok "UDP Custom arranca con 'server'" || bad "UDP Custom sin el subcomando server"
+grep -q 'status-version 2' $INST/openvpn_installer.sh && ok "OpenVPN escribe el estado que lee el monitor" || bad "monitor de OpenVPN a cero"
+grep -qF 'if [ -s "$EASYRSA_DIR/pki/ca.crt" ]' $INST/openvpn_installer.sh && ok "reinstalar OpenVPN conserva la PKI" || bad "reinstalar OpenVPN borra la PKI"
+grep -q 'get_current_clients_json)' $INST/v2ray_installer.sh && ok "reinstalar V2Ray conserva los clientes" || bad "reinstalar V2Ray borra los clientes"
+for f in $INST/*_installer.sh; do
+    grep -qE 'curl -4 -s ifconfig\.me( |$|\))' "$f" && { bad "IP sin limite de tiempo en $(basename "$f")"; continue; }
+done
+ok "ningun instalador pide la IP sin limite de tiempo"
+
+group "Puertos que UDP Custom no puede quedarse"
+source $INST/udp_installer.sh
+FAKE="$TMP/etc"; mkdir -p "$FAKE/wireguard" "$FAKE/openvpn" "$FAKE/shadowsocks-libev" "$FAKE/systemd/system"
+echo "ListenPort = 51900" > "$FAKE/wireguard/wg0.conf"
+printf 'port 1194\nproto udp\n' > "$FAKE/openvpn/server.conf"
+echo '"server_port": 8388,' > "$FAKE/shadowsocks-libev/config.json"
+touch "$FAKE/systemd/system/slowdns.service"
+echo "ListenPort = 51821" > "$FAKE/wireguard/wg-home2.conf"
+EXTRA="$TMP/extra.conf"; echo "7000:7010" > "$EXTRA"
+PROT=$(_udpc_protected "$FAKE" | sort -u | paste -sd, -)
+for p in 51820:51835 51900 1194 8388 5300 51821 7000:7010; do
+    [[ ",$PROT," == *",$p,"* ]] && ok "protege $p" || bad "no protege $p" "$PROT"
+done
+printf 'port 1194\nproto tcp\n' > "$FAKE/openvpn/server.conf"
+[[ ",$(_udpc_protected "$FAKE" | paste -sd, -)," == *",1194,"* ]] && bad "protege OpenVPN TCP (no hace falta)" || ok "OpenVPN por TCP no ocupa UDP"
+RR=$(_udpc_rules 1 1194 5300)
+is "primero el loopback" "$(sed -n 1p <<<"$RR")" "-A UDPC_PROTECT -i lo -j ACCEPT"
+is "con SlowDNS, el 53 se le entrega" "$(sed -n 2p <<<"$RR")" "-A UDPC_PROTECT -p udp --dport 53 -j REDIRECT --to-ports 5300"
+grep -q 'dport 53 ' <<<"$(_udpc_rules 0 1194)" && bad "sin SlowDNS se aparta el 53" || ok "sin SlowDNS el 53 queda para UDP Custom"
+
+group "Piezas comunes de los instaladores"
+source $INST/_common.sh
+for p in 1 80 65535; do inst_port_valid "$p" && ok "puerto $p valido" || bad "rechaza el puerto $p"; done
+for p in 0 65536 abc "8 0" -1; do inst_port_valid "$p" && bad "acepta '$p'" || ok "rechaza '$p'"; done
+
+group "wg-home.conf del nodo 1"
+WGH_PRIV_KEY="$TMP/priv.key"; echo "cHJpdmFkYXByaXZhZGFwcml2YWRhcHJpdmFkYTEyMzQ=" > "$WGH_PRIV_KEY"
+: > "$WGH_NODES_CONF"; _wgh_nodes_add casa "$K1" wg >/dev/null
+CONF1=$(_wgh_render_conf "$(cat "$WGH_PRIV_KEY")" "")
+grep -q 'AllowedIPs *= 0.0.0.0/0' <<<"$CONF1" && ok "el nodo 1 recibe 0.0.0.0/0 (el retorno de Internet entra)" || bad "nodo 1 sin 0.0.0.0/0"
+grep -q '/32' <<<"$CONF1" && bad "vuelve el /32 que descartaba el retorno" || ok "sin el /32 del modelo antiguo"
+grep -q 'Table *= off' <<<"$CONF1" && ok "Table = off (no toca la tabla main)" || bad "falta Table = off"
+grep -q 'n_port=$(_wgn_port "$n_idx")' modules/installers/wg_home.sh && ok "DATOS PARA EL NODO da el puerto de cada nodo" \
+    || bad "DATOS PARA EL NODO da a todos el puerto del nodo 1"
+
+group "Entrada de texto"
+printf 'ab\\c1\n' | { ui_prompt x >/dev/null; is "una contraseña con barra invertida llega entera" "$REPLY_UI" 'ab\c1'; }
+
+# =========================================================
 group "Resolucion de cuentas"
 # =========================================================
 source modules/users.sh 2>/dev/null

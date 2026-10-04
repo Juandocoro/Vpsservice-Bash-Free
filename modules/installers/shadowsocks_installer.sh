@@ -1,35 +1,30 @@
 #!/bin/bash
-
-if [ "$EUID" -ne 0 ]; then
-  echo "Error: Ejecutar como root."
-  exit 1
-fi
-
-# Lenguaje visual compartido del panel
+# Instalador Shadowsocks-libev — proxy cifrado
 _INST_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-source "$_INST_DIR/../ui.sh"
+source "$_INST_DIR/_common.sh"
+inst_root
 
-clear
+CONF=/etc/shadowsocks-libev/config.json
 
-ui_header "FREE · INSTALADOR"
-ui_section "SHADOWSOCKS"
-echo -e "${UI_PAD}${DM}Shadowsocks es un proxy cifrado SOCKS5 diseñado${CR}"
-echo -e "${UI_PAD}${DM}para evadir censura y restricciones de red.${CR}"
-echo ""
+inst_header "SHADOWSOCKS" "proxy cifrado aes-256-gcm · TCP + UDP"
+ui_blank
 
-ui_prompt "Puerto para Shadowsocks (Enter = 8388 · 0 = cancelar)"; ss_port="$REPLY_UI"
-[ "$ss_port" = "0" ] && exit 0
-[ -z "$ss_port" ] && ss_port=8388
+actual=$(grep '"server_port"' "$CONF" 2>/dev/null | grep -oE '[0-9]+')
+inst_ask_port "Puerto para Shadowsocks" "${actual:-8388}" tcp ss-server || exit 0
+ss_port="$INST_PORT"
 
-read -s -p "Contraseña de cifrado: " ss_pass
-echo ""
-if [ -z "$ss_pass" ]; then ss_pass="vpsservice2024"; fi
+# Antes, si se dejaba vacia, la clave era fija ("vpsservice2024") e
+# igual en todos los VPS que usaran el panel: un proxy abierto para
+# cualquiera que conociera el script. Ahora se genera una aleatoria.
+ui_prompt "Contraseña (Enter = generar una segura)"
+ss_pass="$REPLY_UI"
+[ -z "$ss_pass" ] && ss_pass=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 16)
+ss_pass=${ss_pass//\"/}
 
 ui_info "Instalando Shadowsocks-libev..."
-apt-get install -yq shadowsocks-libev &>/dev/null
+inst_apt shadowsocks-libev || { ui_err "No se pudo instalar shadowsocks-libev."; ui_pause; exit 1; }
 
-ui_info "Escribiendo configuración..."
-cat <<EOF > /etc/shadowsocks-libev/config.json
+cat > "$CONF" <<EOF
 {
     "server": "0.0.0.0",
     "server_port": $ss_port,
@@ -40,24 +35,26 @@ cat <<EOF > /etc/shadowsocks-libev/config.json
     "mode": "tcp_and_udp"
 }
 EOF
+chmod 640 "$CONF"
 
 systemctl enable shadowsocks-libev &>/dev/null
 systemctl restart shadowsocks-libev &>/dev/null
+inst_ufw_allow "$ss_port/tcp" "$ss_port/udp"
+inst_mark shadowsocks-libev
 
-if command -v ufw &>/dev/null; then
-    ufw allow "$ss_port"/tcp &>/dev/null
-    ufw allow "$ss_port"/udp &>/dev/null
-fi
+SERVER_IP=$(_public_ip)
+# Enlace ss:// (SIP002): la mayoria de apps lo importan de un toque.
+LINK="ss://$(printf '%s' "aes-256-gcm:${ss_pass}" | base64 -w0)@${SERVER_IP}:${ss_port}#VPSService"
 
-SERVER_IP=$(curl -4 -s ifconfig.me)
-
-echo ""
+ui_blank
 ui_solid
-ui_ok "Shadowsocks activo."
+inst_check_service shadowsocks-libev "Shadowsocks"
 echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Servidor" "$SERVER_IP" 34)"
 echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Puerto" "$ss_port" 34)"
 echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Cifrado" "aes-256-gcm" 34)"
 echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Password" "$ss_pass" 34)"
-echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Modo" "TCP + UDP" 34)"
+ui_rule
+echo -e "${UI_PAD}${DM}Enlace para importar en la app:${CR}"
+echo "$LINK"
 ui_solid
 ui_pause

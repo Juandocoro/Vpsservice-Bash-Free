@@ -1,167 +1,183 @@
 #!/bin/bash
-
-if [ "$EUID" -ne 0 ]; then
-  echo "Error: Ejecutar como root."
-  exit 1
-fi
-
-# Lenguaje visual compartido del panel
+# =========================================================
+# Instalador OpenVPN
+# ---------------------------------------------------------
+# Cambios respecto a la version anterior, y por que:
+#  · Reinstalar ya no borra la PKI. 'init-pki --batch' creaba
+#    una CA nueva y todos los .ovpn entregados dejaban de valer.
+#  · Sin iptables-persistent: en Ubuntu entra en conflicto con
+#    UFW (podia desinstalar el cortafuegos del panel) y su
+#    pregunta interactiva, oculta, dejaba el instalador "colgado".
+#    El NAT lo pone y lo quita el propio servicio.
+#  · Usuario y contraseña = las CUENTAS DEL PANEL (PAM). Antes
+#    bastaba el archivo: no caducaba nunca y el monitor no sabia
+#    quien era quien. Un solo perfil sirve para todos.
+#  · 'dh none' (curvas elipticas): sin generar parametros DH, que
+#    en un VPS de un nucleo tardaba varios minutos.
+# =========================================================
 _INST_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-source "$_INST_DIR/../ui.sh"
+source "$_INST_DIR/_common.sh"
+inst_root
 
-clear
+EASYRSA_DIR=/etc/openvpn/easy-rsa
+CONF=/etc/openvpn/server.conf
+NAT=/etc/openvpn/vpsservice-nat.sh
+PROFILE=/root/cliente-openvpn.ovpn
+STATUS_DIR=/var/log/openvpn
 
-ui_header "FREE · INSTALADOR"
-ui_section "OPENVPN"
-echo -e "${UI_PAD}${DM}OpenVPN es el protocolo VPN más maduro y portable.${CR}"
-echo -e "${UI_PAD}${DM}Genera un archivo .ovpn listo para el cliente.${CR}"
-echo ""
+inst_header "OPENVPN" "perfil .ovpn + usuario y contraseña del panel"
+ui_blank
 
-ui_prompt "Puerto OpenVPN (Enter = 1194 · 0 = cancelar)"; ovpn_port="$REPLY_UI"
-[ "$ovpn_port" = "0" ] && exit 0
-[ -z "$ovpn_port" ] && ovpn_port=1194
+act_port=$(awk '/^port /{print $2}' "$CONF" 2>/dev/null)
+act_proto=$(awk '/^proto /{print $2}' "$CONF" 2>/dev/null)
+while true; do
+    ui_prompt "Protocolo udp o tcp (Enter = ${act_proto:-udp})"
+    proto="${REPLY_UI:-${act_proto:-udp}}"
+    [[ "$proto" == "udp" || "$proto" == "tcp" ]] && break
+    ui_err "Escribe udp o tcp."
+done
+inst_ask_port "Puerto OpenVPN" "${act_port:-1194}" "$proto" openvpn || exit 0
+port="$INST_PORT"
 
-ui_prompt "Protocolo UDP o TCP [udp/tcp] (Defecto: udp)"; ovpn_proto="$REPLY_UI"
-if [ -z "$ovpn_proto" ]; then ovpn_proto="udp"; fi
-
-SERVER_IP=$(curl -4 -s ifconfig.me)
+SERVER_IP=$(_public_ip)
+[[ "$SERVER_IP" =~ ^[0-9.]+$ ]] || { ui_err "No se pudo averiguar la IP pública del VPS."; ui_pause; exit 1; }
 
 ui_info "Instalando OpenVPN y Easy-RSA..."
-apt-get install -yq openvpn easy-rsa &>/dev/null
+inst_apt openvpn easy-rsa || { ui_err "No se pudo instalar OpenVPN."; ui_pause; exit 1; }
 
-ui_info "Inicializando PKI (infraestructura de claves)..."
-EASYRSA_DIR="/etc/openvpn/easy-rsa"
-mkdir -p "$EASYRSA_DIR"
-cp -r /usr/share/easy-rsa/* "$EASYRSA_DIR/" 2>/dev/null
+# --- PKI: se reutiliza si existe ---
+if [ -s "$EASYRSA_DIR/pki/ca.crt" ] && [ -s "$EASYRSA_DIR/pki/issued/server.crt" ]; then
+    ui_ok "Se conserva la PKI existente: los perfiles entregados siguen valiendo."
+else
+    ui_info "Creando la PKI (CA y certificado del servidor)..."
+    mkdir -p "$EASYRSA_DIR"
+    cp -r /usr/share/easy-rsa/* "$EASYRSA_DIR/" 2>/dev/null
+    (
+        cd "$EASYRSA_DIR" || exit 1
+        ./easyrsa --batch init-pki &>/dev/null
+        ./easyrsa --batch build-ca nopass &>/dev/null
+        ./easyrsa --batch gen-req server nopass &>/dev/null
+        ./easyrsa --batch sign-req server server &>/dev/null
+        ./easyrsa --batch gen-req client nopass &>/dev/null
+        ./easyrsa --batch sign-req client client &>/dev/null
+    )
+    [ -s "$EASYRSA_DIR/pki/issued/server.crt" ] || { ui_err "No se pudo crear la PKI."; ui_pause; exit 1; }
+fi
+[ -s /etc/openvpn/ta.key ] || openvpn --genkey secret /etc/openvpn/ta.key &>/dev/null \
+    || openvpn --genkey --secret /etc/openvpn/ta.key &>/dev/null
 
-cd "$EASYRSA_DIR"
-./easyrsa --batch init-pki &>/dev/null
-./easyrsa --batch build-ca nopass &>/dev/null
-./easyrsa --batch gen-req server nopass &>/dev/null
-./easyrsa --batch sign-req server server &>/dev/null
-./easyrsa --batch gen-dh &>/dev/null
-openvpn --genkey --secret /etc/openvpn/ta.key &>/dev/null
-
-# FIX: el perfil de cliente necesita su propio certificado firmado por la CA.
-# Antes el instalador prometia un .ovpn que nunca generaba.
-ui_info "Generando certificado del cliente..."
-./easyrsa --batch gen-req client nopass &>/dev/null
-./easyrsa --batch sign-req client client &>/dev/null
-
-# FIX: el log de estado vive en /var/log/openvpn/ (la ruta que lee el monitor
-# de conexiones en modules/users.sh). Antes se escribia en /var/log/ a secas
-# y el contador de usuarios OpenVPN siempre daba cero.
-STATUS_DIR="/var/log/openvpn"
+PAM_PLUGIN=$(find /usr/lib -name 'openvpn-plugin-auth-pam.so' 2>/dev/null | head -1)
 mkdir -p "$STATUS_DIR"
 
-ui_info "Escribiendo configuración del servidor..."
-cat <<EOF > /etc/openvpn/server.conf
-port $ovpn_port
-proto $ovpn_proto
+cat > "$CONF" <<EOF
+port $port
+proto $proto
 dev tun
 ca $EASYRSA_DIR/pki/ca.crt
 cert $EASYRSA_DIR/pki/issued/server.crt
 key $EASYRSA_DIR/pki/private/server.key
-dh $EASYRSA_DIR/pki/dh.pem
+dh none
 tls-auth /etc/openvpn/ta.key 0
 server 10.8.0.0 255.255.255.0
 push "redirect-gateway def1 bypass-dhcp"
+push "dhcp-option DNS 1.1.1.1"
 push "dhcp-option DNS 8.8.8.8"
-push "dhcp-option DNS 8.8.4.4"
 keepalive 10 120
 cipher AES-256-CBC
 persist-key
 persist-tun
-status $STATUS_DIR/openvpn-status.log
-verb 0
+status $STATUS_DIR/openvpn-status.log 10
+# Formato v2: lineas CLIENT_LIST, que es lo que lee el monitor del panel.
+# Con el v1 por defecto el contador de OpenVPN daba siempre 0.
+status-version 2
+verb 1
+EOF
+if [ -n "$PAM_PLUGIN" ]; then
+    cat >> "$CONF" <<EOF
+# Cuentas del panel: caducidad incluida. El nombre de usuario pasa a
+# ser el del certificado, asi el monitor de conexiones lo muestra.
+plugin $PAM_PLUGIN login
+username-as-common-name
+duplicate-cn
+EOF
+fi
+
+# --- NAT gestionado por el propio servicio ---
+cat > "$NAT" <<'EOF'
+#!/bin/sh
+# NAT de OpenVPN (VPSService). Lo llama systemd al arrancar y al parar.
+IF=$(ip route show default | awk '/^default/{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+A="-s 10.8.0.0/24 -o $IF -j MASQUERADE"
+if [ "$1" = "up" ]; then
+    iptables -t nat -C POSTROUTING $A 2>/dev/null || iptables -t nat -A POSTROUTING $A
+    iptables -C FORWARD -i tun0 -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -i tun0 -j ACCEPT
+    iptables -C FORWARD -o tun0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
+        iptables -I FORWARD 1 -o tun0 -m state --state RELATED,ESTABLISHED -j ACCEPT
+else
+    iptables -t nat -D POSTROUTING $A 2>/dev/null
+    iptables -D FORWARD -i tun0 -j ACCEPT 2>/dev/null
+    iptables -D FORWARD -o tun0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null
+fi
+exit 0
+EOF
+chmod 755 "$NAT"
+mkdir -p /etc/systemd/system/openvpn@server.service.d
+cat > /etc/systemd/system/openvpn@server.service.d/vpsservice.conf <<EOF
+[Service]
+ExecStartPost=$NAT up
+ExecStopPost=$NAT down
+Restart=always
+RestartSec=5
 EOF
 
-# FIX: no duplicar la linea en sysctl.conf en cada reinstalacion.
-ui_info "Activando IP forwarding..."
-if ! grep -qE "^net\.ipv4\.ip_forward\s*=\s*1" /etc/sysctl.conf 2>/dev/null; then
-    sed -i -E '/^#?\s*net\.ipv4\.ip_forward/d' /etc/sysctl.conf
-    echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
-fi
+# Forwarding persistente sin tocar sysctl.conf a ciegas
+echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/90-vpsservice-forward.conf
 sysctl -w net.ipv4.ip_forward=1 &>/dev/null
-sysctl -p &>/dev/null
-
-# FIX: sin NAT los clientes conectaban pero no tenian salida a internet.
-# 'redirect-gateway' manda todo el trafico al VPS y alli moria.
-ui_info "Configurando NAT para la red 10.8.0.0/24..."
-NET_IFACE=$(ip route | grep default | awk '{print $5}' | head -1)
-if [ -n "$NET_IFACE" ]; then
-    iptables -t nat -C POSTROUTING -s 10.8.0.0/24 -o "$NET_IFACE" -j MASQUERADE 2>/dev/null \
-        || iptables -t nat -A POSTROUTING -s 10.8.0.0/24 -o "$NET_IFACE" -j MASQUERADE
-    iptables -C FORWARD -i tun0 -o "$NET_IFACE" -j ACCEPT 2>/dev/null \
-        || iptables -I FORWARD 1 -i tun0 -o "$NET_IFACE" -j ACCEPT
-    iptables -C FORWARD -i "$NET_IFACE" -o tun0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null \
-        || iptables -I FORWARD 1 -i "$NET_IFACE" -o tun0 -m state --state RELATED,ESTABLISHED -j ACCEPT
-
-    # Persistir las reglas para que sobrevivan al reinicio
-    apt-get install -yq iptables-persistent &>/dev/null
-    mkdir -p /etc/iptables
-    iptables-save > /etc/iptables/rules.v4 2>/dev/null
-fi
-
-# FIX: UFW descarta el trafico reenviado por defecto (DEFAULT_FORWARD_POLICY=DROP),
-# lo que bloqueaba la VPN aunque el NAT estuviera bien puesto.
-if [ -f /etc/default/ufw ]; then
+if [ -f /etc/default/ufw ] && grep -q '^DEFAULT_FORWARD_POLICY="DROP"' /etc/default/ufw; then
     sed -i 's/^DEFAULT_FORWARD_POLICY=.*/DEFAULT_FORWARD_POLICY="ACCEPT"/' /etc/default/ufw
     ufw reload &>/dev/null
 fi
 
+systemctl daemon-reload
 systemctl enable openvpn@server &>/dev/null
 systemctl restart openvpn@server &>/dev/null
+inst_ufw_allow "$port/$proto"
+inst_mark "openvpn@server"
 
-if command -v ufw &>/dev/null; then
-    ufw allow "$ovpn_port"/"$ovpn_proto" &>/dev/null
-fi
+# --- Perfil unico ---
+{
+    echo "client"
+    echo "dev tun"
+    echo "proto $proto"
+    echo "remote $SERVER_IP $port"
+    echo "resolv-retry infinite"
+    echo "nobind"
+    echo "persist-key"
+    echo "persist-tun"
+    echo "remote-cert-tls server"
+    echo "cipher AES-256-CBC"
+    echo "verb 1"
+    echo "key-direction 1"
+    [ -n "$PAM_PLUGIN" ] && echo "auth-user-pass"
+    echo "<ca>"; cat "$EASYRSA_DIR/pki/ca.crt"; echo "</ca>"
+    echo "<cert>"; openssl x509 -in "$EASYRSA_DIR/pki/issued/client.crt" 2>/dev/null; echo "</cert>"
+    echo "<key>"; cat "$EASYRSA_DIR/pki/private/client.key"; echo "</key>"
+    echo "<tls-auth>"; cat /etc/openvpn/ta.key; echo "</tls-auth>"
+} > "$PROFILE"
+chmod 600 "$PROFILE"
 
-# FIX: generar el perfil .ovpn unificado que el banner prometia.
-ui_info "Generando perfil de cliente .ovpn..."
-CLIENT_FILE="/root/cliente-openvpn.ovpn"
-cat <<EOF > "$CLIENT_FILE"
-client
-dev tun
-proto $ovpn_proto
-remote $SERVER_IP $ovpn_port
-resolv-retry infinite
-nobind
-persist-key
-persist-tun
-remote-cert-tls server
-cipher AES-256-CBC
-verb 0
-key-direction 1
-<ca>
-$(cat "$EASYRSA_DIR/pki/ca.crt")
-</ca>
-<cert>
-$(openssl x509 -in "$EASYRSA_DIR/pki/issued/client.crt" 2>/dev/null)
-</cert>
-<key>
-$(cat "$EASYRSA_DIR/pki/private/client.key")
-</key>
-<tls-auth>
-$(cat /etc/openvpn/ta.key)
-</tls-auth>
-EOF
-chmod 600 "$CLIENT_FILE"
-
-echo ""
+ui_blank
 ui_solid
-if systemctl is-active --quiet openvpn@server; then
-    ui_ok "OpenVPN activo."
-else
-    ui_err "OpenVPN NO arrancó. Revisa: journalctl -u openvpn@server"
-fi
+inst_check_service openvpn@server "OpenVPN"
 echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Servidor" "$SERVER_IP" 34)"
-echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Puerto" "$ovpn_port/$ovpn_proto" 34)"
-echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Cifrado" "AES-256-CBC" 34)"
-echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Red VPN" "10.8.0.0/24" 34)"
-echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Perfil" "$CLIENT_FILE" 34)"
-ui_solid
-ui_warn "Descarga el perfil al móvil/PC con:"
-echo "    scp root@$SERVER_IP:$CLIENT_FILE ."
+echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Puerto" "$port/$proto" 34)"
+echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Perfil" "$PROFILE" 34)"
+if [ -n "$PAM_PLUGIN" ]; then
+    echo -e "${UI_PAD}${DM}Un mismo perfil para todos: cada cliente entra con su usuario y${CR}"
+    echo -e "${UI_PAD}${DM}contraseña del panel, y deja de entrar cuando su cuenta vence.${CR}"
+else
+    ui_warn "No se encontró el plugin PAM: el perfil entra sin usuario ni contraseña."
+fi
+echo -e "${UI_PAD}${DM}Descárgalo con: ${WH}scp root@${SERVER_IP}:${PROFILE} .${CR}"
 ui_solid
 ui_pause

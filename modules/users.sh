@@ -261,7 +261,7 @@ _ficha_cuenta() {
     [ -n "${PORT_SSL:-}" ]       && echo -e "${UI_PAD}$(ui_cell "SSL/TLS  " "$PORT_SSL" 20 "$CY")"
     [ -n "${PORT_WS:-}" ]        && echo -e "${UI_PAD}$(ui_cell "WebSocket" "$PORT_WS" 20 "$CY")"
     [ -n "${PORT_DROPBEAR:-}" ]  && echo -e "${UI_PAD}$(ui_cell "Dropbear " "$PORT_DROPBEAR" 20 "$CY")"
-    [ -n "${PORT_UDPCUSTOM:-}" ] && echo -e "${UI_PAD}$(ui_cell "UDP      " "$PORT_UDPCUSTOM" 20 "$CY")"
+    [ -n "${PORT_UDPCUSTOM:-}" ] && echo -e "${UI_PAD}$(ui_cell "UDP Custom" "${ip}:1-65535@${u}:${pass}" 20 "$CY")"
     [ -n "${PORT_BADVPN:-}" ]    && echo -e "${UI_PAD}$(ui_cell "BadVPN   " "127.0.0.1:$PORT_BADVPN" 20 "$CY")"
     if [ -n "${PORT_WS:-}" ]; then
         ui_blank

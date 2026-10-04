@@ -1,393 +1,249 @@
 #!/bin/bash
-
-if [ "$EUID" -ne 0 ]; then
-  echo "Error: Ejecutar como root."
-  exit 1
-fi
-
-# Lenguaje visual compartido del panel
+# =========================================================
+# UDP CUSTOM — tunel UDP directo de HTTP Custom
+# ---------------------------------------------------------
+# Lo que dice el binario oficial (http-custom/udp-custom),
+# comprobado sobre el propio ejecutable:
+#  · se arranca con 'udp-custom server' (el panel lo lanzaba
+#    sin 'server' y no llegaba a escuchar);
+#  · autentica por PAM, o sea con las CUENTAS DEL PANEL: la
+#    lista de usuarios aparte que mantenia el panel no se usaba;
+#  · el mismo pone la regla de iptables que le manda TODO el UDP
+#    entrante (1-65535).
+#
+# Eso ultimo se llevaba por delante cualquier otro servicio UDP:
+# los nodos WireGuard del gateway (51820+), WireGuard, OpenVPN,
+# SlowDNS, Shadowsocks... Ademas el panel anadia otra regla igual
+# por su cuenta. Ahora una cadena propia, colocada POR ENCIMA de la
+# del binario, deja esos puertos fuera; el guardian la recoloca si
+# hiciera falta.
+# =========================================================
 _INST_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-source "$_INST_DIR/../ui.sh"
+source "$_INST_DIR/_common.sh"
 
-CR="\033[0m"; GR="\033[1;32m"; RD="\033[0;31m"
-YL="\033[0;33m"; CY="\033[1;36m"; WH="\033[1;37m"; DM="\033[2;37m"
+UDP_DIR=/root/udp
+BIN=$UDP_DIR/udp-custom
+CONF=$UDP_DIR/config.json
+EXTRA=$UDP_DIR/protegidos.conf          # puertos extra que el admin protege
+UNIT=/etc/systemd/system/udp-custom.service
+INTERNAL=36712
+CHAIN=UDPC_PROTECT
+BIN_URL="https://raw.githubusercontent.com/http-custom/udp-custom/main/bin/udp-custom-linux-amd64"
 
-UDP_DIR="/root/udp"
-CONFIG_FILE="$UDP_DIR/config.json"
-USERS_FILE="$UDP_DIR/users.conf"
-BINARY="$UDP_DIR/udp-custom"
-SERVICE_FILE="/etc/systemd/system/udp-custom.service"
-
-
-# ─── Reconstruir config.json con usuarios actuales ────────────────────────────
-write_config() {
-    local port="$1"
-    local excludes="$2"   # puertos a excluir ej: "53,5300"
-
-    # Construir objeto passwords
-    local pass_block=""
-    if [ -f "$USERS_FILE" ]; then
-        while IFS=: read -r uname upass; do
-            [[ "$uname" == "#"* ]] && continue
-            [ -z "$uname" ] && continue
-            pass_block+=",\"$uname\":\"$upass\""
-        done < "$USERS_FILE"
-        # quitar coma inicial
-        pass_block="${pass_block:1}"
+# ---------------------------------------------------------
+# Puertos que UDP Custom NUNCA debe quedarse
+# ---------------------------------------------------------
+# Funcion pura sobre ficheros de config (se prueba sin root):
+# imprime puertos o rangos "a:b", uno por linea.
+_udpc_protected() {
+    local etc="${1:-/etc}" f p
+    echo "51820:51835"                                          # nodos del gateway (wg-home*)
+    p=$(grep -E 'ListenPort' "$etc/wireguard/wg0.conf" 2>/dev/null | grep -oE '[0-9]+'); [ -n "$p" ] && echo "$p"
+    if grep -qE '^proto udp' "$etc/openvpn/server.conf" 2>/dev/null || ! grep -qE '^proto ' "$etc/openvpn/server.conf" 2>/dev/null; then
+        p=$(grep -E '^port ' "$etc/openvpn/server.conf" 2>/dev/null | awk '{print $2}'); [ -n "$p" ] && echo "$p"
     fi
+    p=$(grep '"server_port"' "$etc/shadowsocks-libev/config.json" 2>/dev/null | grep -oE '[0-9]+'); [ -n "$p" ] && echo "$p"
+    [ -f "$etc/systemd/system/slowdns.service" ] && echo "5300"
+    for f in "$etc"/wireguard/wg-home*.conf; do
+        [ -f "$f" ] || continue
+        p=$(grep -E 'ListenPort' "$f" | grep -oE '[0-9]+'); [ -n "$p" ] && echo "$p"
+    done
+    grep -oE '^[0-9]+(:[0-9]+)?' "$EXTRA" 2>/dev/null
+}
 
-    local excl_json="[]"
-    if [ -n "$excludes" ]; then
-        # Convertir "53,5300" → [53,5300]
-        excl_json="[$(echo "$excludes" | tr ',' '\n' | awk '{printf "%s,", $1}' | sed 's/,$//')]"
+# Reglas de la cadena (funcion pura).
+#   _udpc_rules <con_slowdns 0|1> <puertos...>
+_udpc_rules() {
+    local sdns="$1"; shift
+    local p
+    echo "-A $CHAIN -i lo -j ACCEPT"
+    # El 53 solo se aparta si hay SlowDNS, y entonces se le entrega a el.
+    # Sin SlowDNS se deja a UDP Custom: muchas cuentas usan el 53 porque
+    # los operadores casi nunca lo bloquean.
+    [ "$sdns" = "1" ] && echo "-A $CHAIN -p udp --dport 53 -j REDIRECT --to-ports 5300"
+    for p in $(printf '%s\n' "$@" | sort -u); do
+        echo "-A $CHAIN -p udp --dport $p -j ACCEPT"
+    done
+}
+
+udpc_protect() {
+    local r sdns=0
+    systemctl is-enabled --quiet slowdns 2>/dev/null && sdns=1
+    iptables -t nat -N "$CHAIN" 2>/dev/null
+    iptables -t nat -F "$CHAIN"
+    while IFS= read -r r; do
+        # shellcheck disable=SC2086
+        [ -n "$r" ] && iptables -t nat $r 2>/dev/null
+    done < <(_udpc_rules "$sdns" $(_udpc_protected))
+    # Siempre la PRIMERA de PREROUTING, por encima de la del binario.
+    while iptables -t nat -D PREROUTING -j "$CHAIN" 2>/dev/null; do :; done
+    iptables -t nat -I PREROUTING 1 -j "$CHAIN"
+    # Restos de versiones anteriores del panel: su propia redireccion
+    # (duplicada con la del binario) y sus RETURN de exclusion.
+    while iptables -t nat -D PREROUTING -p udp -j REDIRECT --to-ports "$INTERNAL" 2>/dev/null; do :; done
+    local old
+    while old=$(iptables -t nat -S PREROUTING 2>/dev/null | grep -E '^-A PREROUTING -p udp -m udp --dport [0-9]+ -j RETURN$' | head -1) && [ -n "$old" ]; do
+        # shellcheck disable=SC2086
+        iptables -t nat ${old/-A /-D } 2>/dev/null || break
+    done
+}
+
+# Para el guardian: barato si todo esta en su sitio.
+udpc_protect_check() {
+    systemctl is-active --quiet udp-custom 2>/dev/null || return 0
+    local primera
+    primera=$(iptables -t nat -S PREROUTING 2>/dev/null | sed -n 2p)
+    [ "$primera" = "-A PREROUTING -j $CHAIN" ] && return 0
+    udpc_protect
+    logger -t vpsservice-guardian "UDP Custom: proteccion de puertos recolocada" 2>/dev/null
+}
+
+udpc_unprotect() {
+    while iptables -t nat -D PREROUTING -j "$CHAIN" 2>/dev/null; do :; done
+    iptables -t nat -F "$CHAIN" 2>/dev/null; iptables -t nat -X "$CHAIN" 2>/dev/null
+}
+
+# ---------------------------------------------------------
+# Instalacion
+# ---------------------------------------------------------
+udpc_install() {
+    inst_header "INSTALAR UDP CUSTOM" "túnel UDP directo · HTTP Custom"
+    ui_blank
+    if [ "$(inst_arch)" != "amd64" ]; then
+        ui_err "UDP Custom solo publica binario para x86_64 y este VPS es $(uname -m)."
+        ui_pause; return
     fi
-
+    ui_info "Descargando el binario oficial (http-custom/udp-custom)..."
     mkdir -p "$UDP_DIR"
-    cat > "$CONFIG_FILE" <<EOF
+    if ! wget -q --timeout=60 -O "$BIN.new" "$BIN_URL" || ! file "$BIN.new" 2>/dev/null | grep -q ELF; then
+        rm -f "$BIN.new"; ui_err "No se pudo descargar. Revisa la conexión del VPS."; ui_pause; return
+    fi
+    mv -f "$BIN.new" "$BIN"; chmod 755 "$BIN"
+
+    # Configuracion oficial: autenticacion 'passwords' sin lista = PAM,
+    # es decir, las cuentas que crea el panel.
+    cat > "$CONF" <<EOF
 {
-  "listen": ":${port}",
-  "stream_buffer": 209715200,
-  "receive_buffer": 104857600,
+  "listen": ":${INTERNAL}",
+  "stream_buffer": 33554432,
+  "receive_buffer": 83886080,
   "auth": {
-    "mode": "passwords",
-    "passwords": {${pass_block}}
-  },
-  "udp_ports_exclude": ${excl_json}
+    "mode": "passwords"
+  }
 }
 EOF
-}
+    chmod 600 "$CONF"
+    [ -f "$UDP_DIR/users.conf" ] && mv -f "$UDP_DIR/users.conf" "$UDP_DIR/users.conf.sin-uso"
 
-# ─── MENÚ PRINCIPAL ───────────────────────────────────────────────────────────
-while true; do
-    clear
-    echo -e "$SEP"
-    echo -e "${WH}             UDP CUSTOM — Túnel UDP Directo        ${CR}"
-    echo -e "$SEP"
-    echo -e "  ${DM}Formato de cuenta: ${WH}ip:puerto@usuario:contraseña${CR}"
-    echo -e "  ${DM}Escucha en rango de puertos UDP 1-65535${CR}"
-    echo ""
-
-    # Estado
-    if systemctl is-active --quiet udp-custom 2>/dev/null; then
-        STATUS="${GR}[ ACTIVO ]${CR}"
-        UDP_PORT=$(grep '"listen"' "$CONFIG_FILE" 2>/dev/null | grep -o '[0-9]*')
-    else
-        STATUS="${RD}[ INACTIVO ]${CR}"
-        UDP_PORT="—"
-    fi
-
-    echo -e "  ${DM}Estado : ${CR}$STATUS"
-    echo -e "  ${DM}Puerto : ${CR}${CY}$UDP_PORT${CR}"
-    echo ""
-    echo -e "  ${CY}1)${CR} ${WH}Instalar UDP Custom${CR}"
-    echo -e "  ${CY}2)${CR} ${WH}Agregar Usuario${CR}"
-    echo -e "  ${CY}3)${CR} ${WH}Ver Usuarios y Cuentas${CR}"
-    echo -e "  ${CY}4)${CR} ${WH}Eliminar Usuario${CR}"
-    echo -e "  ${CY}5)${CR} ${WH}Reiniciar Servicio${CR}"
-    echo -e "  ${CY}0)${CR} ${WH}Volver${CR}"
-    echo -e "$SEP"
-    ui_prompt "$(echo -e ${DM})Elige [0-5]: $(echo -e ${CR})"; op="$REPLY_UI"
-
-    case $op in
-
-    # ─── INSTALAR ─────────────────────────────────────────────────────────────
-    1)
-        clear
-        echo -e "$SEP"
-        echo -e "${WH}            INSTALAR UDP CUSTOM                  ${CR}"
-        echo -e "$SEP"
-        echo -e "  ${DM}UDP Custom escuchará en TODOS los puertos UDP (1-65535)${CR}"
-        echo -e "  ${DM}Puerto interno del binario: ${CR}${CY}36712${CR}  ${DM}(no necesitas cambiarlo)${CR}"
-        echo ""
-
-        INTERNAL_PORT=36712
-
-        echo -e "  ${DM}Puertos a ${WH}EXCLUIR${DM} del rango UDP (ej: BadVPN usa 7300):${CR}"
-        echo -e "  ${DM}Default: ${CY}7300${DM} (BadVPN). Agrega más separados por coma.${CR}"
-        ui_prompt "$(echo -e ${DM})Puertos a excluir (Enter = solo 7300): $(echo -e ${CR})"; excl_input="$REPLY_UI"
-        [ -z "$excl_input" ] && excl_input="7300"
-        # Asegurar que 7300 siempre esté excluido
-        if ! echo "$excl_input" | grep -q "7300"; then
-            excl_input="7300,$excl_input"
-        fi
-        excl_ports="$excl_input"
-
-        # Descargar binario oficial de http-custom/udp-custom
-        mkdir -p "$UDP_DIR"
-        _info "Descargando binario udp-custom..."
-
-        BIN_URLS=(
-            "https://github.com/noobconner21/UDP-Custom-Script/raw/main/udp-custom-linux-amd64"
-            "https://github.com/http-custom/udp-custom/raw/main/bin/udp-custom-linux-amd64"
-        )
-
-        BINARY_OK=false
-        for URL in "${BIN_URLS[@]}"; do
-            if wget -q --timeout=30 -O "$BINARY" "$URL" 2>/dev/null && \
-               file "$BINARY" 2>/dev/null | grep -q "ELF"; then
-                chmod +x "$BINARY"
-                _ok "Binario descargado desde $(echo $URL | awk -F'/' '{print $4}')"
-                BINARY_OK=true
-                break
-            fi
-            rm -f "$BINARY"
-        done
-
-        if [ "$BINARY_OK" = false ]; then
-            _err "No se pudo descargar el binario UDP Custom."
-            _info "Intentando desde git clone..."
-            if git clone https://github.com/http-custom/udp-custom /tmp/udp-custom-src &>/dev/null; then
-                cp /tmp/udp-custom-src/bin/udp-custom-linux-amd64 "$BINARY" 2>/dev/null || true
-                chmod +x "$BINARY" 2>/dev/null
-                rm -rf /tmp/udp-custom-src
-                if file "$BINARY" 2>/dev/null | grep -q "ELF"; then
-                    _ok "Binario instalado desde git clone."
-                    BINARY_OK=true
-                fi
-            fi
-        fi
-
-        if [ "$BINARY_OK" = false ]; then
-            _err "No se pudo obtener el binario. Verifica conexión."
-            sleep 4; continue
-        fi
-
-        # Crear primer usuario
-        echo ""
-        ui_prompt "$(echo -e ${DM})Usuario inicial (Defecto: admin): $(echo -e ${CR})"; first_user="$REPLY_UI"
-        [ -z "$first_user" ] && first_user="admin"
-        first_user=$(echo "$first_user" | tr -d ' ')
-        ui_prompt "$(echo -e ${DM})Contraseña: $(echo -e ${CR})"; first_pass="$REPLY_UI"
-        [ -z "$first_pass" ] && first_pass=$(cat /proc/sys/kernel/random/uuid | cut -c1-10)
-
-        echo "${first_user}:${first_pass}" > "$USERS_FILE"
-        write_config "$INTERNAL_PORT" "$excl_ports"
-
-        # Servicio systemd
-        cat > "$SERVICE_FILE" <<EOF
+    cat > "$UNIT" <<EOF
 [Unit]
-Description=UDP Custom Server
-After=network.target
+Description=UDP Custom (HTTP Custom)
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
 User=root
 WorkingDirectory=$UDP_DIR
-ExecStart=$BINARY
+ExecStart=$BIN server
+ExecStartPost=-/bin/bash -c 'sleep 3; bash $_INST_DIR/udp_installer.sh --protect'
 Restart=always
 RestartSec=3
-StandardOutput=journal
-StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
 EOF
+    systemctl daemon-reload
+    systemctl enable udp-custom &>/dev/null
+    systemctl restart udp-custom &>/dev/null
+    inst_ufw_allow "$INTERNAL/udp"
+    inst_mark udp-custom
+    sleep 4
+    udpc_protect
 
-        systemctl daemon-reload
-        systemctl enable udp-custom &>/dev/null
-        systemctl stop udp-custom &>/dev/null; sleep 1
-        systemctl start udp-custom; sleep 2
+    ui_blank
+    ui_solid
+    inst_check_service udp-custom "UDP Custom"
+    echo -e "${UI_PAD}${DM}Cuentas: las mismas del panel (usuario y contraseña SSH).${CR}"
+    echo -e "${UI_PAD}${DM}En la app, casilla UDP Custom, con este formato:${CR}"
+    echo -e "${UI_PAD}${WH}$(_public_ip):1-65535@usuario:contraseña${CR}"
+    ui_solid
+    ui_pause
+}
 
-        # ── iptables: redirigir TODOS los puertos UDP → puerto interno ──────────
-        _info "Configurando iptables (rango total UDP 1-65535)..."
+udpc_ports_screen() {
+    inst_header "PUERTOS PROTEGIDOS" "UDP que no se entrega a UDP Custom"
+    ui_blank
+    local p
+    while IFS= read -r p; do echo -e "${UI_PAD}${GR}▪${CR} ${WH}${p/:/-}${CR}"; done < <(_udpc_protected | sort -u)
+    systemctl is-enabled --quiet slowdns 2>/dev/null && echo -e "${UI_PAD}${GR}▪${CR} ${WH}53${CR} ${DM}-> SlowDNS${CR}"
+    ui_blank
+    echo -e "${UI_PAD}${DM}Se calculan solos a partir de lo instalado. Puedes añadir más${CR}"
+    echo -e "${UI_PAD}${DM}(un puerto o rango a:b) o quitar uno tuyo escribiéndolo con '-'.${CR}"
+    ui_prompt "Puerto a añadir / -puerto a quitar (Enter = volver)"
+    p="$REPLY_UI"
+    [ -z "$p" ] && return
+    if [[ "$p" =~ ^-([0-9]+(:[0-9]+)?)$ ]]; then
+        sed -i "/^${BASH_REMATCH[1]}\$/d" "$EXTRA" 2>/dev/null
+    elif [[ "$p" =~ ^[0-9]+(:[0-9]+)?$ ]]; then
+        echo "$p" >> "$EXTRA"
+    else
+        ui_err "Formato no válido."; sleep 2; return
+    fi
+    systemctl is-active --quiet udp-custom && udpc_protect
+    ui_ok "Hecho."; sleep 1
+}
 
-        # Limpiar reglas anteriores de UDP Custom
-        iptables -t nat -D PREROUTING -p udp -j REDIRECT --to-port "$INTERNAL_PORT" 2>/dev/null || true
+udpc_uninstall() {
+    ui_confirm "¿Desinstalar UDP Custom?" "n" || return
+    systemctl disable --now udp-custom &>/dev/null
+    rm -f "$UNIT"; systemctl daemon-reload
+    # La regla del binario puede quedarse tras pararlo: se borra todo
+    # lo que apunte a su puerto, o el UDP entrante iria a un puerto muerto.
+    local r
+    while r=$(iptables -t nat -S PREROUTING 2>/dev/null | grep -E "(--to-destination|--to-ports) [^ ]*${INTERNAL}" | head -1) && [ -n "$r" ]; do
+        # shellcheck disable=SC2086
+        iptables -t nat ${r/-A /-D } 2>/dev/null || break
+    done
+    udpc_unprotect
+    rm -f "/var/lib/vpsservice/proto/udp-custom"
+    ui_ok "UDP Custom desinstalado."; sleep 2
+}
 
-        # Agregar regla base: todo UDP → INTERNAL_PORT
-        iptables -t nat -A PREROUTING -p udp -j REDIRECT --to-port "$INTERNAL_PORT"
+udpc_menu() {
+    while true; do
+        inst_header "UDP CUSTOM" "túnel UDP directo · cuentas del panel"
+        ui_blank
+        local est
+        if systemctl is-active --quiet udp-custom 2>/dev/null; then est="${GR}[ ACTIVO ]${CR}"
+        elif [ -f "$UNIT" ]; then est="${RD}[ CAÍDO ]${CR}"
+        else est="${DM}[ NO INSTALADO ]${CR}"; fi
+        echo -e "${UI_PAD}$(ui_cell "Estado" "" 10)${est}"
+        echo -e "${UI_PAD}${DM}Formato en la app: ${WH}IP:1-65535@usuario:contraseña${CR}"
+        ui_rule
+        ui_blank
+        ui_opt "1" "INSTALAR / REINSTALAR" "binario oficial"
+        ui_opt "2" "PUERTOS PROTEGIDOS"    "no los toca"
+        ui_opt "3" "REINICIAR"             ""
+        ui_opt_danger "4" "DESINSTALAR"   ""
+        ui_opt "0" "VOLVER"
+        ui_solid
+        ui_prompt "Elige una opción [0-4]"
+        case "$REPLY_UI" in
+            1) udpc_install ;;
+            2) udpc_ports_screen ;;
+            3) systemctl restart udp-custom &>/dev/null; inst_check_service udp-custom "UDP Custom"; sleep 2 ;;
+            4) udpc_uninstall ;;
+            0|"") break ;;
+            *) ui_err "Opción no válida."; sleep 1 ;;
+        esac
+    done
+}
 
-        # Excluir puertos específicos (insertar ANTES con mayor prioridad)
-        IFS=',' read -ra EXCL_LIST <<< "$excl_ports"
-        for eport in "${EXCL_LIST[@]}"; do
-            eport=$(echo "$eport" | tr -d ' ')
-            [ -z "$eport" ] && continue
-            # Regla de excepción: este puerto NO se redirige → se inserta al inicio
-            iptables -t nat -I PREROUTING 1 -p udp --dport "$eport" -j RETURN
-            _ok "Puerto $eport excluido de UDP Custom."
-        done
-
-        # Guardar reglas iptables para que persistan tras reboot
-        mkdir -p /etc/iptables 2>/dev/null
-        if command -v iptables-save &>/dev/null; then
-            iptables-save > /etc/iptables/rules.v4 2>/dev/null
-            _ok "Reglas iptables guardadas en /etc/iptables/rules.v4"
-        fi
-        if command -v netfilter-persistent &>/dev/null; then
-            netfilter-persistent save &>/dev/null
-        fi
-
-        # Firewall: abrir el puerto interno
-        if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "active"; then
-            ufw allow "${INTERNAL_PORT}/udp" &>/dev/null
-            _ok "Firewall: puerto interno $INTERNAL_PORT abierto."
-        fi
-
-        SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || echo "TU_IP")
-        CUENTA="${SERVER_IP}:${INTERNAL_PORT}@${first_user}:${first_pass}"
-
-        echo ""
-        if systemctl is-active --quiet udp-custom; then
-            _ok "UDP Custom activo — escuchando en ${CY}TODOS los puertos UDP${CR}"
-            _ok "Puertos excluidos: ${CY}$excl_ports${CR}"
-        else
-            _err "UDP Custom no arrancó."
-            journalctl -u udp-custom -n 10 --no-pager 2>/dev/null | sed 's/^/  /'
-            sleep 3; continue
-        fi
-
-        echo ""
-        echo -e "$SEP"
-        echo -e "${WH}     CUENTA UDP CUSTOM — $first_user              ${CR}"
-        echo -e "$SEP"
-        echo -e "  ${DM}Servidor  :${CR}  ${GR}$SERVER_IP${CR}"
-        echo -e "  ${DM}Puerto    :${CR}  ${CY}cualquier puerto UDP${CR}  ${DM}(1-65535, excepto: $excl_ports)${CR}"
-        echo -e "  ${DM}Usuario   :${CR}  ${CY}$first_user${CR}"
-        echo -e "  ${DM}Contraseña:${CR}  ${CY}$first_pass${CR}"
-        echo ""
-        echo -e "  ${YL}━━━ DATOS DE CONEXION ━━━${CR}"
-        echo ""
-        echo -e "  ${GR}$CUENTA${CR}"
-        echo ""
-        echo -e "  ${YL}━━━ CONFIGURACION UDP CUSTOM ━━━${CR}"
-        echo -e "  ${DM}1. Activa el modo UDP en el cliente${CR}"
-        echo -e "  ${DM}2. Activa la casilla ${WH}☑ UDP Custom${DM} en pantalla principal${CR}"
-        echo -e "  ${DM}3. En el campo de cuenta escribe:${CR}"
-        echo -e "     ${WH}$SERVER_IP:$udp_port@$first_user:$first_pass${CR}"
-        echo -e "  ${DM}4. Presiona Connect — NO necesitas SSH${CR}"
-        echo -e "$SEP"
-        read -p "$(echo -e ${DM})Presiona Enter para continuar...$(echo -e ${CR})"
-        ;;
-
-    # ─── AGREGAR USUARIO ──────────────────────────────────────────────────────
-    2)
-        clear
-        echo -e "$SEP"
-        echo -e "${WH}           AGREGAR USUARIO UDP CUSTOM             ${CR}"
-        echo -e "$SEP"
-
-        if [ ! -f "$CONFIG_FILE" ]; then
-            _err "UDP Custom no instalado. Usa opción 1 primero."; sleep 2; continue
-        fi
-
-        UDP_PORT=$(grep '"listen"' "$CONFIG_FILE" 2>/dev/null | grep -o '[0-9]*')
-
-        ui_prompt "$(echo -e ${DM})Nombre de usuario: $(echo -e ${CR})"; new_user="$REPLY_UI"
-        [ -z "$new_user" ] && new_user="user$(date +%s | tail -c4)"
-        new_user=$(echo "$new_user" | tr -d ' ')
-
-        if grep -q "^${new_user}:" "$USERS_FILE" 2>/dev/null; then
-            _err "El usuario '$new_user' ya existe."; sleep 2; continue
-        fi
-
-        ui_prompt "$(echo -e ${DM})Contraseña (Enter para generar): $(echo -e ${CR})"; new_pass="$REPLY_UI"
-        [ -z "$new_pass" ] && new_pass=$(cat /proc/sys/kernel/random/uuid | cut -c1-10)
-
-        echo "${new_user}:${new_pass}" >> "$USERS_FILE"
-
-        EXCL=$(python3 -c "import json; c=json.load(open('$CONFIG_FILE')); print(','.join(map(str,c.get('udp_ports_exclude',[]))))" 2>/dev/null || echo "")
-        write_config "$UDP_PORT" "$EXCL"
-        systemctl restart udp-custom &>/dev/null; sleep 1
-
-        SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || echo "TU_IP")
-        CUENTA="${SERVER_IP}:${UDP_PORT}@${new_user}:${new_pass}"
-
-        echo ""
-        _ok "Usuario ${CY}$new_user${CR} creado."
-        echo ""
-        echo -e "$SEP"
-        echo -e "${WH}     CUENTA UDP CUSTOM — $new_user               ${CR}"
-        echo -e "$SEP"
-        echo -e "  ${DM}Cuenta completa:${CR}"
-        echo ""
-        echo -e "  ${GR}$CUENTA${CR}"
-        echo ""
-        echo -e "  ${DM}Ingresa estos datos en el cliente UDP${CR}"
-        echo -e "$SEP"
-        read -p "$(echo -e ${DM})Presiona Enter para continuar...$(echo -e ${CR})"
-        ;;
-
-    # ─── VER USUARIOS ─────────────────────────────────────────────────────────
-    3)
-        clear
-        echo -e "$SEP"
-        echo -e "${WH}         CUENTAS UDP CUSTOM                      ${CR}"
-        echo -e "$SEP"
-
-        if [ ! -f "$USERS_FILE" ]; then
-            _err "No hay usuarios."; sleep 2; continue
-        fi
-
-        SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || echo "TU_IP")
-        UDP_PORT=$(grep '"listen"' "$CONFIG_FILE" 2>/dev/null | grep -o '[0-9]*')
-
-        echo -e "  ${DM}Servidor: ${GR}$SERVER_IP${CR}  Puerto: ${CY}$UDP_PORT${CR}"
-        echo ""
-        echo -e "  ${YL}Formato: ip:puerto@usuario:contraseña${CR}"
-        echo ""
-
-        i=1
-        while IFS=: read -r uname upass; do
-            [[ "$uname" == "#"* ]] && continue
-            [ -z "$uname" ] && continue
-            CUENTA="${SERVER_IP}:${UDP_PORT}@${uname}:${upass}"
-            echo -e "  ${CY}[$i]${CR} ${WH}$uname${CR}"
-            echo -e "      ${GR}$CUENTA${CR}"
-            echo ""
-            ((i++))
-        done < "$USERS_FILE"
-
-        echo -e "$SEP"
-        read -p "$(echo -e ${DM})Presiona Enter para volver...$(echo -e ${CR})"
-        ;;
-
-    # ─── ELIMINAR USUARIO ─────────────────────────────────────────────────────
-    4)
-        clear
-        echo -e "$SEP"
-        echo -e "${WH}          ELIMINAR USUARIO UDP CUSTOM             ${CR}"
-        echo -e "$SEP"
-
-        if [ ! -f "$USERS_FILE" ]; then
-            _err "No hay usuarios."; sleep 2; continue
-        fi
-
-        i=1
-        while IFS=: read -r uname _; do
-            [ -z "$uname" ] && continue
-            echo -e "    ${CY}$i)${CR} $uname"; ((i++))
-        done < "$USERS_FILE"
-        echo ""
-
-        ui_prompt "$(echo -e ${DM})Usuario a eliminar: $(echo -e ${CR})"; del_user="$REPLY_UI"
-        [ -z "$del_user" ] && continue
-
-        if grep -q "^${del_user}:" "$USERS_FILE" 2>/dev/null; then
-            sed -i "/^${del_user}:/d" "$USERS_FILE"
-            UDP_PORT=$(grep '"listen"' "$CONFIG_FILE" 2>/dev/null | grep -o '[0-9]*')
-            EXCL=$(python3 -c "import json; c=json.load(open('$CONFIG_FILE')); print(','.join(map(str,c.get('udp_ports_exclude',[]))))" 2>/dev/null || echo "")
-            write_config "$UDP_PORT" "$EXCL"
-            systemctl restart udp-custom &>/dev/null
-            _ok "Usuario '${del_user}' eliminado."
-        else
-            _err "Usuario no encontrado."
-        fi
-        sleep 2
-        ;;
-
-    # ─── REINICIAR ────────────────────────────────────────────────────────────
-    5)
-        systemctl restart udp-custom
-        sleep 1
-        if systemctl is-active --quiet udp-custom; then
-            _ok "UDP Custom reiniciado correctamente."
-        else
-            _err "No pudo reiniciar. Revisa: journalctl -u udp-custom -n 20"
-        fi
-        sleep 2
-        ;;
-
-    0) break ;;
-    *) _err "Opción inválida."; sleep 1 ;;
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    case "${1:-}" in
+        --protect)       udpc_protect ;;
+        --protect-check) udpc_protect_check ;;
+        *)               inst_root; udpc_menu ;;
     esac
-done
+fi

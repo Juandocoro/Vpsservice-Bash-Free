@@ -191,7 +191,7 @@ function client_data() {
     ui_rule
     echo -e "${UI_PAD}${YL}OTROS PROTOCOLOS${CR}"
     ui_rule
-    [ -n "$PORT_UDPCUSTOM" ] && echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "UDP Custom " "$PORT_UDPCUSTOM" 26 "$CY")${DM}túnel UDP directo${CR}"
+    [ -n "$PORT_UDPCUSTOM" ] && echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "UDP Custom " "$SERVER_IP:1-65535@usuario:clave" 26 "$CY")"
     [ -n "$PORT_BADVPN" ]    && echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "BadVPN     " "127.0.0.1:$PORT_BADVPN" 26 "$CY")${DM}juegos/llamadas vía SSH${CR}"
     [ -n "$PORT_SLOWDNS" ]   && echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "SlowDNS    " "$PORT_SLOWDNS" 26 "$CY")"
     [ -n "$PORT_SQUID" ]     && echo -e "${UI_PAD}${GR}▪${CR} $(ui_cell "Squid      " "$PORT_SQUID" 26 "$CY")"

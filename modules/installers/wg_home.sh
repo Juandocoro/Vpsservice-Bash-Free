@@ -788,7 +788,8 @@ _socks_user_ensure() {
     akfile="$home/.ssh/authorized_keys"
     mkdir -p "$home/.ssh" 2>/dev/null
     if [ -n "$pubkey" ]; then
-        local opts="restrict,port-forwarding"
+        # permitlisten: la llave solo puede abrir el puerto de ESTE nodo.
+        local opts="restrict,port-forwarding,permitlisten=\"127.0.0.1:$(_wgn_socksport "$idx")\""
         # Evita duplicar la misma llave si se reconfigura el nodo.
         touch "$akfile"
         grep -qF "$pubkey" "$akfile" 2>/dev/null || echo "${opts} ${pubkey}" >> "$akfile"
@@ -1638,24 +1639,30 @@ _wgh_isolate_off() {
 
 
 # =========================================================
-# CAMBIO 1: GENERADOR DE CONFIGURACIÓN wg-home.conf
-# IMPORTANTE: Table = off en [Interface] y AllowedIPs = 0.0.0.0/0 en [Peer]
+# wg-home.conf — UNA sola fuente de verdad
+# ---------------------------------------------------------
+# wg-home es la interfaz del nodo 1, y su archivo lo escribian
+# dos generadores distintos: el del modelo actual (un peer con
+# AllowedIPs 0.0.0.0/0) y el del modelo antiguo de un solo
+# tunel (TODOS los nodos con AllowedIPs <ip>/32). Con /32,
+# WireGuard descarta las respuestas de Internet que vuelven por
+# el nodo, porque su origen no es la IP del nodo: el nodo 1 se
+# quedaba sin salida. Y la "reparacion" que corria al abrir el
+# menu detectaba el /32... y lo reescribia con el generador
+# antiguo, que volvia a poner /32. Ahora todo pasa por aqui.
 # =========================================================
 _wgh_render_conf() {
-    local priv="$1"
-    local peer_pub="$2"
-
+    local priv="$1" peer_pub="${2:-}" k1
+    # Nodo 1 registrado y de tipo WireGuard: su conf es la del nodo.
+    if [ "$(_wgh_node_name_of 1)" != "" ] && [ "$(_wgh_idx_type 1)" = "wg" ]; then
+        k1=$(_wgh_node_key_of "$(_wgh_node_name_of 1)")
+        if [ -n "$k1" ]; then _wgh_node_render 1 "$k1"; return 0; fi
+    fi
     cat <<EOF
 # =========================================================
-# Gateway Residencial — Droplet (Servidor WireGuard)
-# Interfaz : ${WGH_IFACE}
-# Red VPN  : ${WGH_SUBNET}
+# Gateway Residencial — interfaz ${WGH_IFACE} (nodo 1)
+# Table = off: wg-quick no toca la tabla main del VPS.
 # =========================================================
-# SEGURIDAD CRÍTICA:
-# - Table = off: impide que wg-quick altere la tabla main de la Droplet.
-# - AllowedIPs = 0.0.0.0/0: permite que el PC doméstico enrute tráfico a Internet.
-# =========================================================
-
 [Interface]
 Address    = ${WGH_DROPLET_IP}/24
 ListenPort = ${WGH_PORT}
@@ -1663,80 +1670,35 @@ PrivateKey = ${priv}
 Table      = off
 
 EOF
-
-    # Un bloque [Peer] por nodo registrado. El activo se lleva
-    # 0.0.0.0/0 —es el que recibe el trafico de Internet— y los
-    # demas solo su /32: siguen conectados y alcanzables, pero no
-    # compiten por la ruta. Dos peers con 0.0.0.0/0 no pueden
-    # coexistir: WireGuard se lo adjudicaria al ultimo.
-    local total
-    total=$(_wgh_nodes_count)
-
-    if [ "${total:-0}" -eq 0 ]; then
-        # Compatibilidad: si aun no hay registro pero si la clave
-        # suelta de la version anterior, se usa esa.
-        if [ -n "$peer_pub" ]; then
-            cat <<EOF
+    # Instalacion muy antigua: clave suelta del unico peer, sin registro.
+    if [ -n "$peer_pub" ] && [ "$(_wgh_nodes_count)" -eq 0 ]; then
+        cat <<EOF
 [Peer]
 # Nodo residencial (registro heredado)
 PublicKey           = ${peer_pub}
 AllowedIPs          = 0.0.0.0/0
 PersistentKeepalive = 0
 EOF
-        else
-            cat <<EOF
-# [Peer] — Pendiente registrar algun nodo residencial.
-# Usa la opcion 6 del menu para darlo de alta.
-EOF
-        fi
-        return 0
     fi
-
-    local name key idx type
-    while IFS='|' read -r name key idx type _; do
-        [ -z "$key" ] && continue
-        # Un nodo movil (socks) no tiene clave ni peer WireGuard: se
-        # omite para no escribir un [Peer] invalido en wg-home.conf.
-        [ "${type:-wg}" = "socks" ] && continue
-        cat <<EOF
-[Peer]
-# Nodo: ${name}  ($(_wgn_nodeip "$idx"))
-PublicKey           = ${key}
-AllowedIPs          = $(_wgn_nodeip "$idx")/32
-PersistentKeepalive = 0
-
-EOF
-    done < <(_wgh_nodes_list)
 }
 
-# Asegura que si wg-home.conf existe, contenga Table = off y AllowedIPs = 0.0.0.0/0
+# Deja wg-home.conf exactamente como debe estar, y si la interfaz esta
+# arriba aplica el cambio en caliente (sin cortar a nadie).
 _wgh_repair_conf_if_needed() {
-    if [ -f "$WGH_CONF" ]; then
-        local needs_update=false
-        if ! grep -q "^Table[[:space:]]*=[[:space:]]*off" "$WGH_CONF" 2>/dev/null; then
-            needs_update=true
-        fi
-        if grep -q "AllowedIPs[[:space:]]*=[[:space:]]*${WGH_PEER_IP}/32" "$WGH_CONF" 2>/dev/null; then
-            needs_update=true
-        fi
-
-        if [ "$needs_update" = true ]; then
-            _wgh_log "Reparando ${WGH_CONF} con Table=off y AllowedIPs=0.0.0.0/0"
-            local priv peer_pub
-            priv=$(cat "${WGH_PRIV_KEY}" 2>/dev/null || true)
-            peer_pub=""
-            [ -f /etc/wireguard/wghome_peer_public.key ] && peer_pub=$(cat /etc/wireguard/wghome_peer_public.key 2>/dev/null)
-            if [ -n "$priv" ]; then
-                _wgh_render_conf "$priv" "$peer_pub" > "${WGH_CONF}"
-                chmod 600 "${WGH_CONF}"
-                if _wgh_is_up; then
-                    wg syncconf "${WGH_IFACE}" <(wg-quick strip "${WGH_IFACE}" 2>/dev/null) 2>/dev/null || true
-                fi
-            fi
-        fi
+    [ -f "$WGH_CONF" ] || return 0
+    local priv peer_pub="" want
+    priv=$(cat "${WGH_PRIV_KEY}" 2>/dev/null)
+    [ -z "$priv" ] && return 0
+    [ -f "$WGH_PEER_KEY" ] && peer_pub=$(tr -d '[:space:]' < "$WGH_PEER_KEY" 2>/dev/null)
+    want=$(_wgh_render_conf "$priv" "$peer_pub")
+    [ "$want" = "$(cat "$WGH_CONF" 2>/dev/null)" ] && return 0
+    _wgh_log "Reescribiendo ${WGH_CONF} con la configuracion del nodo 1"
+    printf '%s\n' "$want" > "$WGH_CONF"
+    chmod 600 "$WGH_CONF"
+    if _wgh_is_up; then
+        wg syncconf "${WGH_IFACE}" <(wg-quick strip "${WGH_IFACE}" 2>/dev/null) 2>/dev/null || true
     fi
 }
-
 
 # =========================================================
 # CUENTAS DE CLIENTE
@@ -2074,7 +2036,9 @@ wghome_install() {
     chmod 600 "${WGH_PRIV_KEY}"
     chmod 644 "${WGH_PUB_KEY}"
 
-    # Paso 5: Crear wg-home.conf con Table = off y AllowedIPs = 0.0.0.0/0
+    # Paso 5: wg-home.conf. Antes se migra el peer unico de versiones
+    # antiguas, para que el conf ya lo incluya como nodo 1.
+    _wgh_nodes_migrate
     ui_info "Creando ${WGH_CONF}..."
     local priv peer_pub=""
     priv=$(cat "${WGH_PRIV_KEY}")
@@ -2101,8 +2065,6 @@ wghome_install() {
         ui_warn "El túnel no arrancó todavía (normal si aún no hay nodos)."
     fi
 
-
-    _wgh_nodes_migrate
     _wgh_log "Gateway residencial instalado exitosamente"
 
     echo ""
@@ -2147,7 +2109,7 @@ wghome_show_pubkey() {
         echo -e "  ${DM}   nodos no saben a dónde abrir el túnel.${CR}"
         ip_pub="<PON_AQUI_LA_IP_DEL_VPS>"
     fi
-    echo -e "  ${DM}Puerto WireGuard   :${CR} ${CY}${WGH_PORT}/UDP${CR}"
+    echo -e "  ${DM}Puertos WireGuard  :${CR} ${CY}51820 + (n.º de nodo - 1)${CR} ${DM}— cada nodo el suyo${CR}"
     echo ""
     echo -e "  ${YL}[ Clave Pública de la Droplet ]${CR}"
     echo -e "  ${WH}${pub}${CR}"
@@ -2208,8 +2170,11 @@ wghome_show_pubkey() {
         _socks_show_instructions "$n_idx" "$n_name"
         return
     fi
-    local n_ip
-    n_ip=$(_wgn_nodeip "$n_idx")
+    # Cada nodo tiene SU puerto y SU red. Antes esta pantalla daba los del
+    # nodo 1 a todos: un nodo 2 configurado con ella llamaba a la interfaz
+    # del nodo 1, que no lo conoce, y no conectaba nunca.
+    local n_ip n_port n_vps
+    n_ip=$(_wgn_nodeip "$n_idx"); n_port=$(_wgn_port "$n_idx"); n_vps=$(_wgn_vpsip "$n_idx")
 
     clear
     print_title 2>/dev/null || true
@@ -2221,7 +2186,7 @@ wghome_show_pubkey() {
     echo -e "  ${YL}━━━ Si usas el panel del nodo (node.sh) ━━━${CR}"
     echo -e "  ${DM}En su asistente, cuando pida los datos:${CR}"
     echo -e "  ${DM}  Host del VPS :${CR} ${WH}${ip_pub}${CR}"
-    echo -e "  ${DM}  Puerto       :${CR} ${WH}${WGH_PORT}${CR}"
+    echo -e "  ${DM}  Puerto       :${CR} ${WH}${n_port}${CR}"
     echo -e "  ${DM}  Clave del VPS:${CR} ${WH}${pub}${CR}"
     echo -e "  ${DM}  IP del nodo  :${CR} ${GR}${n_ip}${CR}  ${YL}<-- esta, no otra${CR}"
     echo ""
@@ -2234,8 +2199,8 @@ wghome_show_pubkey() {
     echo ""
     echo -e "  ${CY}[Peer]${CR}"
     echo -e "  ${WH}PublicKey           = ${pub}${CR}"
-    echo -e "  ${WH}Endpoint            = ${ip_pub}:${WGH_PORT}${CR}"
-    echo -e "  ${WH}AllowedIPs          = ${WGH_DROPLET_IP}/32${CR}"
+    echo -e "  ${WH}Endpoint            = ${ip_pub}:${n_port}${CR}"
+    echo -e "  ${WH}AllowedIPs          = ${n_vps}/32${CR}"
     echo -e "  ${WH}PersistentKeepalive = 25${CR}"
     echo ""
     echo -e "  ${DM}Y para compartir su salida a Internet (ajusta la interfaz):${CR}"

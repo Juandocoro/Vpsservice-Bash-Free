@@ -7,10 +7,7 @@ fi
 
 # Lenguaje visual compartido del panel
 _INST_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-source "$_INST_DIR/../ui.sh"
-
-CR="\033[0m"; GR="\033[1;32m"; RD="\033[0;31m"
-YL="\033[0;33m"; CY="\033[1;36m"; WH="\033[1;37m"; DM="\033[2;37m"
+source "$_INST_DIR/_common.sh"
 
 
 CONFIG_FILE="/usr/local/etc/v2ray/config.json"
@@ -134,11 +131,9 @@ while true; do
         echo -e "${WH}          INSTALAR / REINSTALAR V2RAY           ${CR}"
         echo -e "$SEP"
 
-        ui_prompt "$(echo -e ${DM})Puerto WebSocket (Defecto: 8080): $(echo -e ${CR})"; v2_port="$REPLY_UI"
-        [ -z "$v2_port" ] && v2_port=8080
-        if ! [[  "$v2_port" =~ ^[0-9]+$ ]] || [ "$v2_port" -lt 1 ] || [ "$v2_port" -gt 65535 ]; then
-            _err "Puerto inválido. Usando 8080."; v2_port=8080
-        fi
+        CURR=$(python3 -c "import json; c=json.load(open('$CONFIG_FILE')); print(c['inbounds'][0]['port'])" 2>/dev/null)
+        inst_ask_port "Puerto WebSocket" "${CURR:-8080}" tcp v2ray || continue
+        v2_port="$INST_PORT"
 
         ui_prompt "$(echo -e ${DM})Path WebSocket (Defecto: /v2ray): $(echo -e ${CR})"; v2_path="$REPLY_UI"
         [ -z "$v2_path" ] && v2_path="/v2ray"
@@ -157,35 +152,37 @@ while true; do
             _err "Error al instalar V2Ray. Verifica conexión."; sleep 3; continue
         fi
 
-        # Crear config con un usuario inicial
-        FIRST_UUID=$(cat /proc/sys/kernel/random/uuid)
-        FIRST_NAME="user1"
-        CLIENTS_JSON="[{\"id\":\"$FIRST_UUID\",\"alterId\":0,\"email\":\"$FIRST_NAME\"}]"
+        # Reinstalar CONSERVA a los clientes. Antes la lista se sustituia
+        # por un unico usuario nuevo y todos los VMess entregados dejaban
+        # de funcionar a la vez.
+        CLIENTS_JSON=$(get_current_clients_json)
+        if [ "$CLIENTS_JSON" = "[]" ] || [ -z "$CLIENTS_JSON" ]; then
+            FIRST_UUID=$(cat /proc/sys/kernel/random/uuid)
+            FIRST_NAME="user1"
+            CLIENTS_JSON="[{\"id\":\"$FIRST_UUID\",\"alterId\":0,\"email\":\"$FIRST_NAME\"}]"
+            echo "$FIRST_NAME:$FIRST_UUID" > "$USERS_FILE"
+        else
+            FIRST_UUID=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])[0]['id'])" "$CLIENTS_JSON" 2>/dev/null)
+            FIRST_NAME=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])[0].get('email','user1'))" "$CLIENTS_JSON" 2>/dev/null)
+            _ok "Se conservan los usuarios existentes."
+        fi
 
         write_config "$v2_port" "$v2_path" "$CLIENTS_JSON"
 
-        # Guardar usuario y bughost en archivo de referencia
-        echo "$FIRST_NAME:$FIRST_UUID" > "$USERS_FILE"
+        # Guardar bughost en el archivo de referencia
+        sed -i '/^BUGHOST=/d' "$USERS_FILE" 2>/dev/null
         [ -n "$v2_bughost" ] && echo "BUGHOST=$v2_bughost" >> "$USERS_FILE"
 
         systemctl enable v2ray &>/dev/null
         systemctl restart v2ray
-        sleep 2
+        inst_ufw_allow "${v2_port}/tcp"
+        inst_mark v2ray
 
-        # Firewall
-        if command -v ufw &>/dev/null; then
-            ufw allow "${v2_port}/tcp" &>/dev/null
-        fi
-
-        SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || echo "TU_IP")
+        SERVER_IP=$(_public_ip)
         VMESS_LINK=$(generate_vmess_link "$FIRST_UUID" "$SERVER_IP" "$v2_port" "$v2_path" "$FIRST_NAME" "$v2_bughost" "")
 
         echo ""
-        if systemctl is-active --quiet v2ray; then
-            _ok "V2Ray instalado y activo."
-        else
-            _err "V2Ray no arrancó. Revisa: journalctl -u v2ray -n 20"
-        fi
+        inst_check_service v2ray "V2Ray"
 
         echo ""
         echo -e "$SEP"
@@ -236,7 +233,12 @@ while true; do
 
         ui_prompt "$(echo -e ${DM})Nombre del usuario (ej: juan): $(echo -e ${CR})"; uname="$REPLY_UI"
         [ -z "$uname" ] && uname="user_$(date +%s)"
-        uname=$(echo "$uname" | tr -d ' ')
+        # Solo caracteres seguros: una comilla en el nombre rompia el JSON.
+        uname=$(echo "$uname" | tr -cd 'A-Za-z0-9_.-' | cut -c1-32)
+        [ -z "$uname" ] && uname="user_$(date +%s)"
+        if python3 -c "import json,sys; c=json.load(open(sys.argv[1])); sys.exit(0 if any(x.get('email')==sys.argv[2] for x in c['inbounds'][0]['settings']['clients']) else 1)" "$CONFIG_FILE" "$uname" 2>/dev/null; then
+            _err "Ya existe un usuario '$uname'."; sleep 2; continue
+        fi
 
         # Leer bug host guardado
         SAVED_BUGHOST=$(grep '^BUGHOST=' "$USERS_FILE" 2>/dev/null | cut -d= -f2)
@@ -253,11 +255,11 @@ while true; do
         # Leer clientes actuales y agregar el nuevo
         CURRENT_CLIENTS=$(get_current_clients_json)
         NEW_CLIENTS=$(python3 -c "
-import json
-clients = json.loads('$CURRENT_CLIENTS')
-clients.append({'id':'$NEW_UUID','alterId':0,'email':'$uname'})
+import json, sys
+clients = json.loads(sys.argv[1])
+clients.append({'id': sys.argv[2], 'alterId': 0, 'email': sys.argv[3]})
 print(json.dumps(clients, indent=2))
-" 2>/dev/null)
+" "$CURRENT_CLIENTS" "$NEW_UUID" "$uname" 2>/dev/null)
 
         if [ -z "$NEW_CLIENTS" ]; then
             _err "Error procesando usuarios. ¿Está python3 instalado?"; sleep 2; continue
@@ -275,7 +277,7 @@ print(json.dumps(clients, indent=2))
         systemctl restart v2ray &>/dev/null
         sleep 1
 
-        SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || echo "TU_IP")
+        SERVER_IP=$(_public_ip)
         VMESS_LINK=$(generate_vmess_link "$NEW_UUID" "$SERVER_IP" "$CURR_PORT" "$CURR_PATH" "$uname" "$new_bughost" "")
 
         echo ""
@@ -324,7 +326,7 @@ print(json.dumps(clients, indent=2))
             _err "V2Ray no está instalado."; sleep 2; continue
         fi
 
-        SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || echo "TU_IP")
+        SERVER_IP=$(_public_ip)
         CURR_PORT=$(python3 -c "import json; c=json.load(open('$CONFIG_FILE')); print(c['inbounds'][0]['port'])" 2>/dev/null || echo "?")
         CURR_PATH=$(python3 -c "import json; c=json.load(open('$CONFIG_FILE')); print(c['inbounds'][0]['streamSettings']['wsSettings']['path'])" 2>/dev/null || echo "/v2ray")
 
@@ -345,7 +347,7 @@ except Exception as e:
             if [ "$idx" = "ERROR" ]; then
                 _err "Error leyendo config: $uname"; continue
             fi
-            VMESS_LINK=$(generate_vmess_link "$uuid" "$SERVER_IP" "$CURR_PORT" "$CURR_PATH" "$uname")
+            VMESS_LINK=$(generate_vmess_link "$uuid" "$SERVER_IP" "$CURR_PORT" "$CURR_PATH" "$uname" "$(grep '^BUGHOST=' "$USERS_FILE" 2>/dev/null | cut -d= -f2)")
             echo -e "  ${CY}[$idx]${CR} ${WH}$uname${CR}"
             echo -e "      ${DM}UUID:${CR} $uuid"
             echo -e "      ${YL}LINK:${CR} ${GR}$VMESS_LINK${CR}"
@@ -384,16 +386,15 @@ for i, cl in enumerate(clients, 1):
 
         NEW_CLIENTS=$(python3 -c "
 import json, sys
-c = json.load(open('$CONFIG_FILE'))
+c = json.load(open(sys.argv[1]))
 clients = c['inbounds'][0]['settings']['clients']
 before = len(clients)
-clients = [cl for cl in clients if cl.get('email','') != '$del_name']
-after = len(clients)
-if before == after:
+clients = [cl for cl in clients if cl.get('email','') != sys.argv[2]]
+if before == len(clients):
     print('NOTFOUND')
 else:
     print(json.dumps(clients, indent=2))
-" 2>/dev/null)
+" "$CONFIG_FILE" "$del_name" 2>/dev/null)
 
         if [ "$NEW_CLIENTS" = "NOTFOUND" ]; then
             _err "Usuario '${del_name}' no encontrado."; sleep 2; continue
@@ -404,7 +405,7 @@ else:
 
         write_config "$CURR_PORT" "$CURR_PATH" "$NEW_CLIENTS"
         # Actualizar archivo de referencia
-        [ -f "$USERS_FILE" ] && sed -i "/^${del_name}:/d" "$USERS_FILE"
+        [ -f "$USERS_FILE" ] && grep -v "^${del_name//[^A-Za-z0-9_.-]/}:" "$USERS_FILE" > "$USERS_FILE.tmp" && mv "$USERS_FILE.tmp" "$USERS_FILE"
 
         systemctl restart v2ray &>/dev/null
         sleep 1
@@ -412,7 +413,7 @@ else:
         sleep 2
         ;;
 
-    0) break ;;
+    0|"") break ;;
     *) _err "Opción inválida."; sleep 1 ;;
     esac
 done
