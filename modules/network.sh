@@ -317,7 +317,7 @@ _uptime_short() {
 _port_grid() {
     local entries=("$@")
     local total=${#entries[@]}
-    [ "$total" -eq 0 ] && { echo -e "${UI_PAD}${RD}Sin protocolos activos — instala uno en CONFIGURACIÓN > FÁBRICA${CR}"; return; }
+    [ "$total" -eq 0 ] && { echo -e "${UI_PAD}${RD}Sin protocolos activos — instala uno en PROTOCOLOS${CR}"; return; }
 
     local w=$(( (UI_W - 4) / 3 ))
     local i=0
@@ -359,14 +359,12 @@ function show_network_status() {
 
     # ── Recursos ──
     local RAM_U RAM_T RAM_PCT DISK_U DISK_T DISK_PCT CPU_PCT
-    RAM_U=$(free -m | awk '/Mem:/ {print $3}')
-    RAM_T=$(free -m | awk '/Mem:/ {print $2}')
+    # Una llamada a free y una a df (antes eran cinco por redibujado).
+    read -r RAM_T RAM_U < <(free -m | awk '/Mem:/ {print $2, $3}')
     RAM_PCT=0
     [ "${RAM_T:-0}" -gt 0 ] && RAM_PCT=$(( RAM_U * 100 / RAM_T ))
 
-    DISK_U=$(df -h / | awk 'NR==2 {print $3}')
-    DISK_T=$(df -h / | awk 'NR==2 {print $2}')
-    DISK_PCT=$(df / | awk 'NR==2 {gsub(/%/,""); print $5}' 2>/dev/null)
+    read -r DISK_T DISK_U DISK_PCT < <(df -h / | awk 'NR==2 {gsub(/%/,"",$5); print $2, $3, $5}')
     DISK_PCT=${DISK_PCT:-0}
 
     CPU_PCT=$(grep -o "^cpu \+.*" /proc/stat | awk '{print int(100 - ($5 * 100 / ($2+$3+$4+$5+$6+$7+$8)))}')

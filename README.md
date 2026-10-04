@@ -47,20 +47,24 @@ menu
   ✓ Todo funcionando
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+  ── CUENTAS ──
   [1] ▸ CREAR CUENTA            │ usuario nuevo
   [2] ▸ RENOVAR CUENTA          │ sumar días
-  [3] ▸ CONECTADOS AHORA        │ monitor
-  [4] ▸ DATOS DE CONEXIÓN       │ para el cliente
-
-  [5] ▸ ADMINISTRAR CUENTAS     │ clave · salida · borrar
-  [6] ▸ CONFIGURACIÓN           │ protocolos · sistema
+  [3] ▸ CUENTAS                 │ ficha · editar · borrar
+  [4] ▸ CONECTADOS AHORA        │ monitor
+  ── SERVIDOR ──
+  [5] ▸ PROTOCOLOS              │ instalar · datos
+  [6] ▸ IP RESIDENCIAL          │ nodos · móvil beta  [ ON  ]
+  [7] ▸ SISTEMA                 │ ssh · firewall · hora
+  [8] ▸ PANEL                   │ actualizar · registro
 
   [0] ▸ SALIR
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Digita una acción [0-6] »
+  Digita una acción [0-8] »
 ```
 
-Lo que se hace a diario está a un toque desde el menú principal. Debajo del
+El menú tiene dos bloques: **cuentas**, lo de todos los días, y **servidor**,
+donde cada opción agrupa un tema completo. Debajo del
 tablero, una línea de **alertas** avisa de lo que puede dejar a un cliente sin
 servicio: un protocolo instalado que está caído, un nodo residencial caído, el
 vigilante detenido o cuentas que vencen hoy.
@@ -71,20 +75,26 @@ a salir a Internet**: la IP del VPS o uno de los nodos residenciales. Al
 terminar muestra una ficha con todo lo que hay que mandarle al cliente.
 **Renovar** suma los días a lo que le queda a la cuenta, no los cuenta desde hoy.
 
-La configuración agrupa el resto en tres bloques —**protocolos**, **sistema**
-y **panel**:
+**Cuentas** muestra la tabla; se elige una (por número o nombre) y se abre su
+**ficha**, desde donde se hace todo sin volver a buscarla: renovar, contraseña,
+límite de dispositivos, salida a Internet, datos para el cliente, desconectar y
+eliminar. Desde la lista también se pueden **limpiar las vencidas** de golpe.
 
 ```
-── PROTOCOLOS ──          ── SISTEMA ──             ── PANEL ──
- Fábrica de túneles        Acceso root               Actualizar script
- Gateway residencial       Puerto SSH                Arranque automático
-                           Cortafuegos UFW           Reiniciar servidor
-                           Zona horaria              Desinstalar panel
-                           Optimizar servidor
+── PROTOCOLOS ──        ── IP RESIDENCIAL ──     ── SISTEMA ──         ── PANEL ──
+ 11 protocolos           Nodos                    Acceso root           Actualizar
+ Datos de conexión       Asignar usuarios         Puerto SSH            Registro de eventos
+                         Salida residencial       Cortafuegos UFW       Arranque automático
+                         Nunca sin Internet       Zona horaria          Desinstalar
+                         Diagnóstico              Optimizar
+                         Móvil sin root (beta)    Reiniciar servidor
+                         Avanzado
 ```
 
-En la fábrica, cada protocolo muestra `[ ON ]`, `[ OFF ]` (no instalado) o
-`[CAIDO]` (instalado pero parado).
+En **Protocolos**, cada uno muestra `[ ON ]`, `[ OFF ]` (no instalado) o
+`[CAIDO]` (instalado pero parado). **Panel → Registro de eventos** enseña lo que
+el panel hizo solo: servicios reiniciados por el guardián, nodos caídos y
+recuperados, y sesiones cortadas por superar el límite.
 
 Todo el aspecto gráfico vive en un único módulo, `modules/ui.sh`: paleta,
 marcos, celdas alineadas, barras de carga y etiquetas `[ ON ]` / `[ OFF ]`.
@@ -124,7 +134,7 @@ modules/
 
 ## Nodos de salida residencial
 
-Bajo **Configuración del VPS → Gateway residencial** puedes hacer que ciertos
+En **IP residencial** puedes hacer que ciertos
 usuarios SSH salgan a Internet por la conexión de otro equipo tuyo (un nodo),
 no por la IP del VPS. Cada usuario sale por el nodo que le asignes, y varios
 nodos pueden dar salida a la vez. Hay dos tipos:
@@ -154,7 +164,7 @@ pegando su clave pública. El nodo (proyecto
 [`Vpsservice-Node-Gateway`](../Vpsservice-Node-Gateway), modo SOCKS) genera su
 par SSH y muestra su clave; el panel la autoriza.
 
-1. En el panel: **Gateway residencial → Nodos → Registrar nodo móvil**.
+1. En el panel: **IP residencial → Nodos → Registrar nodo móvil**.
    Reserva el nodo y te muestra los datos a configurar en el celular (host,
    puerto SSH, usuario `snodeN` y puerto SOCKS).
 2. En el celular (Android, sin root): instala **Termux** y el nodo, ejecuta
@@ -172,7 +182,7 @@ resolviéndose en el VPS; las conexiones TCP salen por el celular.
 
 ### Móvil sin root · BETA
 
-**Configuración del VPS → [B] Móvil sin root** es la forma rápida de que un
+**IP residencial → Móvil sin root** es la forma rápida de que un
 celular Android **sin root** preste su IP a los usuarios que elijas. No hace
 falta instalar el proyecto del nodo:
 
@@ -211,8 +221,8 @@ nodo preferido  ->  nodo de respaldo  ->  IP del VPS
   (`homevpn-rules`).
 - El guardián comprueba cada minuto que las reglas sigan puestas y que los
   servicios instalados estén vivos, y los levanta si no.
-- Los respaldos se fijan en **Gateway residencial → Nunca sin Internet**.
-- **Gateway residencial → Diagnóstico** recorre la cadena entera y dice en qué
+- Los respaldos se fijan en **IP residencial → Nunca sin Internet**.
+- **IP residencial → Diagnóstico** recorre la cadena entera y dice en qué
   eslabón se corta.
 
 ---

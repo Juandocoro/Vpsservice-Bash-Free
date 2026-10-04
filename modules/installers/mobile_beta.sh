@@ -139,7 +139,7 @@ _mbeta_show_phone() {
     host=$(_wgh_get_droplet_ip)
     if [ -z "$host" ]; then
         ui_err "No se pudo averiguar la IP pública del VPS."
-        echo -e "${UI_PAD}${DM}Fíjala en GATEWAY RESIDENCIAL > AVANZADO > DIRECCIÓN PÚBLICA.${CR}"
+        echo -e "${UI_PAD}${DM}Fíjala en IP RESIDENCIAL > AVANZADO > DIRECCIÓN PÚBLICA.${CR}"
         ui_pause; return
     fi
     port=$(_socks_ssh_port); user=$(_wgn_socksuser "$idx"); sport=$(_wgn_socksport "$idx")

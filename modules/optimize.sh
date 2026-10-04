@@ -84,7 +84,7 @@ optimize_menu() {
             elif [[ "$H" == "*" ]]; then
                 ESTADO_AUTO="${GR}[ CADA 1h ]${CR}"
             else
-                ESTADO_AUTO="$(ui_tag_str on)"
+                ESTADO_AUTO="${GR}[ DIARIA ]${CR}"
             fi
         else
             ESTADO_AUTO="$(ui_tag_str off)"
@@ -101,13 +101,12 @@ optimize_menu() {
         ui_rule
         ui_blank
 
-        ui_opt "1" "OPTIMIZAR AHORA"    "manual"
-        ui_opt "2" "PROGRAMAR LIMPIEZA" "solo disco"  "$ESTADO_AUTO"
-        ui_opt "3" "DESACTIVAR AUTO"    "quitar cron"
+        ui_opt "1" "OPTIMIZAR AHORA"      "RAM · disco"
+        ui_opt "2" "LIMPIEZA AUTOMÁTICA"  "solo disco"  "$ESTADO_AUTO"
         ui_blank
         ui_opt "0" "VOLVER"
         ui_solid
-        ui_prompt "Elige una opción [0-3]"
+        ui_prompt "Elige una opción [0-2]"
 
         case "$REPLY_UI" in
             1)
@@ -127,29 +126,27 @@ optimize_menu() {
                 ui_pause
                 ;;
             2)
+                # Programar y desactivar eran dos opciones; ahora es una:
+                # se elige la frecuencia, y 0 la apaga.
                 ui_blank
-                ui_prompt "¿Cada cuántas horas optimizar? [1-24]"
-                horas="$REPLY_UI"
-                if [[ "$horas" =~ ^[0-9]+$ ]] && [ "$horas" -ge 1 ] && [ "$horas" -le 24 ]; then
+                ui_prompt "¿Cada cuántas horas limpiar el disco? [1-24, 0 = apagar] (Enter = 24)"
+                horas="${REPLY_UI:-24}"
+                if [[ "$horas" =~ ^[0-9]+$ ]] && [ "$horas" -le 24 ]; then
                     crontab -l 2>/dev/null | grep -v "optimize.sh --cron" | crontab - 2>/dev/null
-                    if [ "$horas" -eq 1 ]; then
-                        (crontab -l 2>/dev/null; echo "0 * * * * bash $DIR/modules/optimize.sh --cron") | crontab -
+                    if [ "$horas" -eq 0 ]; then
+                        ui_ok "Limpieza automática desactivada."
                     else
-                        (crontab -l 2>/dev/null; echo "0 */$horas * * * bash $DIR/modules/optimize.sh --cron") | crontab -
+                        local min="0 */$horas"; [ "$horas" -eq 1 ] && min="0 *"
+                        [ "$horas" -eq 24 ] && min="30 4"
+                        (crontab -l 2>/dev/null; echo "$min * * * bash $DIR/modules/optimize.sh --cron") | crontab -
+                        ui_ok "Limpieza automática cada ${WH}$horas${CR} hora(s)."
                     fi
-                    ui_ok "Optimización automática cada ${WH}$horas${CR} hora(s)."
                 else
                     ui_err "Cantidad de horas no válida."
                 fi
                 sleep 2
                 ;;
-            3)
-                crontab -l 2>/dev/null | grep -v "optimize.sh --cron" | crontab - 2>/dev/null
-                ui_blank
-                ui_ok "Optimización automática desactivada."
-                sleep 2
-                ;;
-            0) break ;;
+            0|"") break ;;
             *) ui_err "Opción inválida."; sleep 1 ;;
         esac
     done

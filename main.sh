@@ -27,16 +27,17 @@ mkdir -p "$STATE_DIR" 2>/dev/null
 # =========================================================
 # CABECERA GENERAL
 # =========================================================
+# La version no cambia mientras el panel esta abierto (actualizar lo
+# relanza): se calcula una vez. Antes eran dos 'git' por pantalla.
+PANEL_VER=""
 function print_title() {
-    local VER="$VPS_VERSION"
-    if git -C "$DIR" rev-parse --is-inside-work-tree &>/dev/null 2>&1; then
+    if [ -z "$PANEL_VER" ]; then
         local COMMIT
         COMMIT=$(git -C "$DIR" rev-parse --short HEAD 2>/dev/null)
-        [ -n "$COMMIT" ] && VER="FREE · ${VPS_VERSION} · ${COMMIT}"
+        PANEL_VER="FREE · ${VPS_VERSION}${COMMIT:+ · ${COMMIT}}"
     fi
-    [ "$VER" = "$VPS_VERSION" ] && VER="FREE · ${VPS_VERSION}"
     echo ""
-    ui_header "$VER"
+    ui_header "$PANEL_VER"
 }
 
 # =========================================================
@@ -51,52 +52,6 @@ function toggle_autostart() {
         ui_ok "Arranque automático ${GR}activado${CR}."
     fi
     sleep 1
-}
-
-# =========================================================
-# MENÚ USUARIOS
-# =========================================================
-function users_menu() {
-    while true; do
-        clear
-        print_title
-        ui_section "GESTIÓN DE CUENTAS" "SSH · SSL · Dropbear"
-        ui_blank
-
-        contar_cuentas
-        contar_online
-        echo -e "${UI_PAD}$(ui_cell "Total" "${USR_TOTAL:-0}" 15)${DM}▸${CR} $(ui_cell "Activas" "${USR_ACTIVAS:-0}" 15 "$GR")${DM}▸${CR} $(ui_cell "Vencidas" "${USR_VENCIDAS:-0}" 15 "$RD")"
-        echo -e "${UI_PAD}$(ui_cell "Online" "$(( ${ON_SSH:-0} + ${ON_DROPBEAR:-0} + ${ON_OVPN:-0} ))" 15 "$CY")${DM}▸${CR} $(ui_cell "Por vencer" "${USR_PORVENCER:-0}" 15 "$YL")"
-        ui_rule
-        ui_blank
-
-        ui_opt "1" "CREAR CUENTA"        "usuario nuevo"
-        ui_opt "2" "LISTAR CUENTAS"      "tabla completa"
-        ui_opt "3" "USUARIOS CONECTADOS" "monitor en vivo"
-        ui_blank
-        ui_opt "4" "RENOVAR VIGENCIA"    "sumar días"
-        ui_opt "5" "CAMBIAR CONTRASEÑA"  "reset de clave"
-        ui_opt "6" "LÍMITE DE CONEXIÓN"  "dispositivos"
-        ui_opt "7" "SALIDA A INTERNET"   "VPS o nodo"
-        ui_opt_danger "8" "ELIMINAR CUENTA" "borrado definitivo"
-        ui_blank
-        ui_opt "0" "VOLVER"
-        ui_solid
-        ui_prompt "Elige una opción [0-8]"
-
-        case "$REPLY_UI" in
-            1) crear_usuario ;;
-            2) listar_usuarios ;;
-            3) monitor_conexiones ;;
-            4) renovar_vigencia ;;
-            5) cambiar_password ;;
-            6) cambiar_limite ;;
-            7) cambiar_salida ;;
-            8) eliminar_usuario ;;
-            0|"") break ;;
-            *) ui_err "Opción inválida."; sleep 1 ;;
-        esac
-    done
 }
 
 # =========================================================
@@ -268,7 +223,7 @@ function sub_menu_installers() {
         refresh_ports
         clear
         print_title
-        ui_section "FÁBRICA DE TÚNELES & PROXIES" "11 protocolos disponibles"
+        ui_section "PROTOCOLOS" "instalar · reconfigurar · datos para el cliente"
         ui_blank
 
         echo -e "${UI_PAD}${YL}── SSH / TÚNEL ──${CR}"
@@ -289,9 +244,10 @@ function sub_menu_installers() {
         ui_opt "10" "OPENVPN"      "perfil .ovpn"      "$(ui_tag_svc "$PORT_OVPN" openvpn@server)"
         ui_opt "11" "WIREGUARD"    "ChaCha20 / UDP"    "$(ui_tag_svc "$PORT_WG" wg-quick@wg0)"
         ui_blank
+        ui_opt "D"  "DATOS DE CONEXIÓN" "puertos y payload"
         ui_opt "0"  "VOLVER"
         ui_solid
-        ui_prompt "Elige una opción [0-11]"
+        ui_prompt "Elige una opción [0-11 | D]"
         local op="$REPLY_UI"
 
         _run() {
@@ -315,6 +271,7 @@ function sub_menu_installers() {
             9)  _run "shadowsocks_installer.sh" ;;
             10) _run "openvpn_installer.sh" ;;
             11) _run "wireguard_installer.sh" ;;
+            [Dd]) client_data ;;
             0|"") break ;;
             *) ui_err "Opción no válida."; sleep 1 ;;
         esac
@@ -387,63 +344,103 @@ function uninstall_panel() {
 }
 
 # =========================================================
-# CONFIGURACIÓN DEL VPS
-# Agrupa todo lo que no es gestión de cuentas, en tres bloques:
-# los protocolos, el sistema operativo y el propio panel.
+# SISTEMA — el sistema operativo del VPS
 # =========================================================
-function config_menu() {
+function sistema_menu() {
     while true; do
         refresh_ports
         clear
         print_title
-        ui_section "CONFIGURACIÓN DEL VPS"
+        ui_section "SISTEMA" "acceso, red y mantenimiento del VPS"
         ui_blank
 
-        # Etiquetas de estado
-        local WGH_TAG AUTO_TAG ROOT_TAG SSH_PORT TZ_NOW
-        _wgh_routing_is_active && WGH_TAG="$(ui_tag_str on)" || WGH_TAG="$(ui_tag_str off)"
-        grep -q "^menu$" /root/.bashrc 2>/dev/null && AUTO_TAG="$(ui_tag_str on)" || AUTO_TAG="$(ui_tag_str off)"
+        local ROOT_TAG TZ_NOW
         _root_ssh_allowed && ROOT_TAG="$(ui_tag_str on)" || ROOT_TAG="$(ui_tag_str off)"
-        SSH_PORT="${PORT_SSH:-22}"
         TZ_NOW=$(timedatectl show -p Timezone --value 2>/dev/null || echo "N/A")
 
-        echo -e "${UI_PAD}${YL}── PROTOCOLOS ──${CR}"
-        ui_opt "1" "FÁBRICA DE TÚNELES"  "11 protocolos"
-        ui_opt "2" "GATEWAY RESIDENCIAL" "IP de casa/móvil" "$WGH_TAG"
-        ui_opt "B" "MÓVIL SIN ROOT"      "beta · su IP"
+        echo -e "${UI_PAD}${YL}── ACCESO ──${CR}"
+        ui_opt "1" "ACCESO ROOT"         "clave y login"  "$ROOT_TAG"
+        ui_opt "2" "PUERTO SSH"          "actual: ${PORT_SSH:-22}"
+        ui_opt "3" "CORTAFUEGOS UFW"     "abrir puertos"
         ui_blank
-        echo -e "${UI_PAD}${YL}── SISTEMA ──${CR}"
-        ui_opt "3" "ACCESO ROOT"         "clave y login"  "$ROOT_TAG"
-        ui_opt "4" "PUERTO SSH"          "actual: $SSH_PORT"
-        ui_opt "5" "CORTAFUEGOS UFW"     "sincronizar"
-        ui_opt "6" "ZONA HORARIA"        "${TZ_NOW##*/}"
-        ui_opt "7" "OPTIMIZAR SERVIDOR"  "RAM · disco"
-        ui_blank
-        echo -e "${UI_PAD}${YL}── PANEL ──${CR}"
-        ui_opt "8"  "ACTUALIZAR SCRIPT"   "desde GitHub"
-        ui_opt "9"  "ARRANQUE AUTOMÁTICO" ""              "$AUTO_TAG"
-        ui_opt "10" "REINICIAR SERVIDOR"  "cierra túneles"
-        ui_opt_danger "11" "DESINSTALAR PANEL" "borrado total"
+        echo -e "${UI_PAD}${YL}── MANTENIMIENTO ──${CR}"
+        ui_opt "4" "ZONA HORARIA"        "${TZ_NOW##*/}"
+        ui_opt "5" "OPTIMIZAR"           "RAM · disco"
+        ui_opt "6" "REINICIAR SERVIDOR"  "cierra túneles"
         ui_blank
         ui_opt "0" "VOLVER"
         ui_solid
-        ui_prompt "Elige una opción [0-11 | B]"
+        ui_prompt "Elige una opción [0-6]"
 
         case "$REPLY_UI" in
-            1)  sub_menu_installers ;;
-            2)  wghome_menu ;;
-            [Bb]) mobile_beta_menu ;;
-            3)  root_access_menu ;;
-            4)  ssh_port_config ;;
-            5)  clear; print_title; ui_section "CORTAFUEGOS UFW"; ui_blank; sync_firewall ;;
-            6)  timezone_config ;;
-            7)  optimize_menu ;;
-            8)  update_script ;;
-            9)  toggle_autostart ;;
-            10) reboot_vps ;;
-            11) uninstall_panel ;;
+            1) root_access_menu ;;
+            2) ssh_port_config ;;
+            3) clear; print_title; ui_section "CORTAFUEGOS UFW"; ui_blank; sync_firewall ;;
+            4) timezone_config ;;
+            5) optimize_menu ;;
+            6) reboot_vps ;;
             0|"") break ;;
-            *)  ui_err "Opción no válida."; sleep 1 ;;
+            *) ui_err "Opción no válida."; sleep 1 ;;
+        esac
+    done
+}
+
+# =========================================================
+# REGISTRO DE EVENTOS
+# ---------------------------------------------------------
+# El guardian, el vigilante y el auto-killer trabajan solos, y
+# hasta ahora no habia forma de saber que habian hecho: si un
+# cliente decia "anoche se me corto", no habia donde mirarlo.
+# =========================================================
+function eventos_panel() {
+    clear
+    print_title
+    ui_section "REGISTRO DE EVENTOS" "lo que el panel hizo solo"
+    ui_blank
+    local l
+    echo -e "${UI_PAD}${YL}── SERVICIOS (guardián) ──${CR}"
+    l=$(tail -n 8 /var/log/vpsservice-guardian.log 2>/dev/null)
+    [ -n "$l" ] && echo "$l" | sed "s/^/${UI_PAD}/" || echo -e "${UI_PAD}${GR}Ninguna caída registrada.${CR}"
+    ui_blank
+    echo -e "${UI_PAD}${YL}── NODOS (vigilante) ──${CR}"
+    l=$(grep -E 'CAIDO|recuperado|restaurad|Vigilante (iniciado|activado|desactivado)' /var/log/homevpn.log 2>/dev/null | tail -n 8)
+    [ -n "$l" ] && echo "$l" | sed "s/^/${UI_PAD}/" || echo -e "${UI_PAD}${DM}Sin eventos de nodos.${CR}"
+    ui_blank
+    echo -e "${UI_PAD}${YL}── LÍMITE DE DISPOSITIVOS (auto-killer) ──${CR}"
+    l=$(journalctl -t vpsservice-killer -n 8 --no-pager -o short-iso 2>/dev/null | grep -v '^-- ')
+    [ -n "$l" ] && echo "$l" | sed "s/^/${UI_PAD}/" || echo -e "${UI_PAD}${DM}Nadie ha superado su límite.${CR}"
+    ui_solid
+    ui_pause
+}
+
+# =========================================================
+# PANEL — el propio script
+# =========================================================
+function panel_menu() {
+    while true; do
+        clear
+        print_title
+        ui_section "PANEL" "versión, registro y arranque"
+        ui_blank
+        local AUTO_TAG
+        grep -q "^menu$" /root/.bashrc 2>/dev/null && AUTO_TAG="$(ui_tag_str on)" || AUTO_TAG="$(ui_tag_str off)"
+
+        ui_opt "1" "ACTUALIZAR"          "desde GitHub"
+        ui_opt "2" "REGISTRO DE EVENTOS" "caídas y cortes"
+        ui_opt "3" "ARRANQUE AUTOMÁTICO" "al entrar por SSH" "$AUTO_TAG"
+        ui_blank
+        ui_opt_danger "4" "DESINSTALAR PANEL" "borrado total"
+        ui_opt "0" "VOLVER"
+        ui_solid
+        ui_prompt "Elige una opción [0-4]"
+
+        case "$REPLY_UI" in
+            1) update_script ;;
+            2) eventos_panel ;;
+            3) toggle_autostart ;;
+            4) uninstall_panel ;;
+            0|"") break ;;
+            *) ui_err "Opción no válida."; sleep 1 ;;
         esac
     done
 }
@@ -460,29 +457,36 @@ function show_menu() {
     show_network_status
 
     ui_solid
-    ui_blank
+    local RES_TAG
+    _wgh_routing_is_active && RES_TAG="$(ui_tag_str on)" || RES_TAG="$(ui_tag_str off)"
 
-    # Lo de todos los dias, a un toque. Antes crear o renovar una
-    # cuenta pedia pasar por un submenu primero.
+    # Dos bloques: lo de cada dia (cuentas) y lo del servidor. Cada
+    # opcion del bloque SERVIDOR agrupa un tema completo; antes todo
+    # vivia junto en un menu de configuracion de 12 opciones.
+    echo -e "${UI_PAD}${YL}── CUENTAS ──${CR}"
     ui_opt "1" "CREAR CUENTA"         "usuario nuevo"
     ui_opt "2" "RENOVAR CUENTA"       "sumar días"
-    ui_opt "3" "CONECTADOS AHORA"     "monitor"
-    ui_opt "4" "DATOS DE CONEXIÓN"    "para el cliente"
-    ui_blank
-    ui_opt "5" "ADMINISTRAR CUENTAS"  "clave · salida · borrar"
-    ui_opt "6" "CONFIGURACIÓN"        "protocolos · sistema"
+    ui_opt "3" "CUENTAS"              "ficha · editar · borrar"
+    ui_opt "4" "CONECTADOS AHORA"     "monitor"
+    echo -e "${UI_PAD}${YL}── SERVIDOR ──${CR}"
+    ui_opt "5" "PROTOCOLOS"           "instalar · datos"
+    ui_opt "6" "IP RESIDENCIAL"       "nodos · móvil beta" "$RES_TAG"
+    ui_opt "7" "SISTEMA"              "ssh · firewall · hora"
+    ui_opt "8" "PANEL"                "actualizar · registro"
     ui_blank
     ui_opt "0" "SALIR"
     ui_solid
-    ui_prompt "Digita una acción [0-6]"
+    ui_prompt "Digita una acción [0-8]"
 
     case "$REPLY_UI" in
         1) crear_usuario ;;
         2) renovar_vigencia ;;
-        3) monitor_conexiones ;;
-        4) client_data ;;
-        5) users_menu ;;
-        6) config_menu ;;
+        3) cuentas_menu ;;
+        4) monitor_conexiones ;;
+        5) sub_menu_installers ;;
+        6) wghome_menu ;;
+        7) sistema_menu ;;
+        8) panel_menu ;;
         0) clear; echo -e "${DM}Saliendo... (escribe 'menu' para volver)${CR}"; exit 0 ;;
         "") ;;
         *) ui_err "Opción no reconocida."; sleep 1 ;;

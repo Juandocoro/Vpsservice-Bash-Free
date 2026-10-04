@@ -371,6 +371,61 @@ for n in cliente1 juan_p a-b; do _usuario_valido "$n" && ok "acepta '$n'" || bad
 for n in Cliente 1abc ab "con espacio" 'x;rm'; do _usuario_valido "$n" && bad "acepta '$n'" || ok "rechaza '$n'"; done
 
 # =========================================================
+group "Foto de cuentas en una pasada"
+# ---------------------------------------------------------
+# Sustituye a ~6 procesos por cuenta en cada redibujado.
+# =========================================================
+HOY=$(( $(date +%s) / 86400 ))
+printf '%s\n' "root:x:0:0:root:/root:/bin/bash" \
+    "ana:x:1001:1001:2:/home/ana:/bin/bash" \
+    "beto:x:1002:1002:x:/home/beto:/bin/bash" \
+    "caro:x:1003:1003:1:/home/caro:/bin/bash" \
+    "dani:x:1004:1004:3:/home/dani:/bin/bash" \
+    "ubuntu:x:1000:1000::/home/ubuntu:/bin/bash" > "$TMP/passwd"
+printf '%s\n' "ana:h:1:0:99999:7::$((HOY + 10)):" "beto:h:1:0:99999:7:::" \
+    "caro:h:1:0:99999:7::${HOY}:" "dani:h:1:0:99999:7::$((HOY + 1)):" > "$TMP/shadow"
+printf '%s\n' "ana:clave:con:dos" "caro:c4ro" > "$TMP/claves"
+printf '%s\n' " 1001 sshd" " 1001 sshd-session" " 1001 dropbear" "    0 sshd" " 1003 bash" > "$TMP/ps"
+FOTO=$(_cuentas_parse "$TMP/passwd" "$TMP/shadow" "$TMP/claves" "$TMP/ps" "$HOY")
+is "solo cuentas de cliente, en el orden de passwd" "$(cut -d'|' -f1 <<<"$FOTO" | paste -sd, -)" "ana,beto,caro,dani"
+is "ana: limite, dias, sesiones ssh y dropbear" "$(sed -n 1p <<<"$FOTO" | cut -d'|' -f1-5)" "ana|2|10|2|1"
+is "una clave con ':' llega entera" "$(sed -n 1p <<<"$FOTO" | cut -d'|' -f6)" "clave:con:dos"
+is "un limite no numerico se muestra como 1" "$(sed -n 2p <<<"$FOTO" | cut -d'|' -f2)" "1"
+is "sin caducidad: inf / never" "$(sed -n 2p <<<"$FOTO" | cut -d'|' -f3,7)" "inf|never"
+is "vence hoy = ya vencida (como la ve PAM)" "$(sed -n 3p <<<"$FOTO" | cut -d'|' -f3)" "0"
+is "fecha legible sin gawk ni date" "$(sed -n 1p <<<"$FOTO" | cut -d'|' -f7)" "$(date -u -d "@$(( (HOY + 10) * 86400 ))" +%Y-%m-%d)"
+is "estado: vencida"     "$(_estado_cuenta 0 | cut -d'|' -f1)"   "VENCIDO"
+is "estado: ultimo dia"  "$(_estado_cuenta 1 | cut -d'|' -f1)"   "POR VENCER"
+is "estado: sin fecha"   "$(_estado_cuenta inf | cut -d'|' -f1)" "ACTIVO"
+_SNAP="$FOTO"; _SNAP_T="$SECONDS"
+contar_cuentas
+is "el tablero cuenta activas/por vencer/vencidas/vencen hoy" \
+   "$USR_ACTIVAS/$USR_PORVENCER/$USR_VENCIDAS/$USR_VENCEN_HOY" "2/1/1/1"
+_SNAP_T="$SECONDS"; contar_online
+is "y las sesiones abiertas" "$ON_SSH/$ON_DROPBEAR" "2/1"
+
+# =========================================================
+group "Cada opcion de menu tiene su accion"
+# ---------------------------------------------------------
+# Una opcion que se pinta pero no esta en el 'case' cae en
+# "opcion no valida": el admin la ve y no hace nada.
+# =========================================================
+SIN_ACCION=""
+for f in main.sh modules/*.sh modules/installers/wg_home.sh modules/installers/mobile_beta.sh; do
+    SIN_ACCION="$SIN_ACCION$(awk -v F="$f" '
+        /^(function )?[a-zA-Z_]+\(\) *\{/ { if (fn != "") check(); fn = $0; delete op; delete cs; next }
+        /ui_opt(_danger)? "/ { match($0, /ui_opt(_danger)? "[^"]*"/); k = substr($0, RSTART, RLENGTH); sub(/.*"(.*)"/, "", k)
+                               k = substr($0, RSTART, RLENGTH); gsub(/^ui_opt(_danger)? "|"$/, "", k); op[k] = 1 }
+        /^[ \t]*[^ \t()#]+\)/ { c = $0; sub(/^[ \t]*/, "", c); sub(/\).*/, "", c); n = split(c, alts, "|")
+                               for (i = 1; i <= n; i++) { a = alts[i]; gsub(/"/, "", a)
+                                 if (a ~ /^\[/) { cs[toupper(substr(a, 2, 1))] = 1; cs[tolower(substr(a, 2, 1))] = 1 } else cs[a] = 1 } }
+        function check(   k) { for (k in op) if (!(k in cs)) printf " %s:%s[%s]", F, fn, k }
+        END { if (fn != "") check() }' "$f")"
+done
+SIN_ACCION=$(sed 's/function //g; s/() *{//g' <<<"$SIN_ACCION")
+[ -z "$SIN_ACCION" ] && ok "todas las opciones visibles hacen algo" || bad "opciones sin accion" "$SIN_ACCION"
+
+# =========================================================
 group "Resolucion de cuentas"
 # =========================================================
 source modules/users.sh 2>/dev/null

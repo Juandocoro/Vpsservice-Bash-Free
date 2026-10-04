@@ -2639,7 +2639,7 @@ wghome_assign_users() {
 
         if [ "$(_wgh_nodes_count)" -eq 0 ]; then
             ui_warn "Aún no hay nodos: todos los usuarios salen por la IP del VPS."
-            echo -e "${UI_PAD}${DM}Registra uno en GATEWAY RESIDENCIAL > NODOS.${CR}"
+            echo -e "${UI_PAD}${DM}Registra uno en IP RESIDENCIAL > NODOS.${CR}"
             ui_pause; return
         fi
 
@@ -2842,7 +2842,7 @@ wghome_diagnose() {
     local total name key idx type hs user sport vivos=0
     total=$(_wgh_nodes_count)
     if [ "${total:-0}" -eq 0 ]; then
-        _p "No hay ningún nodo registrado." "GATEWAY RESIDENCIAL > NODOS"
+        _p "No hay ningún nodo registrado." "IP RESIDENCIAL > NODOS"
         ui_solid; ui_pause; return
     fi
     while IFS='|' read -r name key idx type _; do
@@ -3074,7 +3074,7 @@ wghome_menu() {
     while true; do
         clear
         print_title 2>/dev/null || true
-        ui_section "GATEWAY RESIDENCIAL" "cada usuario sale por el nodo que le asignes"
+        ui_section "IP RESIDENCIAL" "cada usuario sale por el nodo que le asignes"
         ui_blank
 
         local TAG_ROUTING TAG_FB n_count n_ok n_down u_count name
@@ -3104,10 +3104,11 @@ wghome_menu() {
         ui_opt "4" "NUNCA SIN INTERNET" "respaldos"       "$TAG_FB"
         ui_opt "5" "DIAGNÓSTICO"        "cadena completa"
         ui_blank
+        ui_opt "6" "MÓVIL SIN ROOT"     "beta · su IP"
         ui_opt "9" "AVANZADO"           "túnel · endpoint"
         ui_opt "0" "VOLVER"
         ui_solid
-        ui_prompt "Elige una opción [0-5 | 9]"
+        ui_prompt "Elige una opción [0-6 | 9]"
 
         case "$REPLY_UI" in
             1) wghome_manage_nodes ;;
@@ -3115,6 +3116,7 @@ wghome_menu() {
             3) if _wgh_routing_is_active; then wghome_routing_off; else wghome_routing_on; fi ;;
             4) wghome_configure_fallback ;;
             5) wghome_diagnose ;;
+            6) mobile_beta_menu ;;
             9) wghome_advanced_menu ;;
             0|"") break ;;
             *) ui_err "Opción no válida."; sleep 1 ;;
