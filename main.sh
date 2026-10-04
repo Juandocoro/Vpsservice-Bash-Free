@@ -117,8 +117,11 @@ _instalar_version() {
     fi
 
     git -C "$DIR" rev-parse HEAD > "$STATE_DIR/.prev_commit" 2>/dev/null
+    # Sin esto, un 'chmod +x' de una instalacion vieja cuenta como cambio
+    # local y git se niega a trabajar sobre el repositorio.
+    git -C "$DIR" config core.fileMode false &>/dev/null
     git -C "$DIR" reset --hard "$ref" &>/dev/null
-    chmod -R +x "$DIR" 2>/dev/null
+    find "$DIR" -name '*.sh' -not -path '*/.git/*' -exec chmod +x {} + 2>/dev/null
     # El vigilante es un proceso que no termina: si no se reinicia,
     # seguiria corriendo el codigo viejo hasta el proximo arranque.
     systemctl try-restart homevpn-watchdog.service &>/dev/null

@@ -56,10 +56,14 @@ if ! git clone https://github.com/Juandocoro/Vpsservice-Bash-Free.git "$TARGET_D
 fi
 
 # =========================================================
-# PASO 4: Permisos totales — todos los .sh de una vez
+# PASO 4: Permisos — solo los scripts
 # =========================================================
 echo -e "\033[0;33m[*]\033[0m Aplicando permisos..."
-chmod -R +x "$TARGET_DIR"
+# Antes se daba permiso de ejecucion a todo el arbol, incluido .git, y
+# cada script quedaba como "modificado" para git: eso puede bloquear
+# una actualizacion. Solo los .sh, y git ignora los cambios de permisos.
+find "$TARGET_DIR" -name '*.sh' -not -path '*/.git/*' -exec chmod +x {} +
+git -C "$TARGET_DIR" config core.fileMode false
 
 # =========================================================
 # PASO 5: Registrar comando global 'menu'

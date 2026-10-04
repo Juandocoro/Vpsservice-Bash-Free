@@ -566,6 +566,29 @@ _resolver_usuario 9 >/dev/null 2>&1 && bad "acepta una fila inexistente" || ok "
 _resolver_usuario root >/dev/null 2>&1 && bad "ACEPTA root" || ok "rechaza root"
 
 # =========================================================
+group "Permisos: que un chmod no bloquee la actualizacion"
+# ---------------------------------------------------------
+# Fallo real en el repositorio del nodo: el script estaba
+# guardado sin permiso de ejecucion, el instalador le hacia
+# 'chmod +x' y git tomaba eso como un cambio local. Cada
+# actualizacion abortaba, y el panel decia "Actualizado".
+# =========================================================
+sinx=$(git ls-files -s '*.sh' 2>/dev/null | awk '$1!="100755"{printf " %s", $4}')
+[ -z "$sinx" ] && ok "todos los .sh estan guardados como ejecutables" \
+    || bad "hay .sh sin permiso de ejecucion en el repositorio" "$sinx"
+
+recursivo=$(grep -rln 'chmod -R +x' --include='*.sh' . 2>/dev/null | grep -v '^./tests/')
+[ -z "$recursivo" ] && ok "nadie usa 'chmod -R +x' (marcaba hasta .git)" \
+    || bad "'chmod -R +x' sigue presente" "$recursivo"
+
+grep -q 'config core.fileMode false' setup.sh \
+    && ok "el instalador hace que git ignore los permisos" \
+    || bad "el instalador no desactiva core.fileMode"
+grep -q 'config core.fileMode false' main.sh \
+    && ok "ACTUALIZAR hace que git ignore los permisos" \
+    || bad "ACTUALIZAR no desactiva core.fileMode"
+
+# =========================================================
 printf "\n%b\n" "$(ui_line "$Y" "━")"
 if [ "$FAIL" -eq 0 ]; then
     printf " ${G}%d pruebas correctas${C}\n" "$OK"
