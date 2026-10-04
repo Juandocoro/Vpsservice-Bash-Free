@@ -508,6 +508,28 @@ grep -q '_wgn_table_re' modules/installers/wg_home.sh && is "la tabla 200 se rec
     || bad "falta reconocer 'lookup homevpn'"
 
 # =========================================================
+group "Sonda de punta a punta: tunel vivo no es Internet"
+# ---------------------------------------------------------
+# Si en casa se cae el Internet pero el PC sigue conectado al VPS,
+# los keepalives siguen llegando: el vigilante lo daba por sano y
+# los usuarios se quedaban sin Internet indefinidamente.
+# =========================================================
+is "exito reciente: el nodo da Internet"        "$(_wgh_probe_verdict 1000 996 7)" "1"
+is "sin exito en 7 s: el nodo NO da Internet"   "$(_wgh_probe_verdict 1000 990 7)" "0"
+is "nunca contesto: no se juzga por la sonda"   "$(_wgh_probe_verdict 1000 "" 7)"  "?"
+# Caso real: contador de bytes moviendose (keepalives) y sonda fallando.
+_wgh_measure_calc 501 off 1000 500 990
+is "el contador solo diria 'vivo'"              "$MED_OK" "1"
+V=$(_wgh_probe_verdict 1000 980 7); [ "$V" != "?" ] && MED_OK="$V"
+is "pero manda la sonda: caido"                 "$MED_OK" "0"
+e=up; r=0
+for t in 1 2 3; do _wgh_health_step "$e" "$r" 0; e="$HS_ESTADO"; r="$HS_RACHA"; done
+is "a las 3 medidas malas se aparta el nodo"    "$e" "down"
+grep -q '_wgh_probe_launch "$idx"' modules/installers/wg_home.sh && ok "el vigilante lanza la sonda" || bad "el vigilante no usa la sonda"
+grep -q 'ping -c1 -W2 -I "$(_wgn_iface "$idx")" 1.1.1.1' modules/installers/wg_home.sh \
+    && ok "la sonda sale por la interfaz del nodo (prueba aunque este apartado)" || bad "la sonda no sale por el nodo"
+
+# =========================================================
 group "La reparacion nunca corta un tunel vivo"
 # ---------------------------------------------------------
 # Con un registro sin nodo 1, la reparacion reescribia wg-home.conf

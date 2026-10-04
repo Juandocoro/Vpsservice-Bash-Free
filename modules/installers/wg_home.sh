@@ -1411,13 +1411,75 @@ _wgh_reconcile() {
 }
 
 # ---------------------------------------------------------
+# SONDA DE PUNTA A PUNTA
+# ---------------------------------------------------------
+# Que el tunel este vivo no significa que el nodo de Internet.
+# Si en casa se cae el wifi o el router, o el PC pierde su NAT al
+# reiniciarse, el PC sigue mandando keepalives al VPS: el contador
+# de bytes sube, el nodo parecia sano y los usuarios se quedaban
+# sin Internet indefinidamente. Aun con el PC apagado, la caida se
+# detectaba a los ~60 s.
+#
+# La sonda recorre el mismo camino que el trafico de los clientes:
+#   PC (wg)  -> ping a 1.1.1.1 / 8.8.8.8 saliendo por la interfaz del
+#               nodo ('-I wg-homeN': no depende de la tabla de rutas,
+#               asi sigue probando aunque el nodo este apartado).
+#   movil    -> una peticion HTTP minima por su SOCKS.
+# Va en segundo plano (la vuelta del vigilante es de 1 s) y deja la
+# hora del ultimo exito en /run/homevpn-probe/<indice>.ok.
+#
+# Coste: un ping cada 2 s por nodo PC (~7 MB/dia) y ~500 bytes cada
+# 10 s por movil (~4 MB/dia del plan de datos).
+# ---------------------------------------------------------
+WGH_PROBE_DIR="/run/homevpn-probe"
+WGH_PROBE_EVERY_WG=2;    WGH_PROBE_WINDOW_WG=7
+WGH_PROBE_EVERY_SOCKS=10; WGH_PROBE_WINDOW_SOCKS=25
+
+_wgh_probe_launch() {
+    local idx="$1" tipo="$2" d="$WGH_PROBE_DIR" pid
+    mkdir -p "$d" 2>/dev/null
+    if [ -f "$d/$idx.run" ]; then
+        read -r pid < "$d/$idx.run" 2>/dev/null
+        [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && return 0
+    fi
+    (
+        if [ "$tipo" = "socks" ]; then
+            curl -s -o /dev/null -m 6 --socks5 "127.0.0.1:$(_wgn_socksport "$idx")" http://1.1.1.1/cdn-cgi/trace
+        else
+            ping -c1 -W2 -I "$(_wgn_iface "$idx")" 1.1.1.1 &>/dev/null || \
+                ping -c1 -W2 -I "$(_wgn_iface "$idx")" 8.8.8.8 &>/dev/null
+        fi && echo "${EPOCHSECONDS:-$(date +%s)}" > "$d/$idx.ok"
+        rm -f "$d/$idx.run"
+    ) &>/dev/null &
+    echo "$!" > "$d/$idx.run"
+}
+
+# Hora del ultimo exito de la sonda (vacio si nunca lo tuvo).
+_wgh_probe_last_ok() {
+    local t=""
+    [ -f "$WGH_PROBE_DIR/$1.ok" ] && read -r t < "$WGH_PROBE_DIR/$1.ok" 2>/dev/null
+    echo "$t"
+}
+
+# Funcion pura: ¿la sonda da el nodo por bueno?
+#   _wgh_probe_verdict <ahora> <ultimo_ok|""> <ventana>  -> 1 | 0 | ? (nunca contesto)
+# '?' = el nodo jamas ha pasado la sonda (por ejemplo, un ISP que filtra
+# el ICMP): entonces no se le puede juzgar por ella y se usa el contador
+# de bytes de antes, para no dar por caido a un nodo que funciona.
+_wgh_probe_verdict() {
+    local ahora="$1" ok="$2" win="$3"
+    [[ "$ok" =~ ^[0-9]+$ ]] || { echo "?"; return; }
+    [ $(( ahora - ok )) -lt "$win" ] && echo 1 || echo 0
+}
+
+# ---------------------------------------------------------
 # EL VIGILANTE
 # ---------------------------------------------------------
 wghome_watchdog_loop() {
     _wgh_log "Vigilante iniciado (tick ${WGH_WATCH_INTERVAL}s, caida tras ${WGH_DOWN_AFTER} medidas)"
-    declare -A ESTADO RACHA RXP TSP RX KA IFC PING RESP
+    declare -A ESTADO RACHA RXP TSP RX KA IFC PROBE_T
     declare -a LISTA=()
-    local ahora name key idx tipo estado racha nuevo bk ln mt="" mtprev="" vuelta=0 cambio sil
+    local ahora name key idx tipo estado racha nuevo bk ln mt="" mtprev="" vuelta=0 cambio veredicto cada
     local f1 f2 f3 f4 f5 f6 f7 f8 f9 k v
 
     # Se recupera el estado que dejo la ejecucion anterior (vive en
@@ -1480,33 +1542,32 @@ wghome_watchdog_loop() {
                 if [ "$estado" = "down" ]; then TSP[$name]=0; else TSP[$name]="$ahora"; fi
             fi
 
+            # Sonda de punta a punta: se lanza cada pocos segundos, en
+            # segundo plano, y se lee el resultado de la anterior.
+            if [ "${tipo:-wg}" = "socks" ]; then cada=$WGH_PROBE_EVERY_SOCKS; else cada=$WGH_PROBE_EVERY_WG; fi
+            if [ $(( ahora - ${PROBE_T[$idx]:-0} )) -ge "$cada" ]; then
+                _wgh_probe_launch "$idx" "${tipo:-wg}"; PROBE_T[$idx]="$ahora"
+            fi
+
             if [ "${tipo:-wg}" = "socks" ]; then
-                # Vivo = el movil mantiene su ssh -R Y redsocks corre.
-                # sshd cierra la sesion de un movil sin cobertura en ~30s
-                # (ClientAliveInterval), asi que el puerto no queda
-                # "escuchando" a un telefono que ya no esta.
-                if _socks_reverse_up "$idx" && _socks_redsocks_up "$idx"; then MED_OK=1; else MED_OK=0; fi
+                # Vivo = el movil mantiene su ssh -R, redsocks corre Y su
+                # SOCKS da salida a Internet de verdad.
+                MED_OK=0
+                if _socks_reverse_up "$idx" && _socks_redsocks_up "$idx"; then
+                    veredicto=$(_wgh_probe_verdict "$ahora" "$(_wgh_probe_last_ok "$idx")" "$WGH_PROBE_WINDOW_SOCKS")
+                    [ "$veredicto" != "0" ] && MED_OK=1
+                fi
                 MED_RX=0; MED_TS="$ahora"
             elif ! _wgh_node_is_up "$idx"; then
                 MED_OK=0; MED_RX="${RXP[$name]:--1}"; MED_TS="${TSP[$name]}"
             else
-                # Sonda: tras 8s de silencio, un ping dentro del tunel cada
-                # 5s. Son 84 bytes. Un nodo que contesta deja de parecer
-                # mudo, y si contesta a pings se le puede exigir mas: se
-                # da por caido a los 20s en vez de a los ~55s del keepalive.
-                if [ $(( ahora - ${TSP[$name]} )) -ge 8 ] && [ $(( ahora - ${PING[$name]:-0} )) -ge 5 ]; then
-                    ping -c1 -W1 -I "${IFC[$idx]}" "$(_wgn_nodeip "$idx")" &>/dev/null &
-                    PING[$name]="$ahora"
-                fi
-                sil=""; [ "${RESP[$name]:-0}" -ge 2 ] && sil=20
+                veredicto=$(_wgh_probe_verdict "$ahora" "$(_wgh_probe_last_ok "$idx")" "$WGH_PROBE_WINDOW_WG")
+                # El contador se sigue llevando (sirve de respaldo y para
+                # saber si el tunel vive), pero manda la sonda si alguna vez
+                # ha contestado: el tunel puede estar vivo y sin Internet.
                 _wgh_measure_calc "${RX["${IFC[$idx]}|${key}"]:-}" "${KA["${IFC[$idx]}|${key}"]:-}" \
-                                  "$ahora" "${RXP[$name]:--1}" "${TSP[$name]}" "$sil"
-                # Llegaron bytes justo despues de un ping tras un silencio:
-                # este nodo contesta a la sonda. Se exigen dos veces para no
-                # confundirlo con trafico del usuario que coincidio.
-                if [ "$MED_TS" = "$ahora" ] && [ "${RXP[$name]:--1}" != "-1" ] && [ $(( ahora - ${PING[$name]:-0} )) -le 2 ]; then
-                    RESP[$name]=$(( ${RESP[$name]:-0} + 1 ))
-                fi
+                                  "$ahora" "${RXP[$name]:--1}" "${TSP[$name]}"
+                [ "$veredicto" != "?" ] && MED_OK="$veredicto"
             fi
             RXP[$name]="$MED_RX"; TSP[$name]="$MED_TS"
 
@@ -2931,9 +2992,15 @@ wghome_diagnose() {
                     _v "'${name}' (PC): conectado (handshake hace ${hs}s)."; vivos=$((vivos+1))
                     # Ya conecta con sus datos nuevos: fuera del aviso.
                     [ -f "$WGH_RECONFIG" ] && sed -i "/^${name}$/d" "$WGH_RECONFIG"
-                    ping -c1 -W2 "$(_wgn_nodeip "$idx")" &>/dev/null \
-                        && _i "responde al ping en $(_wgn_nodeip "$idx")" \
-                        || _i "no responde al ping (no es grave si su firewall bloquea ICMP)"
+                    # Tunel vivo no es lo mismo que Internet: se prueba el
+                    # camino completo, el mismo que usa el vigilante.
+                    if ping -c1 -W3 -I "$(_wgn_iface "$idx")" 1.1.1.1 &>/dev/null || \
+                       ping -c1 -W3 -I "$(_wgn_iface "$idx")" 8.8.8.8 &>/dev/null; then
+                        _v "  y da Internet: un ping a 1.1.1.1 sale por el nodo y vuelve."
+                    else
+                        _p "  el túnel está vivo pero el nodo NO da Internet." \
+                           "En el PC: ¿tiene Internet? ¿está activo su NAT (nodo [2])? El vigilante manda a sus usuarios a su respaldo o a la IP del VPS."
+                    fi
                 fi
             fi
         fi
